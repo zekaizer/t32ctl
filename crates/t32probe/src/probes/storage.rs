@@ -330,14 +330,7 @@ pub fn tar_download(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let (stage, session) = ctx.stage()?;
     let dir = stage.path("o")?;
     let sub = dir.join("sub")?;
-    let mut created = Vec::new();
-    transfer::ensure_dir(session, &sub, |p| {
-        created.push(Undo::RemoveDir(p.clone()));
-        Ok(())
-    })?;
-    for undo in created {
-        stage.register(undo)?;
-    }
+    transfer::ensure_dir(session, &sub, |p| stage.register(Undo::RemoveDir(p.clone())))?;
     for (name, bytes) in &files {
         stage.upload(session, Put::Plain, bytes, &format!("o/{name}"))?;
     }
