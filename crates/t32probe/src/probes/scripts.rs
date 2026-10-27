@@ -86,10 +86,16 @@ pub fn macro_probe(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     ctx.check(copied && func, || "a command-line assignment does not reach the global macro".into())
 }
 
-const MAIN: &str =
-    "GLOBAL &t32ctl_probe_main\n&t32ctl_probe_main=\"main-ran\"\nDO \"~~~~/sub/b.cmm\"\nENDDO \"main-ok\"\n";
-const SUB_B: &str = "IF OS.FILE.SIZE(\"~~~~/deep/data.bin\")!=4097.\n  ENDDO \"size-mismatch\"\nWAIT 1.s\nDO \"~~~~/deep/c.cmm\"\nENDDO\n";
-const SUB_C: &str = "WAIT 1.s\nENDDO\n";
+/// Returns what `b.cmm` returned, so the runner's result shows how far the chain got.
+/// ASSUMED(bundle): `ENTRY %LINE` after `DO` yields the callee's `ENDDO` value, as in the runner.
+const MAIN: &str = "GLOBAL &t32ctl_probe_main\n&t32ctl_probe_main=\"main-ran\"\nLOCAL &r\n\
+                    DO \"~~~~/sub/b.cmm\"\nENTRY %LINE &r\nENDDO &r\n";
+/// `OS.PresentPracticeDirectory()+"/..."` is the function form ide_ref documents (`Eval.GOSUB`);
+/// `~~~~` is documented only in `DO`/`GOSUB` parameters.
+const SUB_B: &str = "IF OS.FILE.SIZE(OS.PresentPracticeDirectory()+\"/deep/data.bin\")!=4097.\n  \
+                     ENDDO \"size-mismatch\"\nWAIT 1.s\nDO \"~~~~/deep/c.cmm\"\nENDDO \"chain-ok\"\n";
+/// Proves the end of the chain ran in this run: the client compares the global with the token.
+const SUB_C: &str = "GLOBAL &t32ctl_probe_deep\n&t32ctl_probe_deep=\"&t32ctl_token\"\nWAIT 1.s\nENDDO\n";
 
 /// The self-extracting bundle end to end: upload, cache hit, repair after a missing marker, a
 /// nested `DO ~~~~/...` chain through the runner, and what `GetPracticeState` reports meanwhile.
@@ -103,8 +109,8 @@ pub fn bundle(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
         ("empty.txt", b""),
         ("dir with space/x.cmm", b"ENDDO\n"),
     ])?;
-    let main_macro = name("t32ctl_probe_main");
-    ctx.push(Undo::ClearMacros(vec![main_macro.clone()]))?;
+    let (main_macro, deep_macro) = (name("t32ctl_probe_main"), name("t32ctl_probe_deep"));
+    ctx.push(Undo::ClearMacros(vec![main_macro.clone(), deep_macro.clone()]))?;
     let (stage, session) = ctx.stage()?;
     let snap = stage.ensure_snapshot(session, &bundle)?;
     let upload = snap.upload.unwrap_or_default();
@@ -119,6 +125,8 @@ pub fn bundle(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let repaired = !stage.ensure_snapshot(session, &bundle)?.cached;
     let report = run_entry(stage, session, &snap, "main.cmm", Duration::from_secs(30))?;
     let script_wrote = soft(session.macro_get(&main_macro))?.as_deref() == Some("main-ran");
+    let deep = soft(session.macro_get(&deep_macro))?;
+    let deep_ran = deep.as_deref().is_some_and(|v| v.trim_matches('"') == report.token);
 
     ctx.headline("files", Value::Count(bundle.len() as u64));
     ctx.headline("gz", Value::Bytes(upload.gz_bytes));
@@ -128,14 +136,18 @@ pub fn bundle(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     ctx.text("repair", ok(repaired));
     ctx.text("sizes", ok(sizes_ok));
     ctx.measure("outcome", Value::Text(format!("{:?}", report.outcome)));
-    let nested = matches!(&report.outcome, RunOutcome::Finished { rc: 0, ret, .. } if ret.contains("main-ok"));
-    ctx.text("nested_do", ok(nested));
+    let nested = matches!(&report.outcome, RunOutcome::Finished { rc: 0, ret, .. } if ret.contains("chain-ok"));
+    ctx.text("nested_do", ok(nested && deep_ran));
+    ctx.measure("deep_macro", Value::Text(format!("{deep:?}")));
     ctx.headline("idle_dips", Value::Count(report.polls.idle_after_running.into()));
     ctx.measure("polls", Value::Count(report.polls.samples.into()));
     ctx.measure("running_samples", Value::Count(report.polls.running.into()));
     ctx.text("script_write", ok(script_wrote));
-    ctx.check(sizes_ok && cached && repaired && nested && script_wrote, || {
-        format!("bundle: sizes={sizes_ok} cached={cached} repaired={repaired} outcome={:?}", report.outcome)
+    ctx.check(sizes_ok && cached && repaired && nested && deep_ran && script_wrote, || {
+        format!(
+            "bundle: sizes={sizes_ok} cached={cached} repaired={repaired} deep={deep_ran} outcome={:?}",
+            report.outcome
+        )
     })
 }
 
