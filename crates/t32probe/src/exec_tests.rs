@@ -219,5 +219,7 @@ fn verdict_table() {
         verdict_of(Ok(Err(busy)), None),
         (Verdict::Skipped, None, Some(SkipReason::PowerViewBusy { depth: 2 }))
     ));
+    let unwind: ProbeFail = StageError::UnwindFailed { depth: 1 }.into();
+    assert!(matches!(verdict_of(Ok(Err(unwind)), None), (Verdict::Fail, Some(_), None)));
     assert_eq!(verdict_of(Err("x".into()), Some(CancelReason::Interrupt)).0, Verdict::Interrupted);
 }

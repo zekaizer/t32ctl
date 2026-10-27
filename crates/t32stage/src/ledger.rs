@@ -191,7 +191,7 @@ pub(crate) fn unwind_practice(session: &mut Session) -> Result<CleanupOutcome, S
     }
     match stack_depth(session)? {
         0 => Ok(CleanupOutcome::Done),
-        depth => Err(StageError::Busy { depth }),
+        depth => Err(StageError::UnwindFailed { depth }),
     }
 }
 

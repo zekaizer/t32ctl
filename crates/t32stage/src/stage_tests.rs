@@ -159,6 +159,43 @@ fn a_busy_stack_is_refused_and_a_dialog_is_stopped_and_unwound() {
 }
 
 #[test]
+fn a_script_that_outlives_stop_and_end_is_an_unwind_failure_not_busy() {
+    let b = bundle();
+    let dir = format!("C:\\T\\t32ctl\\{}", b.key());
+    let mut s = opened(Script::new().attach());
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
+    s = idle(s, 0);
+    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Entry, "main.cmm");
+    s = set(s, Macro::Args, "");
+    s = set(s, Macro::Token, "tok");
+    s = set(s, Macro::Done, "");
+    s = s.expect_cmd("ERROR.RESet").reply_ok().expect(Expect::CommandStarting("DO ".into())).reply_ok();
+    s = s.expect_req(Request::PracticeState).reply_state(1).expect_req(Request::PracticeState).reply_state(1);
+    s = s.expect_req(Request::Stop).reply_ok().expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
+    for _ in 0..3 {
+        s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1).expect_cmd("END").reply_ok();
+    }
+    s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
+    s = closed(s, true);
+    let mut session = session_with(vec![Ok(s)], |_| {});
+
+    let cfg = config("stage-unwind-failed");
+    let state_dir = cfg.state_dir.clone();
+    let mut st = stage(&mut session, cfg);
+    let snap = st.ensure_snapshot(&mut session, &b).unwrap();
+    let req = RunRequest {
+        entry: RelPath::new("main.cmm").unwrap(),
+        args: vec![],
+        timeout: Duration::ZERO,
+        collect_outputs: false,
+    };
+    assert!(matches!(st.run(&mut session, &snap, &req), Err(StageError::UnwindFailed { depth: 1 })));
+    assert!(st.close(&mut session).is_clean());
+    let _ = std::fs::remove_dir_all(state_dir);
+}
+
+#[test]
 fn an_uncached_snapshot_is_uploaded_inflated_unpacked_and_verified() {
     let b = bundle();
     let key = b.key();

@@ -26,8 +26,13 @@ pub enum StageError {
         path: PathBuf,
         source: io::Error,
     },
-    /// A PRACTICE script is on the stack. Staging never terminates scripts it did not start.
+    /// A PRACTICE script is on the stack before we start one. Staging never terminates scripts
+    /// it did not start.
     Busy {
+        depth: i64,
+    },
+    /// A script this process started is still on the stack after `T32_Stop` and `END`s.
+    UnwindFailed {
         depth: i64,
     },
     SizeMismatch {
@@ -81,6 +86,9 @@ impl fmt::Display for StageError {
             }
             StageError::Journal { path, source } => write!(f, "journal {}: {source}", path.display()),
             StageError::Busy { depth } => write!(f, "PowerView is busy: PRACTICE stack depth {depth}"),
+            StageError::UnwindFailed { depth } => {
+                write!(f, "our PRACTICE script did not end: stack depth {depth} after T32_Stop and END")
+            }
             StageError::SizeMismatch { what, want, got } => {
                 write!(f, "{what}: PowerView has {got} bytes, expected {want}")
             }
