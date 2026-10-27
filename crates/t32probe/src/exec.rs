@@ -108,7 +108,14 @@ impl<'a> Executor<'a> {
         drop(parts.lease);
         self.session.set_cancel(self.env.cancel.clone());
 
-        let (verdict, error, skip) = verdict_of(result, cancelled);
+        let (mut verdict, mut error, skip) = verdict_of(result, cancelled);
+        if let Some(r) = revive.as_ref().filter(|r| !r.ok)
+            && verdict == Verdict::Pass
+        {
+            verdict = Verdict::Fail;
+            let why = r.error.clone().unwrap_or_default();
+            error = Some(ErrorRecord::new("revive", format!("connection not usable after the reconnect: {why}")));
+        }
         self.env.learned = parts.learned;
         if def.id == ProbeId::Connect && verdict == Verdict::Pass {
             self.env.endpoint = Some(self.session.endpoint().clone());
@@ -125,7 +132,6 @@ impl<'a> Executor<'a> {
         Outcome {
             probe: def.id,
             verdict,
-            note: parts.note,
             measurements,
             error,
             skip,
@@ -139,8 +145,11 @@ impl<'a> Executor<'a> {
     fn unmet_prerequisite(&self, def: &ProbeDef) -> Option<SkipReason> {
         def.requires.iter().find_map(|req| {
             let got = self.result.outcomes.iter().find(|o| o.probe == *req)?;
-            (got.verdict != Verdict::Pass)
-                .then(|| SkipReason::Prereq { probe: req.name().into(), verdict: got.verdict })
+            match &got.skip {
+                Some(root @ SkipReason::Prereq { .. }) => Some(root.clone()),
+                _ => (got.verdict != Verdict::Pass)
+                    .then(|| SkipReason::Prereq { probe: req.name().into(), verdict: got.verdict }),
+            }
         })
     }
 

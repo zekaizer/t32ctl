@@ -186,8 +186,6 @@ pub struct Revive {
 pub struct Outcome {
     pub probe: ProbeId,
     pub verdict: Verdict,
-    /// Free text placed before the headline measurements.
-    pub note: Option<String>,
     pub measurements: Vec<Measurement>,
     pub error: Option<ErrorRecord>,
     pub skip: Option<SkipReason>,
@@ -214,7 +212,6 @@ impl Outcome {
         Self {
             probe,
             verdict,
-            note: None,
             measurements: Vec::new(),
             error: None,
             skip: None,
@@ -270,7 +267,7 @@ mod tests {
         o.elapsed = Duration::from_millis(1234);
         assert_eq!(
             serde_json::to_string(&o).unwrap(),
-            r#"{"probe":"vm-rw","verdict":"pass","note":null,"measurements":[{"key":"max","value":{"unit":"bytes","v":1048576},"headline":true},{"key":"w","value":{"unit":"mb_per_sec","v":8.1},"headline":true}],"error":null,"skip":null,"cleanup":[{"what":"restore","result":"restored","clean":true,"manual":null}],"revive":null,"trace":{"requests":2,"bytes_tx":0,"bytes_rx":0,"keepalives":0,"keepalive_raw":["fe00"],"notifies":0,"stale":0,"lossy_text":0},"elapsed_ms":1234.0}"#
+            r#"{"probe":"vm-rw","verdict":"pass","measurements":[{"key":"max","value":{"unit":"bytes","v":1048576},"headline":true},{"key":"w","value":{"unit":"mb_per_sec","v":8.1},"headline":true}],"error":null,"skip":null,"cleanup":[{"what":"restore","result":"restored","clean":true,"manual":null}],"revive":null,"trace":{"requests":2,"bytes_tx":0,"bytes_rx":0,"keepalives":0,"keepalive_raw":["fe00"],"notifies":0,"stale":0,"lossy_text":0},"elapsed_ms":1234.0}"#
         );
     }
 

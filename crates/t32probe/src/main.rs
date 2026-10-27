@@ -3,7 +3,6 @@
 //! `registry`, `exec`, `outcome`, `report` and the library crates.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
-#![allow(dead_code)]
 
 mod cli;
 mod ctx;
@@ -13,6 +12,7 @@ mod outcome;
 mod probes;
 mod registry;
 mod report;
+mod stats;
 
 use std::{
     path::PathBuf,

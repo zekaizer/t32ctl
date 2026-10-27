@@ -143,6 +143,7 @@ impl Env {
 
     pub fn connect_opts(&self) -> ConnectOpts {
         ConnectOpts {
+            attach_idle: self.cfg.idle.min(Duration::from_secs(5)),
             budget: CallBudget::idle(self.cfg.idle).with_total(Duration::from_secs(300)),
             prompt: self.cfg.prompt.clone(),
             cancel: self.cancel.clone(),

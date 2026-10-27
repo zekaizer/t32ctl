@@ -36,7 +36,7 @@ pub(crate) fn test_env(tag: &str) -> Env {
     })
 }
 
-fn connect(scripts: Vec<Result<Script, ConnectFailure>>) -> Session {
+pub(crate) fn connect(scripts: Vec<Result<Script, ConnectFailure>>) -> Session {
     let clock = ManualClock::new();
     let mut c = ScriptedConnector::new(clock.clone());
     for s in scripts {
@@ -125,7 +125,7 @@ fn def(
     }))
 }
 
-fn run(env: &mut Env, session: &mut Session, defs: &[&'static ProbeDef]) -> RunResult {
+pub(crate) fn run(env: &mut Env, session: &mut Session, defs: &[&'static ProbeDef]) -> RunResult {
     let mut seen = Seen::default();
     let r = Executor::new(env, session, &mut seen).run(defs);
     assert_eq!(seen.1, defs.len(), "the observer saw every outcome");

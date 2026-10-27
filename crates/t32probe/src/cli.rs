@@ -69,7 +69,7 @@ pub struct Args {
     pub vm_window: u32,
 
     /// Largest decompressed size the gzip probe tries, in MiB.
-    #[arg(long, default_value_t = 16)]
+    #[arg(long, default_value_t = 8)]
     pub gzip_max_mib: u32,
 
     /// Round trips for the latency probe.

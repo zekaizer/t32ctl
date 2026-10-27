@@ -93,9 +93,8 @@ fn ms(d: Duration) -> String {
 
 pub fn render_line(o: &Outcome, width: usize) -> String {
     let prefix = format!("{:<12} {:<5} ", o.probe.name(), o.verdict.tag());
-    let mut tokens: Vec<String> = o.note.iter().cloned().collect();
-    tokens
-        .extend(o.measurements.iter().filter(|m| m.headline).map(|m| format!("{}={}", m.key, format_value(&m.value))));
+    let mut tokens: Vec<String> =
+        o.measurements.iter().filter(|m| m.headline).map(|m| format!("{}={}", m.key, format_value(&m.value))).collect();
     if let Some(r) = &o.revive {
         tokens.push(format!("revive={}", if r.ok { ms(r.connect) } else { "FAILED".into() }));
         if let Some(f) = r.first_call {
@@ -122,7 +121,7 @@ pub fn render_line(o: &Outcome, width: usize) -> String {
 /// `why:` and `hint:` for a failure; at most two lines.
 pub fn render_extra(o: &Outcome, width: usize) -> Vec<String> {
     let mut out = Vec::new();
-    let has_tokens = o.note.is_some() || o.measurements.iter().any(|m| m.headline) || o.revive.is_some();
+    let has_tokens = o.measurements.iter().any(|m| m.headline) || o.revive.is_some();
     if let Some(e) = &o.error
         && matches!(o.verdict, Verdict::Fail | Verdict::Unsupported | Verdict::Interrupted)
     {
@@ -143,7 +142,7 @@ pub struct Config {
     pub read_chunk: Option<u64>,
     pub write_chunk: Option<u64>,
     pub macro_spelling: Option<String>,
-    pub keepalive_s: Option<f64>,
+    pub keepalive: Option<String>,
     pub exists_fn: Option<String>,
     pub stage_root: Option<String>,
 }
@@ -165,10 +164,7 @@ pub fn config(outcomes: &[Outcome]) -> Config {
         read_chunk: count(ProbeId::VmRw, "chunk_r"),
         write_chunk: count(ProbeId::VmRw, "chunk_w"),
         macro_spelling: text(ProbeId::Macro, "spelling"),
-        keepalive_s: match find(outcomes, ProbeId::Keepalive, "interval") {
-            Some(Value::Seconds(s)) => Some(*s),
-            _ => None,
-        },
+        keepalive: find(outcomes, ProbeId::Keepalive, "interval").map(format_value),
         exists_fn: text(ProbeId::Tempdir, "exists"),
         stage_root: text(ProbeId::Tempdir, "root"),
     }
@@ -180,7 +176,7 @@ fn config_line(c: &Config) -> String {
         format!("read_chunk={}", q(c.read_chunk.map(|n| n.to_string()))),
         format!("write_chunk={}", q(c.write_chunk.map(|n| n.to_string()))),
         format!("macro={}", q(c.macro_spelling.clone())),
-        format!("keepalive={}", q(c.keepalive_s.map(|s| format_value(&Value::Seconds(s))))),
+        format!("keepalive={}", q(c.keepalive.clone())),
         format!("exists={}", q(c.exists_fn.clone())),
         format!("stage_root={}", q(c.stage_root.clone())),
     ];
@@ -245,8 +241,7 @@ pub fn render_text(
             }
             if j - i > 1 {
                 let ids = outcomes[i..j].iter().map(|o| o.probe.name().to_string());
-                let tokens = ids.chain(["<-".to_string()]).chain(words(&why));
-                lines.push(fit(format!("skipped({}): ", j - i), tokens, WIDTH));
+                lines.push(fit(format!("skipped({}) {why}: ", j - i), ids, WIDTH));
                 i = j;
                 continue;
             }
@@ -410,7 +405,7 @@ mod tests {
         let run = RunResult { outcomes, ..RunResult::default() };
         let env = crate::exec::tests::test_env("report");
         let text = render_text(&run, &env, None, &[ProbeId::Dialog], Duration::from_secs(2));
-        assert!(text.contains("skipped(3): version latency clients <- prereq connect FAIL"), "{text}");
+        assert!(text.contains("skipped(3) prereq connect FAIL: version latency clients"), "{text}");
         assert!(text.contains("not run (opt-in): dialog"));
         assert!(text.contains("config      read_chunk=? write_chunk=? macro=?"));
         assert!(text.lines().last().unwrap().starts_with("summary: pass=0 fail=1 unsup=0 skip=3"));

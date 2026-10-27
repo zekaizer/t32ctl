@@ -65,13 +65,11 @@ pub struct ProbeCtx<'a> {
     stage: Option<Stage>,
     lease: Option<VmLease>,
     measurements: Vec<Measurement>,
-    note: Option<String>,
 }
 
 /// What the executor takes back after the probe returned or panicked.
 pub struct Parts {
     pub measurements: Vec<Measurement>,
-    pub note: Option<String>,
     pub ledger: Ledger,
     pub stage: Option<Stage>,
     pub learned: Learned,
@@ -81,17 +79,7 @@ pub struct Parts {
 
 impl<'a> ProbeCtx<'a> {
     pub fn new(session: &'a mut Session, env: &'a Env, probe: ProbeId, ledger: Ledger) -> Self {
-        Self {
-            session,
-            env,
-            probe,
-            ledger,
-            learned: env.learned,
-            stage: None,
-            lease: None,
-            measurements: Vec::new(),
-            note: None,
-        }
+        Self { session, env, probe, ledger, learned: env.learned, stage: None, lease: None, measurements: Vec::new() }
     }
 
     /// JSON only.
@@ -106,10 +94,6 @@ impl<'a> ProbeCtx<'a> {
 
     pub fn text(&mut self, key: &str, value: impl Into<String>) {
         self.headline(key, Value::Text(value.into()));
-    }
-
-    pub fn note(&mut self, text: impl Into<String>) {
-        self.note = Some(text.into());
     }
 
     pub fn check(&self, cond: bool, what: impl FnOnce() -> String) -> Result<(), ProbeFail> {
@@ -172,16 +156,18 @@ impl<'a> ProbeCtx<'a> {
         Ok((self.stage.as_mut().expect("opened above"), &mut *self.session))
     }
 
-    /// `probe-<run id>/<rel>` below the stage root.
-    pub fn path(&mut self, rel: &str) -> Result<StagePath, ProbeFail> {
+    /// `probe-<run id>/<rel>` below the stage root, its removal registered with the stage so it
+    /// unwinds before the stage's directories.
+    pub fn staged_file(&mut self, rel: &str) -> Result<StagePath, ProbeFail> {
         let (stage, _) = self.stage()?;
-        Ok(stage.path(rel)?)
+        let p = stage.path(rel)?;
+        stage.register(Undo::RemoveFile(p.clone()))?;
+        Ok(p)
     }
 
     pub(crate) fn into_parts(self) -> Parts {
         Parts {
             measurements: self.measurements,
-            note: self.note,
             ledger: self.ledger,
             stage: self.stage,
             learned: self.learned,
