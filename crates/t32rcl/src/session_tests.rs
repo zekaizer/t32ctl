@@ -2,7 +2,7 @@
 use std::{
     io::{Read, Write},
     net::TcpListener,
-    sync::Arc,
+    sync::{Arc, mpsc},
     thread,
     time::Duration,
 };
@@ -368,9 +368,11 @@ fn tcp_connect_classifies_closed_silent_foreign_and_closing_peers() {
         let o = ConnectOpts { attach_idle: ms(300), connect_timeout: ms(1000), ..ConnectOpts::default() };
         Session::connect(Endpoint::new("127.0.0.1", port), o).map(drop).unwrap_err()
     };
-    let serve = |reply: Option<&'static [u8]>, linger: Duration| {
+    // `hold`: the peer keeps the connection open until the client has returned.
+    let serve = |reply: Option<&'static [u8]>, hold: bool| {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
+        let (release, held) = mpsc::channel::<()>();
         let h = thread::spawn(move || {
             let (mut c, _) = l.accept().unwrap();
             let mut buf = [0u8; 64];
@@ -378,26 +380,31 @@ fn tcp_connect_classifies_closed_silent_foreign_and_closing_peers() {
             if let Some(r) = reply {
                 let _ = c.write_all(r);
             }
-            thread::sleep(linger);
+            if hold {
+                let _ = held.recv();
+            }
         });
-        (port, h)
+        (port, move || {
+            let _ = release.send(());
+            h.join().unwrap();
+        })
     };
 
     let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     assert_eq!(fast(closed).tag(), "refused");
 
-    let (port, h) = serve(None, ms(600));
+    let (port, done) = serve(None, true);
     assert_eq!(fast(port).tag(), "no-answer");
-    h.join().unwrap();
+    done();
 
-    let (port, h) = serve(Some(b"HTTP/1.1 400 Bad Request\r\n\r\n"), ms(200));
+    let (port, done) = serve(Some(b"HTTP/1.1 400 Bad Request\r\n\r\n"), true);
     match fast(port) {
         ConnectError::NotRcl { evidence: NotRclEvidence::Banner(b), .. } => assert!(b.starts_with("HTTP/1.1 400")),
         other => panic!("{other:?}"),
     }
-    h.join().unwrap();
+    done();
 
-    let (port, h) = serve(None, ms(0));
+    let (port, done) = serve(None, false);
     assert_eq!(fast(port).tag(), "closed-during-attach");
-    h.join().unwrap();
+    done();
 }
