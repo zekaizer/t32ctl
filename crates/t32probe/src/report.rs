@@ -2,11 +2,13 @@
 //! Rendering: two projections of the same outcomes, the paste-back text and the JSON.
 //!
 //! Text contract:
-//! - every line is at most `WIDTH` columns; a long line is cut at a token boundary with `…`;
+//! - every line but a `RESIDUE` command is at most `WIDTH` columns; a long line is cut at a
+//!   token boundary with `…`;
 //! - one line per probe: `<id:12> <TAG:5> <tokens>`, tokens are `key=value` with units;
 //! - a FAIL adds at most two indented lines (`why:`, `hint:`); consecutive SKIPs with one
 //!   reason collapse into `skipped(n): ids  <- reason`;
-//! - `RESIDUE` lines carry the exact PowerView command to type by hand;
+//! - `RESIDUE <probe>: <command>` lines carry the exact PowerView command to type by hand,
+//!   one per line and uncut; a residue without one reads `RESIDUE <probe>: <what> (<result>)`;
 //! - a `config` line with the tunables Phase 1 pins, then a `summary` line.
 
 use std::{
@@ -200,17 +202,15 @@ pub fn header(env: &Env, build: Option<PowerViewBuild>) -> String {
     fit(format!("t32probe {} ", env!("CARGO_PKG_VERSION")), tokens, WIDTH)
 }
 
-/// One line per manual command, so each pastes as one PowerView command.
+/// One line per manual command, never cut: the operator types it, and a cut command is worse
+/// than a long line. A residue without a command gets what and why, cut to the width.
 fn residue_lines(label: &str, records: &[CleanupRecord]) -> Vec<String> {
-    let line = |c: &CleanupRecord, tail: String| {
-        fit(format!("RESIDUE {label}: "), words(&format!("{} {tail}", c.what)), WIDTH)
-    };
     records
         .iter()
         .filter(|c| !c.clean)
         .flat_map(|c| match c.manual.as_deref() {
-            Some(m) => m.lines().map(|cmd| line(c, format!("by hand: {cmd}"))).collect(),
-            None => vec![line(c, format!("({})", c.result))],
+            Some(m) => m.lines().map(|cmd| format!("RESIDUE {label}: {cmd}")).collect(),
+            None => vec![fit(format!("RESIDUE {label}: "), words(&format!("{} ({})", c.what, c.result)), WIDTH)],
         })
         .collect()
 }
@@ -427,6 +427,19 @@ mod tests {
     }
 
     #[test]
+    fn a_residue_line_is_the_whole_command_even_past_the_width() {
+        let path = "C:\\Users\\operator\\AppData\\Local\\Temp\\t32ctl\\probe-a41c-literal\\with space\\x y.bin";
+        let rm = format!("RM \"{path}\"");
+        let rec = CleanupRecord {
+            what: format!("remove file {path}"),
+            result: "failed: still present after removal".into(),
+            clean: false,
+            manual: Some(rm.clone()),
+        };
+        assert_eq!(residue_lines("tempdir", &[rec]), [format!("RESIDUE tempdir: {rm}")]);
+    }
+
+    #[test]
     fn residue_lines_carry_the_manual_command() {
         let mut o = Outcome::new(ProbeId::Tempdir, Verdict::Pass);
         o.cleanup.push(CleanupRecord {
@@ -435,11 +448,14 @@ mod tests {
             clean: false,
             manual: Some("RM \"C:\\x\"".into()),
         });
-        assert_eq!(residue_lines("tempdir", &o.cleanup), ["RESIDUE tempdir: remove file x by hand: RM \"C:\\x\""]);
+        assert_eq!(residue_lines("tempdir", &o.cleanup), ["RESIDUE tempdir: RM \"C:\\x\""]);
         assert!(line(&o).ends_with("residue=1"));
         o.cleanup[0].manual = Some("Data.CLEARVM VM:0x1000++0xFFF\nData.CLEARVM VM:0x3000++0xFFF".into());
-        let lines = residue_lines("vm-rw", &o.cleanup);
-        assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[1].ends_with("by hand: Data.CLEARVM VM:0x3000++0xFFF"), "{lines:?}");
+        assert_eq!(
+            residue_lines("vm-rw", &o.cleanup),
+            ["RESIDUE vm-rw: Data.CLEARVM VM:0x1000++0xFFF", "RESIDUE vm-rw: Data.CLEARVM VM:0x3000++0xFFF"]
+        );
+        o.cleanup[0].manual = None;
+        assert_eq!(residue_lines("macro", &o.cleanup), ["RESIDUE macro: remove file x (failed: busy)"]);
     }
 }

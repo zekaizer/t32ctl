@@ -127,7 +127,7 @@ pub struct CleanupRecord {
     pub what: String,
     pub result: String,
     pub clean: bool,
-    /// What to type into PowerView by hand when not clean.
+    /// What to type into PowerView by hand when not clean, one command per line.
     pub manual: Option<String>,
 }
 

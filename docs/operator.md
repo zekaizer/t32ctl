@@ -70,8 +70,10 @@ summary: pass=10 fail=1 unsup=0 skip=3 intr=0 | cleanup=clean | 38.2s | exit=1
 - `revive=` and `first_call=` appear when a probe left the connection dead and the run reconnected
   once; `first_call` is the first request on the new connection.
 - `restore=ok` means the `VM:` contents were written back and verified.
-- `RESIDUE <probe>: <what> by hand: <command>` lines name anything cleanup could not remove and
-  the exact PowerView command to remove it.
+- `RESIDUE <probe>: <command>` lines give, one per line and never cut, the exact PowerView
+  command that removes what cleanup could not. Where no command can undo it (a cleared macro, a
+  `VM:` unit that would not take its old bytes back), the line reads
+  `RESIDUE <probe>: <what> (<result>)`.
 - The `config` line holds the values Phase 1 pins from this run: memory chunk sizes, the EXP 2
   macro name spelling, the keepalive interval, the file-exists function and the stage-root mode.
   `?` means not measured.
