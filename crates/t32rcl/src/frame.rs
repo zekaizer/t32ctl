@@ -66,6 +66,7 @@ impl Framer {
     }
 
     /// Next complete frame including its pad, `Ok(None)` if more bytes are needed.
+    /// ASSUMED(connect): PowerView always sends the pad, as both references expect.
     /// An error is terminal for the stream; the caller poisons the link.
     pub fn next_frame(&mut self) -> Result<Option<Frame>, Violation> {
         let Some(header) = self.buf.get(..HEADER_LEN) else { return Ok(None) };

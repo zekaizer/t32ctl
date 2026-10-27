@@ -166,7 +166,8 @@ pub enum RestoreOutcome {
 
 impl VmSnapshot {
     /// Read the region unit by unit. A unit PowerView refuses (`MemoryAccess`) is recorded as
-    /// uninitialized; any other error aborts.
+    /// uninitialized; any other error aborts. ASSUMED(vm-rw): reading never-initialized `VM:`
+    /// fails rather than returning zeros (`vm_uninit_units`).
     pub fn capture(session: &mut Session, region: VmRegion) -> Result<Self, StageError> {
         let mut chunks = Vec::new();
         let mut off = 0;

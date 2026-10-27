@@ -200,6 +200,7 @@ impl Stage {
             }
         }
 
+        // ASSUMED(gzip): `/UNZIP` refuses a corrupt stream; that is the bundle's integrity check.
         let tmp = self.path(&format!("{key}.gz"))?;
         self.ledger.push(Undo::RemoveFile(tmp.clone()))?;
         transfer::put_file(session, &a, &packed.gz, &tmp)?;
@@ -405,6 +406,8 @@ impl Stage {
             self.ledger.push(Undo::UnwindPractice)?;
             self.unwind_registered = true;
         }
+        // ASSUMED(bundle): `DO` over ExecuteCommand returns while the script runs; if it returns
+        // at the end instead, the first poll sees the token and the outcome is the same.
         session.cmd(&cmd::do_script(script))?;
         let mut watch = ScriptWatch::new(timeout, self.cfg.poll, Instant::now());
         loop {
@@ -463,6 +466,8 @@ fn finished(session: &mut Session) -> Result<RunOutcome, StageError> {
 }
 
 /// Best effort: a halt is reported even when the error text cannot be read.
+/// ASSUMED(script-error): `EVAL ERROR.MESSAGE()` + EvalGetString reads the halting error, the
+/// way pyrcl reads `ERROR.*`.
 fn halt_error(session: &mut Session) -> Option<PracticeErrorInfo> {
     let message = session.eval_string(fnc::ERROR_MESSAGE).ok()?;
     let cmdline = session.eval_string(fnc::ERROR_CMDLINE).unwrap_or_default();

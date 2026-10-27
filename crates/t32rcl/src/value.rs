@@ -52,7 +52,7 @@ impl Default for CallBudget {
     }
 }
 
-/// How EXP 2 names a global macro on the wire. Not documented; `t32probe macro` measures it.
+/// How EXP 2 names a global macro on the wire. ASSUMED(macro): `Bare`; the probe tries both.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum MacroSpelling {
     /// `name`, as pyrcl's `get_macro(name)` passes whatever the caller gave.

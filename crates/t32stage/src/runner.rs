@@ -164,6 +164,7 @@ pub(crate) enum IdleVerdict {
 }
 
 /// Pure state machine over `GetPracticeState` samples; every method takes `now`.
+/// ASSUMED(dialog): a modal dialog reads as state 2 and `T32_Stop` ends the wait.
 #[derive(Debug)]
 pub(crate) struct ScriptWatch {
     timeout: Duration,

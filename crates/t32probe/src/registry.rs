@@ -137,7 +137,7 @@ probes! {
     MultiClient = "multi-client", Tier::OptIn(MultiClient), [Bundle], true, 60, optin::multi_client,
         "second connection: NrUsedCons, latency of B while A runs a long DO";
     RunControl = "run-control", Tier::OptIn(RunControl), [Tempdir], true, 60, optin::run_control,
-        "Go <symbol> with timeout, Break, breakpoint list unchanged (changes target state)";
+        "Go to --symbol with a timeout, Break, breakpoint list unchanged (changes target state)";
     ElfUnzip = "elf-unzip", Tier::OptIn(Elf), [Gzip, Tempdir], true, 240, optin::elf_unzip,
         "Data.LOAD.Elf x.elf.gz /UNZIP and the VM: fallback; symbols only";
 }

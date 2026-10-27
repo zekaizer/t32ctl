@@ -11,6 +11,7 @@ use crate::{error::TimeoutKind, value::CallBudget};
 /// references treat it as keepalive too, so `Trace::keepalive_raw` keeps the bytes for review.
 pub(crate) const T32_API_KEEPALIVE: u8 = 0xFE;
 /// Ids are `counter % 255`: 1..=254, then 0. 255 is never sent (t32api.rs, hlinknet.py).
+/// ASSUMED(latency): PowerView accepts id 0; the probe's round trips cross the wrap.
 const ID_CYCLE: u16 = 255;
 /// A response up to this many ids behind the outstanding request is stale, not a desync.
 const STALE_WINDOW: u8 = 16;

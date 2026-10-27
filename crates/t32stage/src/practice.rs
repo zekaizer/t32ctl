@@ -211,7 +211,8 @@ impl fmt::Display for StagePath {
 }
 
 /// The function that tells whether a file exists. Which spellings DVD 02/2024 accepts is not in
-/// the manuals' text; `t32probe tempdir` measures all three and the `config` line reports one.
+/// the manuals' text. ASSUMED(tempdir): the default answers; the probe tries all three and the
+/// `config` line reports the one that works.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ExistsFn {
     #[default]
@@ -330,6 +331,7 @@ pub mod cmd {
         format!("Data.LOAD.Binary {} VM:0x{at:08X}{z}", src.quoted())
     }
 
+    /// ASSUMED(vm-rw): present on DVD 02/2024; without it an uninitialized unit stays residue.
     pub fn clear_vm(r: &VmRegion) -> String {
         format!("Data.CLEARVM {}", vm_range(r))
     }
@@ -340,6 +342,7 @@ pub mod cmd {
         format!("TAR {} \"{}\\*\"", archive.quoted(), dir.text())
     }
 
+    /// ASSUMED(tar-download): the output is plain gzip that `transfer::gunzip` reads.
     pub fn zip(src: &StagePath, dest: &StagePath) -> String {
         format!("ZIP {} {}", src.quoted(), dest.quoted())
     }
@@ -356,12 +359,14 @@ pub mod cmd {
 
     /// `Data.LOAD.Elf <file> [/UNZIP] /NoCODE /NoReg`: symbols only, target memory and registers
     /// are never written.
+    /// ASSUMED(elf-unzip): `/UNZIP` exists for `Data.LOAD.Elf` (release history 21-Oct-2024).
     pub fn load_elf_symbols(file: &StagePath, unzip: bool) -> String {
         let z = if unzip { " /UNZIP" } else { "" };
         format!("Data.LOAD.Elf {}{z} /NoCODE /NoReg", file.quoted())
     }
 
     /// The current breakpoint list as a script (ide_ref `STOre ~~~\my-store.cmm Break Analyzer`).
+    /// ASSUMED(run-control): two lists differ only when breakpoints differ, comments aside.
     pub fn store_breakpoints(file: &StagePath) -> String {
         format!("STOre {} Break", file.quoted())
     }
@@ -375,8 +380,11 @@ pub mod cmd {
 pub mod fnc {
     use super::*;
 
+    /// Short form of `OS.PresentTemporaryDirectory()` (ide_ref). ASSUMED(tempdir): the short form
+    /// answers on DVD 02/2024.
     pub const PTD: &str = "OS.PTD()";
     /// pyrcl `_functions.py` and t32mcp spell it this way; rcl.py uses `PRACTICE.SD()`.
+    /// ASSUMED(tempdir): answers over ExecuteFunction (`depth_fn`).
     pub const STACK_DEPTH: &str = "PRACTICE.StackDepth()";
     pub const ERROR_MESSAGE: &str = "ERROR.MESSAGE()";
     pub const ERROR_CMDLINE: &str = "ERROR.CMDLINE()";
