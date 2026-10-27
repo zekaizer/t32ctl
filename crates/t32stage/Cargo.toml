@@ -12,6 +12,10 @@ workspace = true
 
 [dependencies]
 t32rcl.workspace = true
+flate2.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 t32rcl = { workspace = true, features = ["testkit"] }
+# Oracle only: builds reference archives that the tar walker must read.
+tar = "0.4"

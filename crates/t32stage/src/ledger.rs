@@ -105,26 +105,7 @@ impl Undo {
                     Ok(CleanupOutcome::Failed(format!("{} uninitialized units could not be cleared", regions.len())))
                 }
             },
-            Undo::UnwindPractice => {
-                let running = session.practice_state()? != PracticeState::Idle;
-                if running {
-                    session.stop_practice()?;
-                }
-                let depth = |s: &mut Session| s.eval(fnc::STACK_DEPTH)?.into_int(fnc::STACK_DEPTH);
-                if depth(session)? == 0 && !running {
-                    return Ok(CleanupOutcome::AlreadyClean);
-                }
-                for _ in 0..3 {
-                    if depth(session)? == 0 {
-                        return Ok(CleanupOutcome::Done);
-                    }
-                    session.cmd(cmd::END)?;
-                }
-                match depth(session)? {
-                    0 => Ok(CleanupOutcome::Done),
-                    d => Err(StageError::Busy { depth: d }),
-                }
-            }
+            Undo::UnwindPractice => unwind_practice(session),
             Undo::ClearMacros(names) => {
                 for n in names {
                     session.macro_set(n, "")?;
@@ -180,6 +161,32 @@ impl Undo {
             _ => None,
         }
     }
+}
+
+/// `T32_Stop` if a script runs, then `END` until the stack is empty. Only for callers that saw an
+/// empty stack before they started their own script.
+pub(crate) fn unwind_practice(session: &mut Session) -> Result<CleanupOutcome, StageError> {
+    let running = session.practice_state()? != PracticeState::Idle;
+    if running {
+        session.stop_practice()?;
+    }
+    if stack_depth(session)? == 0 && !running {
+        return Ok(CleanupOutcome::AlreadyClean);
+    }
+    for _ in 0..3 {
+        if stack_depth(session)? == 0 {
+            return Ok(CleanupOutcome::Done);
+        }
+        session.cmd(cmd::END)?;
+    }
+    match stack_depth(session)? {
+        0 => Ok(CleanupOutcome::Done),
+        depth => Err(StageError::Busy { depth }),
+    }
+}
+
+pub(crate) fn stack_depth(session: &mut Session) -> Result<i64, StageError> {
+    Ok(session.eval(fnc::STACK_DEPTH)?.into_int(fnc::STACK_DEPTH)?)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

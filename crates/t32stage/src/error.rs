@@ -13,6 +13,14 @@ pub enum StageError {
     Arg(ArgError),
     Vm(VmError),
     Lease(LeaseError),
+    Bundle(BundleError),
+    Tar(TarError),
+    Gzip(io::Error),
+    /// The unpack script ended but the snapshot is not complete.
+    UnpackIncomplete {
+        key: String,
+        detail: String,
+    },
     /// The write-ahead journal could not be written, so the side effect was not started.
     Journal {
         path: PathBuf,
@@ -43,7 +51,7 @@ impl StageError {
     pub fn class(&self) -> ErrorClass {
         match self {
             StageError::Rcl(e) => e.class(),
-            StageError::Path(_) | StageError::Arg(_) | StageError::Vm(_) => ErrorClass::Usage,
+            StageError::Path(_) | StageError::Arg(_) | StageError::Vm(_) | StageError::Bundle(_) => ErrorClass::Usage,
             _ => ErrorClass::Rejected,
         }
     }
@@ -65,6 +73,12 @@ impl fmt::Display for StageError {
             StageError::Arg(e) => e.fmt(f),
             StageError::Vm(e) => e.fmt(f),
             StageError::Lease(e) => e.fmt(f),
+            StageError::Bundle(e) => e.fmt(f),
+            StageError::Tar(e) => e.fmt(f),
+            StageError::Gzip(e) => write!(f, "gzip: {e}"),
+            StageError::UnpackIncomplete { key, detail } => {
+                write!(f, "snapshot {key} incomplete after unpack: {detail}")
+            }
             StageError::Journal { path, source } => write!(f, "journal {}: {source}", path.display()),
             StageError::Busy { depth } => write!(f, "PowerView is busy: PRACTICE stack depth {depth}"),
             StageError::SizeMismatch { what, want, got } => {
@@ -80,7 +94,8 @@ impl StdError for StageError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             StageError::Rcl(e) => Some(e),
-            StageError::Journal { source, .. } => Some(source),
+            StageError::Journal { source, .. } | StageError::Gzip(source) => Some(source),
+            StageError::Bundle(BundleError::Io { source, .. }) => Some(source),
             _ => None,
         }
     }
@@ -96,7 +111,7 @@ macro_rules! from {
     )+};
 }
 
-from!(t32rcl::Error => Rcl, PathError => Path, ArgError => Arg, VmError => Vm, LeaseError => Lease);
+from!(t32rcl::Error => Rcl, PathError => Path, ArgError => Arg, VmError => Vm, LeaseError => Lease, BundleError => Bundle, TarError => Tar);
 
 impl From<t32rcl::LocalError> for StageError {
     fn from(e: t32rcl::LocalError) -> Self {
@@ -197,3 +212,78 @@ impl fmt::Display for LeaseError {
 }
 
 impl StdError for LeaseError {}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum BundleError {
+    Path(PathError),
+    ReservedPrefix(String),
+    /// Equal under ASCII case folding: one file on Windows.
+    CaseCollision {
+        a: String,
+        b: String,
+    },
+    /// One path is a file and a directory prefix of the other.
+    FileDirConflict {
+        a: String,
+        b: String,
+    },
+    TooLarge {
+        files: usize,
+        bytes: u64,
+    },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
+    NotRegular(PathBuf),
+    FileName(PathBuf),
+}
+
+impl fmt::Display for BundleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BundleError::Path(e) => e.fmt(f),
+            BundleError::ReservedPrefix(p) => write!(f, "{p} is reserved for generated files"),
+            BundleError::CaseCollision { a, b } => write!(f, "{a} and {b} differ only in case"),
+            BundleError::FileDirConflict { a, b } => {
+                write!(f, "{a} and {b}: one is a file and a directory of the other")
+            }
+            BundleError::TooLarge { files, bytes } => {
+                write!(f, "bundle of {files} files / {bytes} bytes exceeds the limits")
+            }
+            BundleError::Io { path, source } => write!(f, "{}: {source}", path.display()),
+            BundleError::NotRegular(p) => {
+                write!(f, "{} is a symlink or special file; only regular files are bundled", p.display())
+            }
+            BundleError::FileName(p) => write!(f, "{} is not valid UTF-8", p.display()),
+        }
+    }
+}
+
+impl StdError for BundleError {}
+
+impl From<PathError> for BundleError {
+    fn from(e: PathError) -> Self {
+        BundleError::Path(e)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TarError {
+    Header { offset: usize, reason: &'static str },
+    Truncated { name: String },
+    UnsafeName(String),
+}
+
+impl fmt::Display for TarError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TarError::Header { offset, reason } => write!(f, "tar header at offset {offset}: {reason}"),
+            TarError::Truncated { name } => write!(f, "tar entry {name:?} runs past the end of the archive"),
+            TarError::UnsafeName(n) => write!(f, "tar entry name {n:?} escapes the extraction root"),
+        }
+    }
+}
+
+impl StdError for TarError {}
