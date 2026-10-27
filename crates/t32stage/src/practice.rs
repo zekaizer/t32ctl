@@ -190,23 +190,20 @@ impl StagePath {
         }
     }
 
-    /// `"<text>"`, ready for a command or a function argument.
+    /// `"<text>"`, ready for a command or a function argument. Also what an operator types by
+    /// hand: `&t32ctl_root` stays bound in PowerView, since cleanup never clears it.
     pub fn quoted(&self) -> String {
         format!("\"{}\"", self.text())
     }
-
-    /// What an operator types to reach this by hand.
-    pub fn manual_hint(&self) -> String {
-        match &self.root {
-            StageRoot::Literal(_) => self.text(),
-            StageRoot::Macro => format!("<OS.PTD()>\\{ROOT_DIR}\\{}", self.rel.as_str().replace('/', "\\")),
-        }
-    }
 }
 
+/// For people: the root macro is spelled out as `<OS.PTD()>\t32ctl`.
 impl fmt::Display for StagePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.manual_hint())
+        match &self.root {
+            StageRoot::Literal(_) => f.write_str(&self.text()),
+            StageRoot::Macro => write!(f, "<OS.PTD()>\\{ROOT_DIR}\\{}", self.rel.as_str().replace('/', "\\")),
+        }
     }
 }
 
@@ -461,7 +458,7 @@ mod tests {
         assert_eq!(mac, StageRoot::Macro);
         let p = mac.path(rel("k/a.bin"));
         assert_eq!(p.quoted(), "\"&t32ctl_root\\k\\a.bin\"");
-        assert_eq!(p.manual_hint(), "<OS.PTD()>\\t32ctl\\k\\a.bin");
+        assert_eq!(p.to_string(), "<OS.PTD()>\\t32ctl\\k\\a.bin");
     }
 
     #[test]

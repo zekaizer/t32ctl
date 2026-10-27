@@ -161,3 +161,11 @@ fn a_withdrawn_unwind_leaves_memory_and_the_journal() {
     ledger.discard();
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn manual_commands_are_typeable_in_both_root_modes() {
+    let mac = StageRoot::Macro.path(RelPath::new("probe-1/x y.bin").unwrap());
+    assert_eq!(Undo::RemoveFile(mac.clone()).manual_hint().as_deref(), Some("RM \"&t32ctl_root\\probe-1\\x y.bin\""));
+    assert_eq!(Undo::RemoveFile(file("x.bin")).manual_hint().as_deref(), Some("RM \"C:\\T\\t32ctl\\x.bin\""));
+    assert_eq!(mac.to_string(), "<OS.PTD()>\\t32ctl\\probe-1\\x y.bin", "descriptions stay readable");
+}

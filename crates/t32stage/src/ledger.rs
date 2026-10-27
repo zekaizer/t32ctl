@@ -60,8 +60,8 @@ impl Undo {
     /// What an operator types into PowerView if this undo could not run, one command per line.
     pub fn manual_hint(&self) -> Option<String> {
         match self {
-            Undo::RemoveFile(p) => Some(format!("RM \"{}\"", p.manual_hint())),
-            Undo::RemoveDir(p) => Some(format!("RMDIR \"{}\"", p.manual_hint())),
+            Undo::RemoveFile(p) => Some(cmd::rm(p)),
+            Undo::RemoveDir(p) => Some(cmd::rmdir(p)),
             Undo::UnwindPractice => Some(cmd::END.to_string()),
             Undo::BreakTarget => Some(cmd::BREAK.to_string()),
             Undo::RestoreVm(s) => {
