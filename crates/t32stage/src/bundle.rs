@@ -286,25 +286,66 @@ mod tests {
 
     use super::*;
 
-    /// Applies the `MKDIR`, `Data.SAVE.Binary` and `OPEN` lines of a generated script to a blob.
-    /// Understands only the forms `render_unpack` emits: it checks offset arithmetic, not
-    /// PowerView behavior.
+    fn quoted_path(line: &str) -> String {
+        line.split('"').nth(1).expect("quoted path").replace("&t32ctl_snap\\", "").replace('\\', "/")
+    }
+
+    /// Applies the `Data.SAVE.Binary` and `OPEN` lines of a generated script to a blob, and checks
+    /// that each size check right after a save expects that file's length. Understands only the
+    /// forms `render_unpack` emits: it checks offset arithmetic, not PowerView behavior.
     fn replay(script: &str, blob: &[u8], b_start: u32) -> BTreeMap<String, Vec<u8>> {
-        let path =
-            |line: &str| line.split('"').nth(1).expect("quoted path").replace("&t32ctl_snap\\", "").replace('\\', "/");
         let mut out = BTreeMap::new();
+        let mut saved: Option<(String, usize)> = None;
         for line in script.lines() {
             if line.starts_with("Data.SAVE.Binary") {
                 let range = line.rsplit(' ').next().expect("range").strip_prefix("VM:0x").expect("VM range");
                 let (a, n) = range.split_once("++0x").expect("++ form");
                 let a = u32::from_str_radix(a, 16).unwrap() - b_start;
                 let n = u32::from_str_radix(n, 16).unwrap() + 1;
-                out.insert(path(line), blob[a as usize..(a + n) as usize].to_vec());
+                out.insert(quoted_path(line), blob[a as usize..(a + n) as usize].to_vec());
+                saved = Some((quoted_path(line), n as usize));
+            } else if let Some(want) = line.strip_prefix("IF OS.FILE.SIZE(") {
+                let (path, len) = saved.take().expect("a size check follows a save");
+                assert_eq!(quoted_path(line), path, "{line}");
+                let literal = want.rsplit_once("!=0x").expect("hex size").1;
+                assert_eq!(usize::from_str_radix(literal, 16).unwrap(), len, "{line}");
             } else if line.starts_with("OPEN #1") {
-                out.insert(path(line), Vec::new());
+                out.insert(quoted_path(line), Vec::new());
             }
         }
         out
+    }
+
+    /// Statements from `label:` to the next `ENDDO`, following `GOTO`.
+    fn path_from<'a>(script: &'a str, label: &str) -> Vec<&'a str> {
+        let lines: Vec<&str> = script.lines().collect();
+        let at = |l: &str| lines.iter().position(|x| *x == format!("{l}:")).unwrap_or_else(|| panic!("label {l}"));
+        let (mut i, mut out) = (at(label) + 1, Vec::new());
+        while lines[i] != "ENDDO" {
+            match lines[i].strip_prefix("GOTO ") {
+                Some(next) => i = at(next) + 1,
+                None => {
+                    out.push(lines[i]);
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn unpack_traps_errors_and_both_failure_paths_end_with_rc_1_and_the_token() {
+        let text = sample(&FILES).pack(0x0200_0000).unpack_text;
+        let handler = text.lines().nth(1).and_then(|l| l.strip_prefix("ON ERROR JUMPTO ")).expect("handler first");
+        for label in [handler, "t32ctl_unpack_badsize"] {
+            let path = path_from(&text, label);
+            assert!(path.contains(&"&t32ctl_rc=\"1\""), "{label}: {path:?}");
+            assert_eq!(path.last(), Some(&"&t32ctl_done=\"&t32ctl_token\""), "{label}: {path:?}");
+        }
+        assert!(text.lines().filter(|l| l.starts_with("IF OS.FILE.SIZE(")).count() >= FILES.len());
+        for goto in text.lines().filter_map(|l| l.trim().strip_prefix("GOTO ")) {
+            path_from(&text, goto);
+        }
     }
 
     fn gunzip(gz: &[u8]) -> Vec<u8> {
