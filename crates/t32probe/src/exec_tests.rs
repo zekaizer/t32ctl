@@ -134,6 +134,12 @@ fn opens_a_stage(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     Ok(())
 }
 
+fn snapshots_then_hangs(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+    crate::probes::scratch_regions(ctx, &[16])?;
+    ctx.session.cmd("WAIT 99.s")?;
+    Ok(())
+}
+
 fn kills(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     ctx.session.cmd("X")?;
     Ok(())
@@ -219,6 +225,29 @@ fn probe_deadlines_run_on_the_session_clock() {
     let mut env = test_env("exec-clock");
     let r = run(&mut env, &mut session, &[def(ProbeId::Version, &[], 5, calls_once)]);
     assert_eq!(r.outcomes[0].verdict, Verdict::Pass, "{:?}", r.outcomes[0]);
+}
+
+#[test]
+fn a_probe_past_its_deadline_still_gets_its_vm_restored_and_verified() {
+    let vm = |len| Request::MemRead { access: "VM".into(), addr: 0x0100_0000, len };
+    let prior = [0x11; 16];
+    let first = Script::new().attach().expect_req(vm(16)).reply_mem(&prior);
+    let first = first.expect_cmd("WAIT 99.s").silence(Duration::from_secs(6));
+    let second = Script::new().attach().expect_fn("TRUE()").reply_bool(true);
+    let second = second
+        .expect_req(Request::MemWrite { access: "VM".into(), addr: 0x0100_0000, data: prior.to_vec() })
+        .reply_ok()
+        .expect_req(vm(16))
+        .reply_mem(&prior);
+    let mut session = connect(vec![Ok(first), Ok(second)]);
+    let mut env = test_env("exec-restore");
+    let r = run(&mut env, &mut session, &[def(ProbeId::VmRw, &[], 5, snapshots_then_hangs)]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.error.as_ref().map(|e| e.tag.as_str()), Some("deadline"));
+    assert!(o.revive.as_ref().is_some_and(|v| v.ok), "{:?}", o.revive);
+    let restore: Vec<_> = o.cleanup.iter().filter(|c| c.what.starts_with("restore VM:0x1000000")).collect();
+    assert!(matches!(restore.as_slice(), [c] if c.clean && c.result == "restored"), "{:?}", o.cleanup);
+    assert!(crate::report::render_line(o, crate::report::WIDTH).contains("restore=ok"));
 }
 
 #[test]
