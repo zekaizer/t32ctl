@@ -69,7 +69,8 @@ path copies a fresh token into `&t32ctl_done`. The client polls `GetPracticeStat
 idle it compares the token. `GetPracticeState` reads 0 for a script halted at an error although
 the script is still on the stack, so stack depth alone cannot prove completion; the token can.
 State 2 (dialog) is answered with `T32_Stop` and an unwind. Runs start only on an empty PRACTICE
-stack, so the unwinding `END` can only end scripts t32stage started.
+stack, and the unwind stays pending only until the stack is seen empty again, so the unwinding
+`END` can only end scripts t32stage started.
 
 The stage root is resolved once per `Stage`: the literal `OS.PTD()\t32ctl` path when that text is
 ASCII-safe, otherwise the macro `&t32ctl_root`, which PowerView computes and expands itself so a

@@ -105,7 +105,6 @@ pub struct Stage {
     _lease: VmLease,
     ledger: Ledger,
     claimed_end: u32,
-    unwind_registered: bool,
     #[cfg(test)]
     pub(crate) fixed_token: Option<String>,
 }
@@ -123,7 +122,6 @@ impl Stage {
             _lease: lease,
             ledger,
             claimed_end,
-            unwind_registered: false,
             #[cfg(test)]
             fixed_token: None,
         };
@@ -392,6 +390,8 @@ impl Stage {
     }
 
     /// Token protocol around `DO <script>`; the stack is unwound on every outcome but `Finished`.
+    /// The unwind is registered right before `DO` and withdrawn once the stack is seen empty, so
+    /// `close` never ends a script someone else started later.
     fn execute_with(
         &mut self,
         session: &mut Session,
@@ -402,28 +402,26 @@ impl Stage {
         session.macro_set(&Macro::Token.name(), token)?;
         session.macro_set(&Macro::Done.name(), "")?;
         session.cmd(cmd::ERROR_RESET)?;
-        if !self.unwind_registered {
-            self.ledger.push(Undo::UnwindPractice)?;
-            self.unwind_registered = true;
-        }
+        self.ledger.push(Undo::UnwindPractice)?;
         // ASSUMED(bundle): `DO` over ExecuteCommand returns while the script runs; if it returns
         // at the end instead, the first poll sees the token and the outcome is the same.
         session.cmd(&cmd::do_script(script))?;
         let mut watch = ScriptWatch::new(timeout, self.cfg.poll, Instant::now());
         loop {
             let state = session.practice_state()?;
-            let outcome = match watch.on_state(Instant::now(), state) {
+            // `empty`: the stack was seen empty after our script, by a read or a finished unwind.
+            let (outcome, empty) = match watch.on_state(Instant::now(), state) {
                 Next::PollAfter(d) => {
                     thread::sleep(d);
                     continue;
                 }
                 Next::Stop => {
                     unwind_practice(session)?;
-                    RunOutcome::DialogAborted
+                    (RunOutcome::DialogAborted, true)
                 }
                 Next::TimedOut => {
                     unwind_practice(session)?;
-                    RunOutcome::TimedOut { last_state: state }
+                    (RunOutcome::TimedOut { last_state: state }, true)
                 }
                 Next::NeedIdleDetail => {
                     let done = unquote(&session.macro_get(&Macro::Done.name())?) == token;
@@ -433,16 +431,19 @@ impl Stage {
                             thread::sleep(d);
                             continue;
                         }
-                        IdleVerdict::Finished => finished(session)?,
+                        IdleVerdict::Finished => (finished(session)?, depth == 0),
                         IdleVerdict::Halted => {
                             let error = halt_error(session);
                             unwind_practice(session)?;
-                            RunOutcome::Halted { error }
+                            (RunOutcome::Halted { error }, true)
                         }
-                        IdleVerdict::Vanished => RunOutcome::Vanished,
+                        IdleVerdict::Vanished => (RunOutcome::Vanished, true),
                     }
                 }
             };
+            if empty {
+                self.ledger.withdraw_unwind()?;
+            }
             return Ok((outcome, watch.stats));
         }
     }

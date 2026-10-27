@@ -148,3 +148,16 @@ fn a_crashed_break_is_reported_not_executed_on_replay() {
     assert!(!dir.join("journal/crashed.undo").exists());
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_withdrawn_unwind_leaves_memory_and_the_journal() {
+    let dir = temp_dir("journal-withdraw");
+    let mut ledger = Ledger::journaled(Journal::create(&dir, "run").unwrap(), ExistsFn::OsFileReadable);
+    ledger.push(Undo::RemoveFile(file("k/a.bin"))).unwrap();
+    ledger.push(Undo::UnwindPractice).unwrap();
+    ledger.withdraw_unwind().unwrap();
+    assert_eq!(fs::read_to_string(dir.join("journal/run.undo")).unwrap(), "rm-file\tLC:\\T\\t32ctl\tk/a.bin\n");
+    assert!(matches!(ledger.pending(), [Undo::RemoveFile(_)]));
+    ledger.discard();
+    let _ = fs::remove_dir_all(dir);
+}

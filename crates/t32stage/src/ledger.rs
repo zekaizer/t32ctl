@@ -33,8 +33,9 @@ pub enum Undo {
     RemoveDir(StagePath),
     /// Write the snapshot back and verify.
     RestoreVm(VmSnapshot),
-    /// `T32_Stop` if running, then `END` while the stack is not empty. Registered only after the
-    /// stack was verified empty, so it can only end scripts this process started.
+    /// `T32_Stop` if running, then `END` while the stack is not empty. Registered after the stack
+    /// was verified empty and right before our `DO`, and withdrawn once the stack is seen empty
+    /// again, so it can only end scripts this process started.
     UnwindPractice,
     /// Set each macro to the empty string: macros cannot be deleted over RCL.
     ClearMacros(Vec<MacroName>),
@@ -341,6 +342,19 @@ impl Ledger {
             j.write(&lines)?;
         }
         self.pending.push(undo);
+        Ok(())
+    }
+
+    /// Withdraw the newest `UnwindPractice` once our script is gone from the stack. Journal first;
+    /// a failed write leaves the undo pending.
+    pub(crate) fn withdraw_unwind(&mut self) -> Result<(), StageError> {
+        let Some(i) = self.pending.iter().rposition(|u| matches!(u, Undo::UnwindPractice)) else { return Ok(()) };
+        if let Some(j) = self.journal.as_mut() {
+            let lines: Vec<String> =
+                self.pending.iter().enumerate().filter(|(k, _)| *k != i).filter_map(|(_, u)| u.to_line()).collect();
+            j.write(&lines)?;
+        }
+        self.pending.remove(i);
         Ok(())
     }
 

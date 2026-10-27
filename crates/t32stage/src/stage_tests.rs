@@ -98,7 +98,7 @@ fn a_cached_snapshot_costs_one_call_and_a_run_finishes_by_token() {
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "a 0x10");
     s = executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "\"0\"", "7.");
-    s = closed(s, true);
+    s = closed(s, false);
     let mut session = session_with(vec![Ok(s)], |_| {});
 
     let cfg = config("stage-cached");
@@ -122,6 +122,37 @@ fn a_cached_snapshot_costs_one_call_and_a_run_finishes_by_token() {
 }
 
 #[test]
+fn an_operator_script_started_after_our_run_is_never_unwound() {
+    let b = bundle();
+    let dir = format!("C:\\T\\t32ctl\\{}", b.key());
+    let mut s = opened(Script::new().attach());
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
+    s = idle(s, 0);
+    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Entry, "main.cmm");
+    s = set(s, Macro::Args, "");
+    s = executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "0", "");
+    s = s.expect_req(Request::PracticeState).reply_state(1);
+    s = closed(s, false);
+    let mut session = session_with(vec![Ok(s)], |_| {});
+
+    let cfg = config("stage-foreign");
+    let state_dir = cfg.state_dir.clone();
+    let mut st = stage(&mut session, cfg);
+    let snap = st.ensure_snapshot(&mut session, &b).unwrap();
+    let req = RunRequest {
+        entry: RelPath::new("main.cmm").unwrap(),
+        args: vec![],
+        timeout: Duration::from_secs(5),
+        collect_outputs: false,
+    };
+    assert!(st.run(&mut session, &snap, &req).unwrap().outcome.is_success());
+    assert!(matches!(st.run(&mut session, &snap, &req), Err(StageError::Busy { depth: -1 })));
+    assert!(st.close(&mut session).is_clean());
+    let _ = std::fs::remove_dir_all(state_dir);
+}
+
+#[test]
 fn a_busy_stack_is_refused_and_a_dialog_is_stopped_and_unwound() {
     let b = bundle();
     let dir = format!("C:\\T\\t32ctl\\{}", b.key());
@@ -139,7 +170,7 @@ fn a_busy_stack_is_refused_and_a_dialog_is_stopped_and_unwound() {
     s = s.expect_req(Request::PracticeState).reply_state(2).expect_req(Request::Stop).reply_ok();
     s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1).expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
     s = s.expect_cmd("END").reply_ok().expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
-    s = closed(s, true);
+    s = closed(s, false);
     let mut session = session_with(vec![Ok(s)], |_| {});
 
     let cfg = config("stage-dialog");
@@ -224,7 +255,7 @@ fn an_uncached_snapshot_is_uploaded_inflated_unpacked_and_verified() {
     s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
     s = executed(s, &format!("{dir}\\.t32ctl\\unpack.cmm"), "0", "");
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
-    s = idle(s, 0).expect_fn(&format!("OS.FILE.readable(\"{tmp}\")")).reply_bool(false);
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{tmp}\")")).reply_bool(false);
     s = closed(s, false);
     let mut session = session_with(vec![Ok(s)], |o| o.tuning = Tuning::new(1008, 0x3C00).unwrap());
 
