@@ -177,6 +177,19 @@ fn a_deadline_cancels_a_blocked_call_within_one_slice() {
 }
 
 #[test]
+fn a_call_after_cancellation_sends_nothing_and_keeps_the_session_live() {
+    let clock = ManualClock::new();
+    let connector = ScriptedConnector::new(clock.clone()).push(Ok(Script::new().attach()));
+    let mut o = opts(&clock, connector);
+    let cancel = Cancel::new();
+    o.cancel = cancel.clone();
+    let mut s = Session::connect(Endpoint::new("pv", 1), o).unwrap();
+    cancel.trigger();
+    assert!(matches!(s.cmd("Go"), Err(Error::Cancelled { reason: CancelReason::Interrupt, .. })));
+    assert_eq!(s.health(), Health::Live);
+}
+
+#[test]
 fn revive_reconnects_once_per_poisoning() {
     let mut s = with(
         vec![

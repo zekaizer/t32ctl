@@ -112,8 +112,8 @@ impl Clock for SystemClock {
 }
 
 /// Cooperative stop for Ctrl-C and deadlines. Clones share the flag; the deadline belongs to
-/// one clone. `Link` checks it between read slices, so a blocked call returns within
-/// `CANCEL_SLICE`.
+/// one clone. `Link` checks it before sending and between read slices, so a blocked call returns
+/// within `CANCEL_SLICE` and no request leaves after the stop.
 #[derive(Clone, Debug, Default)]
 pub struct Cancel {
     flag: Arc<AtomicBool>,
@@ -239,10 +239,14 @@ impl Link {
 
     /// Send one request and return the matching response `[err][id][result...]`.
     ///
-    /// Contract: at most one request in flight. Every error except `Local` poisons the link.
+    /// Contract: at most one request in flight. Every error except `Local` poisons the link, and
+    /// so does `Cancelled` once the request was sent. A call made after cancellation sends nothing.
     pub fn exchange(&mut self, op: Op, draft: &Draft, budget: CallBudget) -> Result<Vec<u8>, Error> {
         if let Some(cause) = self.poisoned {
             return Err(Error::Poisoned(cause));
+        }
+        if let Some(reason) = self.cancel.reason(self.clock.now()) {
+            return Err(Error::Cancelled { op, reason });
         }
         let id = self.ids.next();
         let message = draft.seal(id)?;
