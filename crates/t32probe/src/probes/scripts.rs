@@ -42,7 +42,6 @@ pub fn macro_probe(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
         }
     };
     let Some(spelling) = spelling else {
-        ctx.session.set_tuning(base);
         return Err(ProbeFail::Check("EXP 2 set/get round trip fails with both name spellings".into()));
     };
     ctx.session.set_tuning(base.with_macro_spelling(spelling));

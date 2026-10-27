@@ -190,7 +190,6 @@ pub fn vm_rw(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
             }
         }
     }
-    ctx.session.set_tuning(base);
     if let Some((r, w)) = best {
         ctx.measure("chunk_r", Value::Count(r as u64));
         ctx.measure("chunk_w", Value::Count(w as u64));

@@ -108,6 +108,23 @@ fn version_never_fails_on_an_old_build_number() {
     assert_eq!(env.learned.build.map(|b| b.build), Some(150_000));
 }
 
+#[test]
+fn a_macro_probe_that_dies_mid_trial_leaves_no_trial_spelling_behind() {
+    let set = |name: &str, value: &str| Request::MacroSet { name: name.into(), value: value.into() };
+    let first = Script::new().attach().expect_req(set("t32ctl_probe_a", "v1")).reply_exp_error(1, "unknown macro");
+    let first = first.expect_req(set("&t32ctl_probe_a", "v1")).silence(Duration::from_millis(1100));
+    let second = Script::new().attach().expect_fn("TRUE()").reply_bool(true);
+    let second = second.expect_req(set("t32ctl_probe_a", "")).reply_macro("");
+    let second = second.expect_req(set("t32ctl_probe_b", "")).reply_macro("");
+    let mut session = connect(vec![Ok(first), Ok(second)]);
+    let mut env = test_env("probe-macro-dies");
+    let r = run(&mut env, &mut session, &[ProbeId::Macro.def()]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Fail);
+    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+    assert_eq!(session.tuning().macro_spelling(), t32rcl::MacroSpelling::Bare);
+}
+
 fn staged(ctx: &mut crate::ctx::ProbeCtx<'_>) -> crate::ctx::ProbeResult {
     ctx.staged_file("x.bin")?;
     Ok(())

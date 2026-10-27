@@ -4,7 +4,7 @@
 use std::{net::Ipv4Addr, path::PathBuf, process::Command, time::Duration};
 
 use serde::Serialize;
-use t32rcl::{CallBudget, Cancel, ConnectOpts, DevicePrompt, Endpoint, MacroSpelling, PowerViewBuild};
+use t32rcl::{CallBudget, Cancel, ConnectOpts, DevicePrompt, Endpoint, MacroSpelling, PowerViewBuild, Tuning};
 use t32stage::{ExistsFn, PvPath, VmWindow};
 
 use crate::cli::Gates;
@@ -107,6 +107,13 @@ pub struct Learned {
     pub macro_spelling: Option<MacroSpelling>,
     pub exists: Option<ExistsFn>,
     pub build: Option<PowerViewBuild>,
+}
+
+impl Learned {
+    /// The session tuning these facts call for: reference chunks, the measured macro spelling.
+    pub fn tuning(&self) -> Tuning {
+        Tuning::default().with_macro_spelling(self.macro_spelling.unwrap_or_default())
+    }
 }
 
 #[derive(Debug)]

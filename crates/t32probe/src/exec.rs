@@ -5,7 +5,9 @@
 //! 1. Interrupted before start: `Interrupted`. A required probe did not pass: `Skipped(Prereq)`.
 //! 2. Connection: a dead session gets one `try_revive`; failure skips every later probe.
 //! 3. Deadline: the session gets `Cancel::with_deadline`, sharing the Ctrl-C flag. Every
-//!    instant comes from `Session::now`, the clock the link measures waits against.
+//!    instant comes from `Session::now`, the clock the link measures waits against. The session
+//!    tuning is reset from the learned facts before the probe and again before its cleanup, so a
+//!    trial value a probe set does not outlive it.
 //! 4. The probe runs inside `catch_unwind`; a panic is `Fail`.
 //! 5. Cleanup: a fresh `Cancel` with its own deadline replaces the probe's (an expired deadline
 //!    or Ctrl-C must not cancel the cleanup), a dead session is revived once and recorded, then
@@ -86,6 +88,7 @@ impl<'a> Executor<'a> {
 
         let probe_cancel = self.env.cancel.with_deadline(started + self.env.deadline(def.deadline));
         self.session.set_cancel(probe_cancel.clone());
+        self.session.set_tuning(self.env.learned.tuning());
         self.session.take_trace();
         let journal_name = format!("{}-{}", self.env.cfg.run_id, def.id.name());
         let (ledger, journal_error) = match Journal::create(&self.env.cfg.state_dir, &journal_name) {
@@ -98,6 +101,7 @@ impl<'a> Executor<'a> {
         let parts = ctx.into_parts();
         let trace = TraceSummary::from(&self.session.take_trace());
         let cancelled = probe_cancel.reason(self.session.now());
+        self.session.set_tuning(parts.learned.tuning());
 
         self.session.set_cancel(Cancel::new().with_deadline(self.session.now() + CLEANUP_BUDGET));
         let revive = (def.needs_connection && self.session.health() != Health::Live).then(|| self.revive());
