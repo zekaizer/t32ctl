@@ -105,6 +105,15 @@ nothing sleeps), golden byte vectors from pyrcl, sans-IO units for framing, matc
 script watching, and loopback sockets as raw byte sources for connect classification. CI runs the
 socket smoke tests against the static musl binary.
 
+Probe bodies are tested where a script of reasonable size can drive their decisions: `connect`
+(smoke tests), `version`, `clients`, `keepalive`, `reconnect`, `tempdir`, `macro`, the `vm-rw`
+chunk ladder, the `gzip` acceptance decision, and the failure paths of `tar-download`,
+`run-control` and `elf-unzip`. The rest is live-only, because a script would have to answer
+megabytes of `VM:` traffic or stand in for PRACTICE semantics: `latency` (timings only), the
+`vm-rw` round trips from 1 B to 1 MiB, `vm-file`, the `gzip` payloads and ceiling search, `bundle`,
+`script-error`, the `tar-download` archive, `dialog`, `multi-client`, and the run paths of
+`run-control` and `elf-unzip`.
+
 ## Open questions
 
 Each PowerView behavior below is assumed by code marked `ASSUMED(<probe>)` and is measured by

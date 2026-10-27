@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use t32rcl::Tuning;
+use t32rcl::{Session, Tuning};
 use t32stage::{
     ExistsFn, Put, PvPath, RelPath, StagePath, StageRoot, Undo, VmRegion,
     practice::{cmd, fnc},
@@ -178,40 +178,70 @@ pub fn vm_rw(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
         }
     }
 
-    let base = ctx.session.tuning();
-    let ladder = [(1008, 1024), (2040, 2048), (4088, 4096), (8184, 8192), (Tuning::MAX_CHUNK, Tuning::MAX_CHUNK)];
-    let mut best = None;
-    let mut stop = None;
-    for (r, w) in ladder {
-        ctx.session.set_tuning(Tuning::new(r, w)?.with_macro_spelling(base.macro_spelling()));
+    let ladder = chunk_ladder(ctx.session, &region)?;
+    if let Some(e) = &ladder.error {
+        ctx.measure("chunk_error", Value::Text(e.clone()));
+    }
+    if let Some((r, w)) = ladder.best {
+        ctx.measure(key::CHUNK_R, Value::Count(r as u64));
+        ctx.measure(key::CHUNK_W, Value::Count(w as u64));
+    }
+    if let Some(t) = ladder.token() {
+        ctx.text("chunk", t);
+    }
+    if let Some(s) = ladder.stop {
+        ctx.text("chunk_stop", s);
+    }
+    Ok(())
+}
+
+/// Read and write chunk sizes the ladder tries, smallest first; the last is the client's maximum.
+pub(crate) const LADDER: [(usize, usize); 5] =
+    [(1008, 1024), (2040, 2048), (4088, 4096), (8184, 8192), (Tuning::MAX_CHUNK, Tuning::MAX_CHUNK)];
+
+/// What the chunk ladder found.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Ladder {
+    /// Largest read and write chunk that round-tripped 256 KiB.
+    pub best: Option<(usize, usize)>,
+    /// Why it stopped before the end: `mismatch` or an error tag. `None`: every rung passed.
+    pub stop: Option<String>,
+    pub error: Option<String>,
+}
+
+impl Ladder {
+    /// `r<read>/w<write>`, marked `(client-limit)` when no rung failed: the ladder ended at the
+    /// client's own maximum, not at a PowerView refusal.
+    pub fn token(&self) -> Option<String> {
+        let (r, w) = self.best?;
+        let limit = if self.stop.is_none() { "(client-limit)" } else { "" };
+        Some(format!("r{r}/w{w}{limit}"))
+    }
+}
+
+/// 256 KiB written and read back at each rung of `LADDER`, until one fails.
+pub(crate) fn chunk_ladder(session: &mut Session, region: &VmRegion) -> Result<Ladder, ProbeFail> {
+    let spelling = session.tuning().macro_spelling();
+    let mut ladder = Ladder { best: None, stop: None, error: None };
+    for (r, w) in LADDER {
+        session.set_tuning(Tuning::new(r, w)?.with_macro_spelling(spelling));
         let data = pattern(r as u64, 256 * 1024);
-        let result = ctx
-            .session
-            .mem_write(&region.addr(), &data)
-            .and_then(|()| ctx.session.mem_read(&region.addr(), data.len()));
+        let result =
+            session.mem_write(&region.addr(), &data).and_then(|()| session.mem_read(&region.addr(), data.len()));
         match result {
-            Ok(back) if back == data => best = Some((r, w)),
+            Ok(back) if back == data => ladder.best = Some((r, w)),
             Ok(_) => {
-                stop = Some("mismatch".to_string());
+                ladder.stop = Some("mismatch".to_string());
                 break;
             }
             Err(e) => {
-                ctx.measure("chunk_error", Value::Text(e.to_string()));
-                stop = Some(e.tag().to_string());
+                ladder.error = Some(e.to_string());
+                ladder.stop = Some(e.tag().to_string());
                 break;
             }
         }
     }
-    if let Some((r, w)) = best {
-        ctx.measure(key::CHUNK_R, Value::Count(r as u64));
-        ctx.measure(key::CHUNK_W, Value::Count(w as u64));
-        let limit = if stop.is_none() { "(client-limit)" } else { "" };
-        ctx.text("chunk", format!("r{r}/w{w}{limit}"));
-    }
-    if let Some(s) = stop {
-        ctx.text("chunk_stop", s);
-    }
-    Ok(())
+    Ok(ladder)
 }
 
 /// `VM:` to file and back with `Data.SAVE.Binary` / `Data.LOAD.Binary`, `++` slices, odd starts,
@@ -303,18 +333,13 @@ pub fn gzip(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     for (name, bad) in &cases {
         let f = ctx.staged_file(&format!("corrupt-{name}.gz"))?;
         transfer::put_file(ctx.session, &a, bad, &f)?;
-        let refused = soft(ctx.session.cmd(&cmd::data_load_binary(&f, b.start(), true)))?.is_none();
-        ctx.measure(&format!("corrupt_{name}"), Value::Text((if refused { "rejected" } else { "accepted" }).into()));
-        if !refused {
+        let taken = unzip_accepted(ctx.session, &f, b.start())?;
+        ctx.measure(&format!("corrupt_{name}"), Value::Text((if taken { "accepted" } else { "rejected" }).into()));
+        if taken {
             accepted.push(*name);
         }
     }
-    let corrupt = if accepted.is_empty() {
-        format!("rejected({}/{})", cases.len(), cases.len())
-    } else {
-        format!("ACCEPTED({})", accepted.join(","))
-    };
-    ctx.text("corrupt", corrupt);
+    ctx.text("corrupt", corrupt_token(&accepted, cases.len()));
 
     let mut ceiling = 0u32;
     let mut size = MIB;
@@ -324,8 +349,7 @@ pub fn gzip(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
         transfer::put_file(ctx.session, &a, &gz, &f)?;
         let tail = b.slice(size - 16, 16).expect("inside region B");
         ctx.session.mem_write(&tail.addr(), &[0xA5; 16])?;
-        let loaded = soft(ctx.session.cmd(&cmd::data_load_binary(&f, b.start(), true)))?.is_some();
-        if !loaded || ctx.session.mem_read(&tail.addr(), 16)? != [0u8; 16] {
+        if !unzip_accepted(ctx.session, &f, b.start())? || ctx.session.mem_read(&tail.addr(), 16)? != [0u8; 16] {
             break;
         }
         ceiling = size;
@@ -333,6 +357,16 @@ pub fn gzip(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     }
     ctx.headline("unzip_max", Value::Bytes(ceiling.into()));
     ctx.check(accepted.is_empty(), || format!("/UNZIP accepted corrupt gzip: {}", accepted.join(", ")))
+}
+
+/// `Data.LOAD.Binary <f> VM:<at> /UNZIP`: `true` when PowerView took it, `false` when it refused.
+pub(crate) fn unzip_accepted(session: &mut Session, f: &StagePath, at: u32) -> Result<bool, ProbeFail> {
+    Ok(soft(session.cmd(&cmd::data_load_binary(f, at, true)))?.is_some())
+}
+
+/// `rejected(n/n)` when every corrupt stream was refused, else `ACCEPTED(<names>)`.
+pub(crate) fn corrupt_token(accepted: &[&str], cases: usize) -> String {
+    if accepted.is_empty() { format!("rejected({cases}/{cases})") } else { format!("ACCEPTED({})", accepted.join(",")) }
 }
 
 /// PowerView packs a directory with `TAR` and `ZIP`; the client downloads and untars it.
