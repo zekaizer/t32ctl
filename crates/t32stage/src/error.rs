@@ -160,6 +160,29 @@ impl fmt::Display for PathError {
 impl StdError for PathError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SymbolError {
+    Empty,
+    LeadingDigit(String),
+    TooLong { symbol: String, len: usize, max: usize },
+    Char { symbol: String, bad: char },
+}
+
+impl fmt::Display for SymbolError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SymbolError::Empty => f.write_str("empty symbol"),
+            SymbolError::LeadingDigit(s) => write!(f, "symbol {s:?} starts with a digit"),
+            SymbolError::TooLong { symbol, len, max } => write!(f, "symbol {symbol:?} is {len} bytes, limit {max}"),
+            SymbolError::Char { symbol, bad } => {
+                write!(f, "symbol {symbol:?} contains {bad:?}; use ASCII letters, digits, _ . \\ :")
+            }
+        }
+    }
+}
+
+impl StdError for SymbolError {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArgError {
     Unsafe { index: usize, ch: char },
     TooLong { len: usize, max: usize },

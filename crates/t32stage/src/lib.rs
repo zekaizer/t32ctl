@@ -26,7 +26,7 @@ mod vm;
 mod testutil;
 
 pub use bundle::{Bundle, BundleLimits, Packed, SnapshotKey};
-pub use error::{ArgError, BundleError, LeaseError, PathError, StageError, TarError, VmError};
+pub use error::{ArgError, BundleError, LeaseError, PathError, StageError, SymbolError, TarError, VmError};
 pub use ledger::{
     CleanupItem, CleanupOutcome, CleanupReport, Journal, Ledger, Undo, default_state_dir, replay_leftovers,
 };

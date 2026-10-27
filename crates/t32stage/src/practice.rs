@@ -10,7 +10,7 @@
 use std::fmt;
 
 use crate::{
-    error::{ArgError, PathError},
+    error::{ArgError, PathError, SymbolError},
     macros::Macro,
     vm::VmRegion,
 };
@@ -240,12 +240,23 @@ impl ExistsFn {
 pub struct Symbol(String);
 
 impl Symbol {
-    pub fn parse(text: &str) -> Result<Self, PathError> {
-        let ok = !text.is_empty()
-            && text.len() <= 128
-            && !text.starts_with(|c: char| c.is_ascii_digit())
-            && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '\\' | ':'));
-        if ok { Ok(Self(text.to_string())) } else { Err(PathError::Char { path: text.to_string(), bad: '?' }) }
+    pub const MAX_LEN: usize = 128;
+
+    pub fn parse(text: &str) -> Result<Self, SymbolError> {
+        let symbol = || text.to_string();
+        if text.is_empty() {
+            return Err(SymbolError::Empty);
+        }
+        if text.len() > Self::MAX_LEN {
+            return Err(SymbolError::TooLong { symbol: symbol(), len: text.len(), max: Self::MAX_LEN });
+        }
+        if text.starts_with(|c: char| c.is_ascii_digit()) {
+            return Err(SymbolError::LeadingDigit(symbol()));
+        }
+        match text.chars().find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '\\' | ':'))) {
+            Some(bad) => Err(SymbolError::Char { symbol: symbol(), bad }),
+            None => Ok(Self(symbol())),
+        }
     }
 
     pub fn as_str(&self) -> &str {
@@ -500,5 +511,15 @@ mod tests {
         for bad in ["", "1abc", "a b", "a&b", "a\"b", "a+b"] {
             assert!(Symbol::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_symbol_error_names_the_rule_it_breaks() {
+        let msg = |s: &str| Symbol::parse(s).unwrap_err().to_string();
+        assert_eq!(msg("a b"), "symbol \"a b\" contains ' '; use ASCII letters, digits, _ . \\ :");
+        assert_eq!(msg("a+b"), "symbol \"a+b\" contains '+'; use ASCII letters, digits, _ . \\ :");
+        assert_eq!(msg("1abc"), "symbol \"1abc\" starts with a digit");
+        assert_eq!(msg(""), "empty symbol");
+        assert_eq!(msg(&"a".repeat(129)), format!("symbol {:?} is 129 bytes, limit 128", "a".repeat(129)));
     }
 }
