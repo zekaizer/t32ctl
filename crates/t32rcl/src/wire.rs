@@ -257,8 +257,11 @@ const STATUS_CODES: &[(u8, &str, RemoteKind)] = &[
     (16, "STD_BUSERROR", RemoteKind::MemoryAccess),
     (22, "STD_NOMEM", RemoteKind::MemoryAccess),
     (48, "STD_RESETDETECTED", RemoteKind::TargetState),
+    (49, "STD_FDXBUFFER", RemoteKind::Other),
+    (57, "STD_RTCKTIMEOUT", RemoteKind::TargetState),
     (60, "STD_INVALIDLICENSE", RemoteKind::Attach),
     (64, "STD_CORENOTACTIVE", RemoteKind::TargetState),
+    (67, "STD_USERSIGNAL", RemoteKind::Other),
     (83, "STD_NORAPI", RemoteKind::Attach),
     (90, "FN1", RemoteKind::Other),
     (91, "FN2", RemoteKind::Other),
@@ -560,6 +563,18 @@ mod golden {
         let e = resp::status(Op::MemRead, &hex("10 04")).expect_err("bus error");
         assert_eq!((e.kind, e.message), (RemoteKind::MemoryAccess, None));
         assert_eq!(resp::status(Op::Stop, &hex("00 04 aa")), Ok(&[0xaa][..]));
+    }
+
+    #[test]
+    fn status_codes_follow_the_pyrcl_table() {
+        let named = |code: u8| {
+            let e = resp::status(Op::Command, &[code, 1]).expect_err("non-zero status");
+            (status_name(code), e.kind)
+        };
+        assert_eq!(named(49), (Some("STD_FDXBUFFER"), RemoteKind::Other));
+        assert_eq!(named(57), (Some("STD_RTCKTIMEOUT"), RemoteKind::TargetState));
+        assert_eq!(named(67), (Some("STD_USERSIGNAL"), RemoteKind::Other));
+        assert_eq!(named(164), (Some("STD_NORTCK"), RemoteKind::TargetState));
     }
 
     fn function_result(ty: u32, text: &str) -> Vec<u8> {
