@@ -134,6 +134,10 @@ impl Gates {
     }
 }
 
+/// Upper bounds that keep every derived `Duration` finite; NaN fails the range checks too.
+const MAX_TIMEOUT_S: f64 = 3600.0;
+const MAX_SCALE: f64 = 100.0;
+
 fn parse_u32(s: &str) -> Result<u32, String> {
     let (digits, radix) = s.strip_prefix("0x").map_or((s, 10), |h| (h, 16));
     u32::from_str_radix(&digits.replace('_', ""), radix).map_err(|e| e.to_string())
@@ -182,8 +186,11 @@ impl Args {
             .clone()
             .or_else(t32stage::default_state_dir)
             .ok_or("no state directory: set --state-dir, XDG_STATE_HOME or HOME")?;
-        if !(self.timeout > 0.0 && self.scale > 0.0) {
-            return Err("--timeout and --scale must be positive".into());
+        if !(self.timeout > 0.0 && self.timeout <= MAX_TIMEOUT_S) {
+            return Err(format!("--timeout must be a number of seconds above 0 and at most {MAX_TIMEOUT_S}"));
+        }
+        if !(self.scale > 0.0 && self.scale <= MAX_SCALE) {
+            return Err(format!("--scale must be above 0 and at most {MAX_SCALE}"));
         }
         let hosts = if self.host == "auto" { wsl.candidates() } else { vec![self.host.clone()] };
         let env = Env::new(crate::env::EnvConfig {
@@ -202,5 +209,28 @@ impl Args {
             wsl,
         });
         Ok((env, selected))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan(extra: &[&str]) -> Result<(), String> {
+        let state = std::env::temp_dir().join("t32probe-cli-never-created");
+        let mut argv = vec!["t32probe", "--state-dir", state.to_str().expect("utf-8 temp dir")];
+        argv.extend_from_slice(extra);
+        Args::try_parse_from(argv).expect("parses").plan(WslFacts::default(), "r1".into()).map(drop)
+    }
+
+    #[test]
+    fn a_non_finite_or_huge_timeout_or_scale_is_a_usage_error() {
+        for bad in
+            [["--scale", "inf"], ["--scale", "1e30"], ["--scale", "0"], ["--timeout", "inf"], ["--timeout", "NaN"]]
+        {
+            assert!(plan(&bad).is_err(), "{bad:?}");
+        }
+        assert!(plan(&["--timeout", "1e30"]).is_err());
+        assert!(plan(&["--scale", "2", "--timeout", "20"]).is_ok());
     }
 }
