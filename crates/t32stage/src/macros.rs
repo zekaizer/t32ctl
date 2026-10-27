@@ -28,7 +28,7 @@ macro_table! {
     Out   = "t32ctl_out",   "client -> scripts: per-run output directory.";
     Token = "t32ctl_token", "client -> scripts: unique per run; copied into `Done` as the last statement.";
     Entry = "t32ctl_entry", "client -> runner: entry script, relative to the snapshot directory.";
-    Args  = "t32ctl_args",  "client -> runner: quoted argument text appended to the DO line.";
+    Args  = "t32ctl_args",  "client -> runner: unquoted argument text appended to the DO line.";
     Done  = "t32ctl_done",  "scripts -> client: equals `Token` once the script finished, success or failure.";
     Rc    = "t32ctl_rc",    "scripts -> client: 0 success, 1 PRACTICE error caught.";
     Msg   = "t32ctl_msg",   "scripts -> client: error text when `Rc` is not 0.";

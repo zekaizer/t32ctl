@@ -133,6 +133,7 @@ that probe. The probe report answers it.
 | `ENTRY %LINE` after `DO` yields the callee's `ENDDO` value. | `bundle` | `runner::runner_cmm` |
 | `ON ERROR JUMPTO` in the runner catches errors in nested `DO` files and unwinds them. | `script-error` | `runner::runner_cmm` |
 | `EVAL ERROR.MESSAGE()` + EvalGetString reads the error of a halted script. | `script-error` | `Stage` |
+| Arguments with `, / : = + @ - . _` reach `ENTRY` intact through the unquoted `DO` line. | `script-error` | `practice::render_args` |
 | `TAR <archive> <dir>\*` stores names relative to `<dir>`. | `tar-download` | `practice::cmd::tar` |
 | `ZIP` writes plain gzip. | `tar-download` | `practice::cmd::zip` |
 | A modal dialog reads as state 2 and `T32_Stop` ends the wait (and whether the window closes). | `dialog` | `runner::ScriptWatch` |

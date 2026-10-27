@@ -123,7 +123,7 @@ pub fn bundle(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let cached_time = t.elapsed();
     session.cmd(&t32stage::practice::cmd::rm(&snap.dir.join(".t32ctl/complete")?))?;
     let repaired = !stage.ensure_snapshot(session, &bundle)?.cached;
-    let report = run_entry(stage, session, &snap, "main.cmm", Duration::from_secs(30))?;
+    let report = run_entry(stage, session, &snap, "main.cmm", &[], Duration::from_secs(30))?;
     let script_wrote = soft(session.macro_get(&main_macro))?.as_deref() == Some("main-ran");
     let deep = soft(session.macro_get(&deep_macro))?;
     let deep_ran = deep.as_deref().is_some_and(|v| v.trim_matches('"') == report.token);
@@ -151,7 +151,12 @@ pub fn bundle(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     })
 }
 
+/// One argument per group of `practice::render_args` characters; `args.cmm` returns them joined.
+const SAFE_ARGS: [&str; 5] = ["x,y", "a/b", "k=v", "P:0x10", "m+n@o-p.q_r"];
+const ARGS: &str = "LOCAL &a &b &c &d &e\nENTRY &a &b &c &d &e\nENDDO \"&a|&b|&c|&d|&e\"\n";
+
 /// A failing script must never look like success, and the stack is empty after every case.
+/// Also passes `SAFE_ARGS` through the runner's `DO` line and compares what `ENTRY` received.
 pub fn script_error(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let scratch = ctx.env.scratch_window().base();
     let data_err = format!("Data.LOAD.Binary \"~~~~/missing.bin\" VM:0x{scratch:08X}\nENDDO\n");
@@ -164,14 +169,15 @@ pub fn script_error(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
         ("stop.cmm", "STOP\nENDDO\n".into(), false),
         ("ok_false.cmm", "ENDDO FALSE()\n".into(), false),
     ];
-    let files: Vec<(&str, &[u8])> = cases.iter().map(|(n, t, _)| (*n, t.as_bytes())).collect();
+    let mut files: Vec<(&str, &[u8])> = cases.iter().map(|(n, t, _)| (*n, t.as_bytes())).collect();
+    files.push(("args.cmm", ARGS.as_bytes()));
     let bundle = bundle_of(&files)?;
     let (stage, session) = ctx.stage()?;
     let snap = stage.ensure_snapshot(session, &bundle)?;
     let (mut caught, mut halted, mut false_success, mut stack_clean) = (0, 0, Vec::new(), true);
     let mut results = Vec::new();
     for (entry, _, must_fail) in &cases {
-        let r = run_entry(stage, session, &snap, entry, Duration::from_secs(20))?;
+        let r = run_entry(stage, session, &snap, entry, &[], Duration::from_secs(20))?;
         let depth = session.eval(fnc::STACK_DEPTH)?.into_int(fnc::STACK_DEPTH)?;
         stack_clean &= depth == 0;
         match &r.outcome {
@@ -185,13 +191,24 @@ pub fn script_error(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
         results.push(format!("{entry}={:?}", r.outcome));
     }
     let ok_false = results.last().is_some_and(|r| r.contains("rc: 0") && r.contains("FALSE"));
+    let r = run_entry(stage, session, &snap, "args.cmm", &SAFE_ARGS, Duration::from_secs(20))?;
+    let got = match &r.outcome {
+        RunOutcome::Finished { rc: 0, ret, .. } => Some(ret.trim_matches('"').to_string()),
+        _ => None,
+    };
+    let args_ok = got.as_deref() == Some(SAFE_ARGS.join("|").as_str());
+    ctx.measure("args_ret", Value::Text(format!("{got:?} from {:?}", r.outcome)));
     ctx.measure("results", Value::Text(results.join(" | ")));
     ctx.headline("cases", Value::Count(cases.len() as u64));
     ctx.headline("caught", Value::Count(caught));
     ctx.headline("halted", Value::Count(halted));
     ctx.text("stack_clean", if stack_clean { "yes" } else { "NO" });
     ctx.text("false_ok", ok(ok_false));
-    ctx.check(false_success.is_empty() && stack_clean, || {
-        format!("reported success for {false_success:?}; stack clean after every case: {stack_clean}")
+    ctx.text("args", ok(args_ok));
+    ctx.check(false_success.is_empty() && stack_clean && args_ok, || {
+        format!(
+            "reported success for {false_success:?}; stack clean after every case: {stack_clean}; \
+             arguments intact: {args_ok}"
+        )
     })
 }

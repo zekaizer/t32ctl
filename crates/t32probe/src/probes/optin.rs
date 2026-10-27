@@ -28,7 +28,7 @@ pub fn dialog(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let (stage, session) = ctx.stage()?;
     let snap = stage.ensure_snapshot(session, &bundle)?;
     let t = Instant::now();
-    let report = run_entry(stage, session, &snap, "modal.cmm", Duration::from_secs(10))?;
+    let report = run_entry(stage, session, &snap, "modal.cmm", &[], Duration::from_secs(10))?;
     let depth = session.eval(fnc::STACK_DEPTH)?.into_int(fnc::STACK_DEPTH)?;
     ctx.measure("outcome", Value::Text(format!("{:?}", report.outcome)));
     let stopped = report.outcome == RunOutcome::DialogAborted;
@@ -64,7 +64,7 @@ pub fn multi_client(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let (stage, session) = ctx.stage()?;
     let snap = stage.ensure_snapshot(session, &bundle)?;
     let (a_result, during) = thread::scope(|s| {
-        let a = s.spawn(|| run_entry(stage, session, &snap, "long.cmm", Duration::from_secs(20)));
+        let a = s.spawn(|| run_entry(stage, session, &snap, "long.cmm", &[], Duration::from_secs(20)));
         thread::sleep(Duration::from_millis(300));
         let during = latency_series(&mut b, Instant::now() + Duration::from_millis(2500));
         (a.join(), during)
