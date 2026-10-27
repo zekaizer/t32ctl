@@ -268,6 +268,22 @@ fn a_failed_exp_call_with_a_status_byte_keeps_its_exp_code_and_message() {
 }
 
 #[test]
+fn a_reply_carrying_the_largest_macro_value_is_received() {
+    let value = "v".repeat(60_000);
+    let mut s = session(
+        Script::new()
+            .attach()
+            .expect_req(Request::MacroSet { name: "m".into(), value: value.clone() })
+            .reply_macro("")
+            .expect_req(Request::MacroGet { name: "m".into() })
+            .reply_macro(&value),
+    );
+    let m = MacroName::new("m").unwrap();
+    s.macro_set(&m, &value).unwrap();
+    assert_eq!(s.macro_get(&m).unwrap(), value);
+}
+
+#[test]
 fn macro_names_follow_the_tuned_spelling() {
     let mut s = with(
         vec![Ok(Script::new()

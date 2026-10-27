@@ -17,8 +17,11 @@ use crate::error::Violation;
 
 pub(crate) const HEADER_LEN: usize = 8;
 pub(crate) const ALIGN: usize = 8;
-/// `0x4100 - 8`: the C driver's receive bound.
-pub(crate) const MAX_PAYLOAD: usize = 0x40F8;
+/// Sanity bound, not a protocol limit: every reply the client provokes states its size in a u16
+/// (memory read length, EXP reply length) after the 2-byte `[err][id]`. Neither reference bounds
+/// the length. ASSUMED(macro): PowerView sends a long EXP reply as one frame; the probe's
+/// 60000-byte value is the longest reply it provokes.
+pub(crate) const MAX_PAYLOAD: usize = 2 + u16::MAX as usize;
 
 pub(crate) const TYPE_REQ: u32 = 0x10;
 pub(crate) const TYPE_RESP: u32 = 0x11;

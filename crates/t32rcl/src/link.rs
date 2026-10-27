@@ -182,6 +182,9 @@ pub struct Trace {
 const MAX_SAMPLES: usize = 256;
 const MAX_RAW: usize = 4;
 
+/// Bytes taken from the transport per read; the framer reassembles longer frames.
+const READ_SLICE: usize = 0x4000;
+
 /// Longest a blocking read lasts before `Cancel` is checked again.
 pub(crate) const CANCEL_SLICE: Duration = Duration::from_millis(100);
 
@@ -260,7 +263,7 @@ impl Link {
 
         let started = self.clock.now();
         let mut waiter = Waiter::new(budget, started);
-        let mut buf = vec![0u8; frame::HEADER_LEN + frame::MAX_PAYLOAD];
+        let mut buf = [0u8; READ_SLICE];
         loop {
             while let Some(f) = self.framer.next_frame().map_err(|violation| Error::Protocol { op, violation })? {
                 if f.kind == FrameKind::Notify {

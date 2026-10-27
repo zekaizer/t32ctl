@@ -81,7 +81,7 @@ pub struct Tuning {
 
 impl Tuning {
     pub const MIN_CHUNK: usize = 8;
-    /// Largest chunk whose response still fits one NETTCP frame (`frame::MAX_PAYLOAD`).
+    /// Client-side ceiling: the `vm-rw` ladder stops here and reports `client-limit`.
     pub const MAX_CHUNK: usize = 0x3C00;
     /// pyrcl `_library.py`: reads `down_align(1024 - 10, 8)`, writes `1024`.
     pub const REFERENCE: Tuning = Tuning { read_chunk: 1008, write_chunk: 1024, macro_spelling: MacroSpelling::Bare };

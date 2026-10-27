@@ -70,6 +70,11 @@ pub(crate) const MAX_PRACTICE_TEXT: usize = 2048 - 10 - 1;
 /// Largest message the long header can carry.
 pub(crate) const MAX_MESSAGE: usize = 0xF000;
 
+// Every reply the client can provoke must fit a frame it accepts: an EXP get of the largest value
+// `req::macro_set` accepts is `[err][id] len cmd "PL" n 2 value`, a memory read `[err][id] data`.
+const _: () = assert!(12 + MAX_MESSAGE <= crate::frame::MAX_PAYLOAD);
+const _: () = assert!(2 + crate::value::Tuning::MAX_CHUNK <= crate::frame::MAX_PAYLOAD);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LenRule {
     /// `2 + payload.len()`.

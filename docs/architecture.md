@@ -33,7 +33,8 @@ Three deviations from the references are deliberate:
   then misreads the rest as the next header.
 - A response id is matched modulo the 255-id cycle, so a late answer from before the wrap to 0 is
   stale instead of a desync.
-- A frame length above the C driver's bound is a protocol violation as soon as the header is in.
+- A frame longer than any reply the client can provoke (2 bytes plus a u16 length) is a protocol
+  violation as soon as the header is in. Neither reference bounds the length.
 
 Every timeout, loss, protocol violation or cancellation poisons the link: a late response would
 otherwise be matched to the next request. `Session::try_revive` reconnects at most once per
@@ -111,6 +112,7 @@ that probe. The probe report answers it.
 | Assumption | Probe | Where |
 |---|---|---|
 | PowerView always sends the 8-byte frame pad. | `connect` | `t32rcl::frame` |
+| A long EXP reply (a 60000-byte macro value) arrives as one frame. | `macro` | `t32rcl::frame` |
 | Request id 0 (after id 254) is accepted. | `latency` | `t32rcl::wait` |
 | A keepalive is `[0] == 0xFE`; status 254 shares the byte (raw frames are recorded). | `keepalive` | `t32rcl::wait` |
 | Memory chunks above 1024 bytes are accepted, and up to which size. | `vm-rw` | `t32rcl::Tuning` |
