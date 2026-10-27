@@ -4,7 +4,8 @@
 //!
 //! 1. Interrupted before start: `Interrupted`. A required probe did not pass: `Skipped(Prereq)`.
 //! 2. Connection: a dead session gets one `try_revive`; failure skips every later probe.
-//! 3. Deadline: the session gets `Cancel::with_deadline`, sharing the Ctrl-C flag.
+//! 3. Deadline: the session gets `Cancel::with_deadline`, sharing the Ctrl-C flag. Every
+//!    instant comes from `Session::now`, the clock the link measures waits against.
 //! 4. The probe runs inside `catch_unwind`; a panic is `Fail`.
 //! 5. Cleanup: a fresh `Cancel` with its own deadline replaces the probe's (an expired deadline
 //!    or Ctrl-C must not cancel the cleanup), a dead session is revived once and recorded, then
@@ -62,12 +63,12 @@ impl<'a> Executor<'a> {
             self.result.outcomes.push(outcome);
             self.observer.finished(self.env, &self.result.outcomes, &self.result.replay);
         }
-        self.result.interrupted = self.env.cancel.reason(Instant::now()) == Some(CancelReason::Interrupt);
+        self.result.interrupted = self.env.cancel.reason(self.session.now()) == Some(CancelReason::Interrupt);
         self.result
     }
 
     fn run_one(&mut self, def: &'static ProbeDef) -> Outcome {
-        let started = Instant::now();
+        let started = self.session.now();
         if self.env.cancel.reason(started) == Some(CancelReason::Interrupt) {
             return Outcome {
                 skip: Some(SkipReason::NotApplicable { why: "interrupted before start".into() }),
@@ -96,9 +97,9 @@ impl<'a> Executor<'a> {
         let result = catch_unwind(AssertUnwindSafe(|| (def.run)(&mut ctx))).map_err(panic_text);
         let parts = ctx.into_parts();
         let trace = TraceSummary::from(&self.session.take_trace());
-        let cancelled = probe_cancel.reason(Instant::now());
+        let cancelled = probe_cancel.reason(self.session.now());
 
-        self.session.set_cancel(Cancel::new().with_deadline(Instant::now() + CLEANUP_BUDGET));
+        self.session.set_cancel(Cancel::new().with_deadline(self.session.now() + CLEANUP_BUDGET));
         let revive = (def.needs_connection && self.session.health() != Health::Live).then(|| self.revive());
         let mut cleanup = CleanupReport::default();
         if let Some(stage) = parts.stage {
@@ -138,7 +139,7 @@ impl<'a> Executor<'a> {
             cleanup: cleanup_records(&cleanup),
             revive,
             trace,
-            elapsed: started.elapsed(),
+            elapsed: self.session.now().saturating_duration_since(started),
         }
     }
 

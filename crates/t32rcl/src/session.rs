@@ -7,7 +7,7 @@
 use std::{
     ops::{Deref, DerefMut},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -154,6 +154,12 @@ impl Session {
 
     pub fn connect_report(&self) -> ConnectReport {
         self.report
+    }
+
+    /// Now on the clock this session measures its waits against (`ConnectOpts::clock`). A
+    /// deadline handed to `set_cancel` must come from here.
+    pub fn now(&self) -> Instant {
+        self.opts.clock.now()
     }
 
     /// Applies to the current link and to every reconnect.

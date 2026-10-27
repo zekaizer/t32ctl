@@ -37,7 +37,11 @@ pub(crate) fn test_env(tag: &str) -> Env {
 }
 
 pub(crate) fn connect(scripts: Vec<Result<Script, ConnectFailure>>) -> Session {
-    let clock = ManualClock::new();
+    connect_on(&ManualClock::new(), scripts)
+}
+
+pub(crate) fn connect_on(clock: &ManualClock, scripts: Vec<Result<Script, ConnectFailure>>) -> Session {
+    let clock = clock.clone();
     let mut c = ScriptedConnector::new(clock.clone());
     for s in scripts {
         c = c.push(s);
@@ -89,6 +93,11 @@ fn panics(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
 
 fn unsupported(_: &mut ProbeCtx<'_>) -> ProbeResult {
     Err(ProbeFail::Unsupported("too old".into()))
+}
+
+fn calls_once(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+    ctx.session.eval("TRUE()")?;
+    Ok(())
 }
 
 fn hangs(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
@@ -172,6 +181,16 @@ fn a_deadline_fails_the_probe_and_cleanup_runs_on_the_revived_connection() {
     assert!(o.revive.as_ref().is_some_and(|v| v.ok));
     assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
     assert_eq!(session.health(), Health::Live);
+}
+
+#[test]
+fn probe_deadlines_run_on_the_session_clock() {
+    let clock = ManualClock::new();
+    let mut session = connect_on(&clock, vec![Ok(Script::new().attach().expect_fn("TRUE()").reply_bool(true))]);
+    clock.advance(Duration::from_secs(3600));
+    let mut env = test_env("exec-clock");
+    let r = run(&mut env, &mut session, &[def(ProbeId::Version, &[], 5, calls_once)]);
+    assert_eq!(r.outcomes[0].verdict, Verdict::Pass, "{:?}", r.outcomes[0]);
 }
 
 #[test]
