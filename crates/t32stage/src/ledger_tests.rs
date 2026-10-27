@@ -133,3 +133,18 @@ fn a_crashed_unwind_is_reported_not_executed_on_replay() {
     assert_eq!(labels[1], "already-clean");
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_crashed_break_is_reported_not_executed_on_replay() {
+    let dir = temp_dir("journal-break");
+    let mut ledger = Ledger::journaled(Journal::create(&dir, "crashed").unwrap(), ExistsFn::OsFileReadable);
+    ledger.push(Undo::BreakTarget).unwrap();
+    drop(ledger);
+
+    let report = replay_leftovers(&mut session(Script::new().attach()), &dir, ExistsFn::OsFileReadable);
+    assert_eq!(report.items.len(), 1, "{report:?}");
+    assert!(matches!(report.items[0].outcome, CleanupOutcome::NotAttempted(_)), "{report:?}");
+    assert_eq!(report.items[0].manual.as_deref(), Some("Break"));
+    assert!(!dir.join("journal/crashed.undo").exists());
+    let _ = fs::remove_dir_all(dir);
+}

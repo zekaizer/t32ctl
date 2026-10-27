@@ -122,6 +122,16 @@ impl Undo {
         }
     }
 
+    /// Why a human decides this undo when a dead run left it: replaying it would act on a state
+    /// the operator may have created since (their own scripts, a target they started).
+    fn left_for_a_human(&self) -> Option<&'static str> {
+        match self {
+            Undo::UnwindPractice => Some("check PowerView; type END if a t32ctl script is halted"),
+            Undo::BreakTarget => Some("check the target; type Break if t32ctl left it running"),
+            _ => None,
+        }
+    }
+
     /// Journal line, tab separated. `None` for undos that stay in memory.
     fn to_line(&self) -> Option<String> {
         let path = |p: &StagePath| match p.root() {
@@ -394,8 +404,9 @@ impl Ledger {
 }
 
 /// Replay journals that dead processes left in `<state_dir>/journal`. A journal another live
-/// process holds is locked and skipped. `UnwindPractice` is reported, never executed: after a
-/// crash the stack may hold the operator's own scripts.
+/// process holds is locked and skipped. `UnwindPractice` and `BreakTarget` are reported, never
+/// executed: since the crash the stack may hold the operator's own scripts and the target may run
+/// because the operator started it.
 pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsFn) -> CleanupReport {
     let mut report = CleanupReport::default();
     let Ok(entries) = fs::read_dir(state_dir.join(JOURNAL_DIR)) else { return report };
@@ -417,18 +428,18 @@ pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsF
         let mut needs_root = false;
         for line in text.lines().filter(|l| !l.is_empty()) {
             match Undo::from_line(line) {
-                Some(Undo::UnwindPractice) => report.items.push(CleanupItem {
-                    what: "unwind PRACTICE stack (left by an earlier run)".into(),
-                    outcome: CleanupOutcome::NotAttempted(
-                        "check PowerView; type END if a t32ctl script is halted".into(),
-                    ),
-                    manual: Some(cmd::END.to_string()),
-                }),
-                Some(undo) => {
-                    needs_root |=
-                        matches!(&undo, Undo::RemoveFile(p) | Undo::RemoveDir(p) if *p.root() == StageRoot::Macro);
-                    ledger.pending.push(undo);
-                }
+                Some(undo) => match undo.left_for_a_human() {
+                    Some(why) => report.items.push(CleanupItem {
+                        what: format!("{} (left by an earlier run)", undo.describe()),
+                        outcome: CleanupOutcome::NotAttempted(why.into()),
+                        manual: undo.manual_hint(),
+                    }),
+                    None => {
+                        needs_root |=
+                            matches!(&undo, Undo::RemoveFile(p) | Undo::RemoveDir(p) if *p.root() == StageRoot::Macro);
+                        ledger.pending.push(undo);
+                    }
+                },
                 None => report.items.push(CleanupItem {
                     what: format!("journal line {line:?} in {}", path.display()),
                     outcome: CleanupOutcome::NotAttempted("unreadable".into()),
