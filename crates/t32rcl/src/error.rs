@@ -86,7 +86,8 @@ impl std::error::Error for Violation {}
 pub struct RemoteError {
     pub op: Op,
     pub kind: RemoteKind,
-    /// Status byte `[0]` of the response, or 0 for a failed function or EXP call.
+    /// Status byte `[0]` of the response: 0 for a failed function, and for an EXP call that
+    /// failed with status 0.
     pub code: u8,
     /// Text after the u32 length at `[6..10]`, the failed function's text, or the EXP `EM` block.
     pub message: Option<String>,
@@ -123,7 +124,7 @@ pub enum RemoteKind {
     Locked,
     /// 60 invalid license, 83 no Remote API, 147 no device, 254 attach missing.
     Attach,
-    /// EXP reply without `PL` block; `EC`/`EM` carry the reason.
+    /// An EXP call failed: no `PL` block, or status 90. `EC`/`EM` carry the reason.
     ExpFailed,
     Other,
 }

@@ -201,14 +201,14 @@ impl Script {
         self.reply(m)
     }
 
-    fn exp_reply(self, blocks: &[(&[u8; 2], &[u8])]) -> Self {
+    fn exp_reply(self, status: u8, blocks: &[(&[u8; 2], &[u8])]) -> Self {
         let mut body = Vec::new();
         for (tag, content) in blocks {
             body.extend_from_slice(*tag);
             body.extend_from_slice(&(content.len() as u16).to_le_bytes());
             body.extend_from_slice(content);
         }
-        let mut m = vec![0, 0];
+        let mut m = vec![status, 0];
         m.extend_from_slice(&((body.len() + 4) as u16).to_le_bytes());
         m.extend_from_slice(&2u16.to_le_bytes());
         m.extend_from_slice(&body);
@@ -219,12 +219,17 @@ impl Script {
     pub fn reply_macro(self, value: &str) -> Self {
         let mut pl = vec![0, 0];
         pl.extend_from_slice(value.as_bytes());
-        self.exp_reply(&[(b"PL", &pl)])
+        self.exp_reply(0, &[(b"PL", &pl)])
     }
 
-    /// EXP failure: `EC` and `EM`, no `PL`.
+    /// EXP failure: `EC` and `EM`, no `PL`, status byte 0.
     pub fn reply_exp_error(self, code: u16, message: &str) -> Self {
-        self.exp_reply(&[(b"EC", &code.to_le_bytes()), (b"EM", message.as_bytes())])
+        self.reply_exp_failed(0, code, message)
+    }
+
+    /// EXP failure with a non-zero status byte: `EC` and `EM` still follow at `[6..]`.
+    pub fn reply_exp_failed(self, status: u8, code: u16, message: &str) -> Self {
+        self.exp_reply(status, &[(b"EC", &code.to_le_bytes()), (b"EM", message.as_bytes())])
     }
 
     /// `n` keepalive RESP frames, each `[0xFE, 0]`.

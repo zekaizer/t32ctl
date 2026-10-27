@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     Result,
-    error::{ConnectError, Error, ErrorClass, LocalError, NotRclEvidence, Op, PoisonCause, RemoteError, RemoteKind},
+    error::{ConnectError, Error, ErrorClass, LocalError, NotRclEvidence, Op, PoisonCause},
     link::{Cancel, Clock, Connector, Link, SystemClock, TcpConnector, Trace},
     value::{CallBudget, DevicePrompt, Endpoint, FuncValue, MacroName, MemAddr, PracticeState, TargetState, Tuning},
     version::{BASE_FUNCTIONS, BUILD_FUNCTIONS, PowerViewBuild},
@@ -205,8 +205,7 @@ impl Session {
                 self.note_lossy(lossy);
                 Ok(v)
             }
-            Err(wire::FunctionReply::Remote(r)) => Err(r.into()),
-            Err(wire::FunctionReply::Violation(v)) => Err(self.violation(Op::Function, v)),
+            Err(f) => Err(self.fault(Op::Function, f)),
         }
     }
 
@@ -272,9 +271,8 @@ impl Session {
     }
 
     pub fn macro_get(&mut self, name: &MacroName) -> Result<String> {
-        let reply = self.exp(Op::MacroGet, req::macro_get(name, self.opts.tuning.macro_spelling()))?;
-        let Some(payload) = reply.payload.as_deref() else { return Err(exp_failure(Op::MacroGet, &reply)) };
-        match resp::macro_value(payload) {
+        let payload = self.exp(Op::MacroGet, req::macro_get(name, self.opts.tuning.macro_spelling()))?;
+        match resp::macro_value(&payload) {
             Ok((value, lossy)) => {
                 self.note_lossy(lossy);
                 Ok(value)
@@ -284,8 +282,8 @@ impl Session {
     }
 
     pub fn macro_set(&mut self, name: &MacroName, value: &str) -> Result<()> {
-        let reply = self.exp(Op::MacroSet, req::macro_set(name, self.opts.tuning.macro_spelling(), value)?)?;
-        if reply.payload.is_some() { Ok(()) } else { Err(exp_failure(Op::MacroSet, &reply)) }
+        self.exp(Op::MacroSet, req::macro_set(name, self.opts.tuning.macro_spelling(), value)?)?;
+        Ok(())
     }
 
     /// Build numbers, cached per connection. Each spelling in `BUILD_FUNCTIONS` is tried in order;
@@ -329,10 +327,17 @@ impl Session {
         }
     }
 
-    fn exp(&mut self, op: Op, draft: wire::Draft) -> Result<wire::ExpReply> {
+    /// The `PL` payload of an EXP call.
+    fn exp(&mut self, op: Op, draft: wire::Draft) -> Result<Vec<u8>> {
         let reply = self.exchange(op, &draft)?;
-        let result = resp::status(op, &reply)?;
-        resp::exp(result).map_err(|v| self.violation(op, v))
+        resp::exp(op, &reply).map_err(|f| self.fault(op, f))
+    }
+
+    fn fault(&mut self, op: Op, fault: wire::ReplyFault) -> Error {
+        match fault {
+            wire::ReplyFault::Remote(r) => r.into(),
+            wire::ReplyFault::Violation(v) => self.violation(op, v),
+        }
     }
 
     /// A malformed response poisons the link like a framing error does.
@@ -362,16 +367,6 @@ fn attach_failure(endpoint: Endpoint, e: Error, banner: Option<String>) -> Conne
         Error::Remote(remote) => ConnectError::Rejected { endpoint, remote },
         other => ConnectError::Io { endpoint, source: std::io::Error::other(other.to_string()) },
     }
-}
-
-fn exp_failure(op: Op, reply: &wire::ExpReply) -> Error {
-    let message = match (&reply.error_message, reply.error_code) {
-        (Some(m), Some(c)) => Some(format!("{m} (EXP code {c})")),
-        (Some(m), None) => Some(m.clone()),
-        (None, Some(c)) => Some(format!("EXP code {c}")),
-        (None, None) => None,
-    };
-    RemoteError { op, kind: RemoteKind::ExpFailed, code: 0, message }.into()
 }
 
 /// Restores the previous `CallBudget` when dropped.

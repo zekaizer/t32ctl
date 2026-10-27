@@ -9,7 +9,7 @@ use std::{
 
 use super::*;
 use crate::{
-    CancelReason, LostCause, MacroSpelling, TimeoutKind, Violation,
+    CancelReason, LostCause, MacroSpelling, RemoteError, RemoteKind, TimeoutKind, Violation,
     testkit::{ConnectFailure, Expect, ManualClock, Request, Script, ScriptedConnector},
 };
 
@@ -246,6 +246,24 @@ fn remote_refusals_keep_the_session_live() {
         e.remote().map(|r| (r.kind, r.message.clone())),
         Some((RemoteKind::ExpFailed, Some("no such macro (EXP code 3)".into())))
     );
+    assert_eq!(s.health(), Health::Live);
+}
+
+#[test]
+fn a_failed_exp_call_with_a_status_byte_keeps_its_exp_code_and_message() {
+    let mut s = session(
+        Script::new()
+            .attach()
+            .expect_req(Request::MacroGet { name: "m".into() })
+            .reply_exp_failed(90, 3, "no such macro")
+            .expect_req(Request::MacroSet { name: "m".into(), value: "v".into() })
+            .reply_exp_failed(90, 7, "locked"),
+    );
+    let got = |r: Result<()>| r.unwrap_err().remote().cloned();
+    let want = |op, code, text: &str| RemoteError { op, kind: RemoteKind::ExpFailed, code, message: Some(text.into()) };
+    let m = MacroName::new("m").unwrap();
+    assert_eq!(got(s.macro_get(&m).map(drop)), Some(want(Op::MacroGet, 90, "no such macro (EXP code 3)")));
+    assert_eq!(got(s.macro_set(&m, "v")), Some(want(Op::MacroSet, 90, "locked (EXP code 7)")));
     assert_eq!(s.health(), Health::Live);
 }
 

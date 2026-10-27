@@ -283,6 +283,7 @@ fn remote_kind(op: Op, code: u8) -> RemoteKind {
             Op::Command | Op::EvalString => RemoteKind::CommandFailed,
             Op::Function => RemoteKind::FunctionFailed,
             Op::MemRead | Op::MemWrite => RemoteKind::MemoryAccess,
+            Op::MacroGet | Op::MacroSet => RemoteKind::ExpFailed,
             _ => RemoteKind::Other,
         };
     }
@@ -302,9 +303,9 @@ pub(crate) struct ExpReply {
     pub payload: Option<Vec<u8>>,
 }
 
-/// Either a failed function or a malformed reply.
-#[derive(Debug)]
-pub(crate) enum FunctionReply {
+/// Either a refusal or a malformed reply.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ReplyFault {
     Remote(RemoteError),
     Violation(Violation),
 }
@@ -314,31 +315,33 @@ pub(crate) mod resp {
 
     /// Split `[err][id][result...]`. `msg.len() >= 2` is guaranteed by `wait::classify`.
     pub fn status(op: Op, msg: &[u8]) -> Result<&[u8], RemoteError> {
+        if msg[0] == 0 { Ok(&msg[2..]) } else { Err(status_error(op, msg)) }
+    }
+
+    /// The refusal of a reply with a non-zero status byte, generic layout.
+    fn status_error(op: Op, msg: &[u8]) -> RemoteError {
         let err = msg[0];
-        if err == 0 {
-            return Ok(&msg[2..]);
-        }
         let message = (msg.len() > 10)
             .then(|| {
                 let n = u32::from_le_bytes([msg[6], msg[7], msg[8], msg[9]]) as usize;
                 text(&msg[10..(10 + n).min(msg.len())]).0
             })
             .filter(|s| !s.is_empty());
-        Err(RemoteError { op, kind: remote_kind(op, err), code: err, message })
+        RemoteError { op, kind: remote_kind(op, err), code: err, message }
     }
 
     /// Result type 0 is a failed function whose text is PowerView's message. The `bool` reports
     /// lossy text decoding.
-    pub fn function(result: &[u8]) -> Result<(FuncValue, bool), FunctionReply> {
+    pub fn function(result: &[u8]) -> Result<(FuncValue, bool), ReplyFault> {
         if result.len() < 8 {
-            return Err(FunctionReply::Violation(Violation::ShortResponse { wanted: 8, got: result.len() }));
+            return Err(ReplyFault::Violation(Violation::ShortResponse { wanted: 8, got: result.len() }));
         }
         let ty = u32::from_le_bytes([result[0], result[1], result[2], result[3]]);
         let n = u32::from_le_bytes([result[4], result[5], result[6], result[7]]) as usize;
         let (body, lossy) = text(&result[8..(8 + n).min(result.len())]);
         if ty == 0 {
             let message = (!body.is_empty()).then_some(body);
-            return Err(FunctionReply::Remote(RemoteError {
+            return Err(ReplyFault::Remote(RemoteError {
                 op: Op::Function,
                 kind: RemoteKind::FunctionFailed,
                 code: 0,
@@ -400,8 +403,31 @@ pub(crate) mod resp {
         result.get(..want).ok_or(Violation::ShortResponse { wanted: want, got: result.len() })
     }
 
+    /// The `PL` payload of an EXP reply `msg`. Without `PL` the call failed: the reason comes from
+    /// `EC`/`EM` whatever the status byte, else from the generic layout of a non-zero status.
+    pub fn exp(op: Op, msg: &[u8]) -> Result<Vec<u8>, ReplyFault> {
+        match (msg[0], exp_blocks(&msg[2..])) {
+            (0, Ok(ExpReply { payload: Some(p), .. })) => Ok(p),
+            (status, Ok(r)) if status == 0 || r.error_code.is_some() || r.error_message.is_some() => {
+                Err(ReplyFault::Remote(exp_failure(op, status, &r)))
+            }
+            (0, Err(v)) => Err(ReplyFault::Violation(v)),
+            _ => Err(ReplyFault::Remote(status_error(op, msg))),
+        }
+    }
+
+    fn exp_failure(op: Op, code: u8, reply: &ExpReply) -> RemoteError {
+        let message = match (&reply.error_message, reply.error_code) {
+            (Some(m), Some(c)) => Some(format!("{m} (EXP code {c})")),
+            (Some(m), None) => Some(m.clone()),
+            (None, Some(c)) => Some(format!("EXP code {c}")),
+            (None, None) => None,
+        };
+        RemoteError { op, kind: RemoteKind::ExpFailed, code, message }
+    }
+
     /// `result` is `msg[2..]`: `[resp_len u16][resp_cmd u16][blocks...]`.
-    pub fn exp(result: &[u8]) -> Result<ExpReply, Violation> {
+    pub fn exp_blocks(result: &[u8]) -> Result<ExpReply, Violation> {
         if result.len() < 4 {
             return Err(Violation::ExpMalformed("shorter than its 4-byte header"));
         }
@@ -567,7 +593,7 @@ mod golden {
     #[test]
     fn function_type_zero_is_a_failure_with_text() {
         match resp::function(&function_result(0, "unknown function")) {
-            Err(FunctionReply::Remote(e)) => {
+            Err(ReplyFault::Remote(e)) => {
                 assert_eq!(e.kind, RemoteKind::FunctionFailed);
                 assert_eq!(e.message.as_deref(), Some("unknown function"));
             }
@@ -575,7 +601,7 @@ mod golden {
         }
         assert!(matches!(
             resp::function(&[1, 0, 0]),
-            Err(FunctionReply::Violation(Violation::ShortResponse { wanted: 8, got: 3 }))
+            Err(ReplyFault::Violation(Violation::ShortResponse { wanted: 8, got: 3 }))
         ));
     }
 
@@ -603,16 +629,36 @@ mod golden {
     #[test]
     fn exp_blocks() {
         let ok = hex("10 00 02 00 50 4c 05 00 00 00 61 62 63 00 00");
-        let r = resp::exp(&ok).expect("parses");
+        let r = resp::exp_blocks(&ok).expect("parses");
         assert_eq!(r.payload.as_deref(), Some(&b"\0\0abc"[..]));
         assert_eq!(resp::macro_value(r.payload.as_deref().expect("payload")), Ok(("abc".to_string(), false)));
 
         let failed = hex("10 00 02 00 45 43 02 00 07 01 45 4d 04 00 6e 6f 70 65 00 00");
-        let r = resp::exp(&failed).expect("parses");
+        let r = resp::exp_blocks(&failed).expect("parses");
         assert_eq!((r.error_code, r.error_message.as_deref(), r.payload), (Some(0x107), Some("nope"), None));
 
-        assert!(resp::exp(&hex("10 00")).is_err());
-        let unknown = resp::exp(&hex("10 00 02 00 5a 5a 01 00 00 50 4c 00 00")).expect("stops at unknown tag");
+        assert!(resp::exp_blocks(&hex("10 00")).is_err());
+        let unknown = resp::exp_blocks(&hex("10 00 02 00 5a 5a 01 00 00 50 4c 00 00")).expect("stops at unknown tag");
         assert_eq!(unknown.payload, None);
+    }
+
+    #[test]
+    fn a_failed_exp_reply_is_read_from_its_blocks_whatever_the_status_byte() {
+        let refusal = |code, message: &str| {
+            Err(ReplyFault::Remote(RemoteError {
+                op: Op::MacroGet,
+                kind: RemoteKind::ExpFailed,
+                code,
+                message: Some(message.into()),
+            }))
+        };
+        let status_90 = hex("5a 01 1d 00 02 00 45 43 02 00 03 00 45 4d 0d 00 6e 6f 20 73 75 63 68 20 6d 61 63 72 6f");
+        assert_eq!(resp::exp(Op::MacroGet, &status_90), refusal(90, "no such macro (EXP code 3)"));
+        let status_0 = hex("00 01 0c 00 02 00 45 43 02 00 07 01 45 4d 04 00 6e 6f 70 65");
+        assert_eq!(resp::exp(Op::MacroGet, &status_0), refusal(0, "nope (EXP code 263)"));
+        let generic = hex("5a 01 00 00 00 00 03 00 00 00 62 61 64");
+        assert_eq!(resp::exp(Op::MacroGet, &generic), refusal(90, "bad"));
+        let ok = hex("00 01 0b 00 02 00 50 4c 03 00 00 00 61");
+        assert_eq!(resp::exp(Op::MacroGet, &ok), Ok(b"\0\0a".to_vec()));
     }
 }
