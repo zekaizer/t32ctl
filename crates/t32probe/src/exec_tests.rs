@@ -16,10 +16,32 @@ use crate::{
     registry::Tier,
 };
 
-pub(crate) fn test_env(tag: &str) -> Env {
+/// An `Env` whose state directory is removed when the test ends.
+pub(crate) struct TestEnv(Env);
+
+impl std::ops::Deref for TestEnv {
+    type Target = Env;
+    fn deref(&self) -> &Env {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for TestEnv {
+    fn deref_mut(&mut self) -> &mut Env {
+        &mut self.0
+    }
+}
+
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0.cfg.state_dir);
+    }
+}
+
+pub(crate) fn test_env(tag: &str) -> TestEnv {
     let state_dir = std::env::temp_dir().join(format!("t32probe-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&state_dir);
-    Env::new(EnvConfig {
+    TestEnv(Env::new(EnvConfig {
         run_id: "r1".into(),
         hosts: vec!["pv".into()],
         port: 20000,
@@ -33,7 +55,7 @@ pub(crate) fn test_env(tag: &str) -> Env {
         latency_n: 3,
         gates: Gates::default(),
         wsl: WslFacts::default(),
-    })
+    }))
 }
 
 pub(crate) fn connect(scripts: Vec<Result<Script, ConnectFailure>>) -> Session {

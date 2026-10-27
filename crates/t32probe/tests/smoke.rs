@@ -21,12 +21,14 @@ fn bin() -> PathBuf {
 
 fn probe(port: u16, tag: &str) -> Output {
     let state = std::env::temp_dir().join(format!("t32probe-smoke-{tag}-{}", std::process::id()));
-    Command::new(bin())
+    let out = Command::new(bin())
         .args(["--host", "127.0.0.1", "--port", &port.to_string(), "--only", "connect", "--timeout", "0.5"])
         .arg("--state-dir")
         .arg(&state)
         .output()
-        .expect("t32probe runs")
+        .expect("t32probe runs");
+    let _ = std::fs::remove_dir_all(&state);
+    out
 }
 
 fn connect_line(out: &Output) -> String {
