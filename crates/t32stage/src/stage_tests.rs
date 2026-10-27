@@ -152,6 +152,68 @@ fn an_operator_script_started_after_our_run_is_never_unwound() {
     let _ = std::fs::remove_dir_all(state_dir);
 }
 
+/// Open, cached snapshot, then the run request up to and including `DO` of the runner.
+fn started(entry: &str) -> (Bundle, String, Script) {
+    let b = bundle();
+    let dir = format!("C:\\T\\t32ctl\\{}", b.key());
+    let mut s = opened(Script::new().attach());
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
+    s = idle(s, 0);
+    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Entry, entry);
+    s = set(s, Macro::Args, "");
+    (b, dir, s)
+}
+
+fn run_once(tag: &str, b: &Bundle, s: Script) -> RunOutcome {
+    let mut session = session_with(vec![Ok(s)], |_| {});
+    let cfg = config(tag);
+    let state_dir = cfg.state_dir.clone();
+    let mut st = stage(&mut session, cfg);
+    let snap = st.ensure_snapshot(&mut session, b).unwrap();
+    let req = RunRequest {
+        entry: RelPath::new("main.cmm").unwrap(),
+        args: vec![],
+        timeout: Duration::from_secs(5),
+        collect_outputs: false,
+    };
+    let outcome = st.run(&mut session, &snap, &req).unwrap().outcome;
+    assert!(st.close(&mut session).is_clean());
+    let _ = std::fs::remove_dir_all(state_dir);
+    outcome
+}
+
+#[test]
+fn a_script_halted_with_an_error_is_a_failure_with_the_error_text() {
+    let (b, dir, mut s) = started("main.cmm");
+    s = set(s, Macro::Token, "tok");
+    s = set(s, Macro::Done, "");
+    s = s.expect_cmd("ERROR.RESet").reply_ok().expect_cmd(&format!("DO \"{dir}\\.t32ctl\\runner.cmm\"")).reply_ok();
+    for _ in 0..2 {
+        s = s.expect_req(Request::PracticeState).reply_state(0);
+        s = get(s, Macro::Done, "").expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
+    }
+    s = s.expect_cmd("EVAL ERROR.MESSAGE()").reply_ok().expect_req(Request::EvalString).reply_string("unknown command");
+    s = s.expect_cmd("EVAL ERROR.CMDLINE()").reply_ok().expect_req(Request::EvalString).reply_string("NO_SUCH");
+    s = idle(s, 1).expect_fn("PRACTICE.StackDepth()").reply_decimal(1).expect_cmd("END").reply_ok();
+    s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
+    s = closed(s, false);
+
+    let outcome = run_once("stage-halted", &b, s);
+    let error = PracticeErrorInfo { message: "unknown command".into(), cmdline: "NO_SUCH".into() };
+    assert_eq!(outcome, RunOutcome::Halted { error: Some(error) });
+    assert!(!outcome.is_success());
+}
+
+#[test]
+fn a_runner_that_caught_an_error_finishes_with_rc_1_and_is_a_failure() {
+    let (b, dir, s) = started("main.cmm");
+    let s = closed(executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "\"1\"", ""), false);
+    let outcome = run_once("stage-rc1", &b, s);
+    assert_eq!(outcome, RunOutcome::Finished { rc: 1, message: String::new(), ret: String::new() });
+    assert!(!outcome.is_success());
+}
+
 #[test]
 fn a_busy_stack_is_refused_and_a_dialog_is_stopped_and_unwound() {
     let b = bundle();
