@@ -57,7 +57,7 @@ impl Undo {
         }
     }
 
-    /// What an operator types into PowerView if this undo could not run.
+    /// What an operator types into PowerView if this undo could not run, one command per line.
     pub fn manual_hint(&self) -> Option<String> {
         match self {
             Undo::RemoveFile(p) => Some(format!("RM \"{}\"", p.manual_hint())),
@@ -65,9 +65,8 @@ impl Undo {
             Undo::UnwindPractice => Some(cmd::END.to_string()),
             Undo::BreakTarget => Some(cmd::BREAK.to_string()),
             Undo::RestoreVm(s) => {
-                let clears: Vec<String> =
-                    s.chunks().iter().filter(|c| c.bytes.is_none()).map(|c| cmd::clear_vm(&c.region)).collect();
-                (!clears.is_empty()).then(|| clears.join("; "))
+                let clears: Vec<String> = s.uninit_runs().iter().map(cmd::clear_vm).collect();
+                (!clears.is_empty()).then(|| clears.join("\n"))
             }
             Undo::ClearMacros(_) => None,
         }
@@ -237,6 +236,7 @@ impl CleanupOutcome {
 pub struct CleanupItem {
     pub what: String,
     pub outcome: CleanupOutcome,
+    /// PowerView commands that undo it by hand, one per line.
     pub manual: Option<String>,
 }
 

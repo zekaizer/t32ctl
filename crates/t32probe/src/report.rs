@@ -200,13 +200,17 @@ pub fn header(env: &Env, build: Option<PowerViewBuild>) -> String {
     fit(format!("t32probe {} ", env!("CARGO_PKG_VERSION")), tokens, WIDTH)
 }
 
+/// One line per manual command, so each pastes as one PowerView command.
 fn residue_lines(label: &str, records: &[CleanupRecord]) -> Vec<String> {
+    let line = |c: &CleanupRecord, tail: String| {
+        fit(format!("RESIDUE {label}: "), words(&format!("{} {tail}", c.what)), WIDTH)
+    };
     records
         .iter()
         .filter(|c| !c.clean)
-        .map(|c| {
-            let tail = c.manual.as_deref().map_or_else(|| format!("({})", c.result), |m| format!("by hand: {m}"));
-            fit(format!("RESIDUE {label}: "), words(&format!("{} {tail}", c.what)), WIDTH)
+        .flat_map(|c| match c.manual.as_deref() {
+            Some(m) => m.lines().map(|cmd| line(c, format!("by hand: {cmd}"))).collect(),
+            None => vec![line(c, format!("({})", c.result))],
         })
         .collect()
 }
@@ -433,5 +437,9 @@ mod tests {
         });
         assert_eq!(residue_lines("tempdir", &o.cleanup), ["RESIDUE tempdir: remove file x by hand: RM \"C:\\x\""]);
         assert!(line(&o).ends_with("residue=1"));
+        o.cleanup[0].manual = Some("Data.CLEARVM VM:0x1000++0xFFF\nData.CLEARVM VM:0x3000++0xFFF".into());
+        let lines = residue_lines("vm-rw", &o.cleanup);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].ends_with("by hand: Data.CLEARVM VM:0x3000++0xFFF"), "{lines:?}");
     }
 }

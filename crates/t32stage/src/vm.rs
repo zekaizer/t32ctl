@@ -202,6 +202,21 @@ impl VmSnapshot {
         self.chunks.iter().filter(|c| c.bytes.is_none()).count()
     }
 
+    /// Uninitialized units with adjacent ones merged: the ranges a manual `Data.CLEARVM` covers.
+    pub fn uninit_runs(&self) -> Vec<VmRegion> {
+        let mut runs: Vec<VmRegion> = Vec::new();
+        for c in self.chunks.iter().filter(|c| c.bytes.is_none()) {
+            match runs.last_mut() {
+                Some(r) if r.start() + r.len() == c.region.start() => {
+                    let len = NonZeroU32::new(r.len() + c.region.len()).expect("non-empty units");
+                    *r = VmRegion { start: r.start(), len };
+                }
+                _ => runs.push(c.region),
+            }
+        }
+        runs
+    }
+
     /// Write captured units back, clear uninitialized ones, then read back every unit that was
     /// put back to verify it. A refused unit is recorded and the rest still restored; only an
     /// error that ends the connection or the call stops the restore.
@@ -334,6 +349,22 @@ mod tests {
         let snap = VmSnapshot::capture(&mut session, region()).unwrap();
         assert_eq!(snap.uninitialized(), 1);
         assert_eq!(snap.restore(&mut session).unwrap(), RestoreOutcome::Restored { uninit: 1 });
+    }
+
+    #[test]
+    fn the_manual_clear_is_one_command_per_run_of_uninitialized_units() {
+        let mut s = read(Script::new().attach(), 0x1000_0000).reply_error(16, "");
+        s = read(s, 0x1000_1000).reply_mem(&[1; 4096]);
+        s = read(s, 0x1000_2000).reply_error(16, "");
+        s = read(s, 0x1000_3000).reply_error(16, "");
+        let mut session = connect(s);
+        let four = VmRegion::new(0x1000_0000, NonZeroU32::new(4 * 4096).unwrap()).unwrap();
+        let snap = VmSnapshot::capture(&mut session, four).unwrap();
+        let hint = crate::ledger::Undo::RestoreVm(snap).manual_hint().unwrap();
+        assert_eq!(
+            hint.lines().collect::<Vec<_>>(),
+            ["Data.CLEARVM VM:0x10000000++0x00000FFF", "Data.CLEARVM VM:0x10002000++0x00001FFF"]
+        );
     }
 
     #[test]
