@@ -100,6 +100,11 @@ pub fn nameserver_from_resolv_conf(text: &str) -> Option<String> {
     text.lines().find_map(|l| l.strip_prefix("nameserver ")).map(|s| s.trim().to_string())
 }
 
+/// Fixed part of the cleanup budget after each probe, independent of the probe's own deadline.
+pub const CLEANUP_BASE: Duration = Duration::from_secs(30);
+/// Slowest RCL memory throughput the cleanup budget plans for, in bytes per second.
+const RESTORE_FLOOR: f64 = 1e6;
+
 /// Tunables measured by earlier probes and used by later ones. The executor copies them into
 /// each probe context and back.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -172,6 +177,12 @@ impl Env {
 
     pub fn deadline(&self, base: Duration) -> Duration {
         base.mul_f64(self.cfg.scale)
+    }
+
+    /// The cleanup budget after a probe: a fixed part plus time to write back and read back
+    /// every pending `VM:` restore at `RESTORE_FLOOR`, times `--scale`.
+    pub fn cleanup_deadline(&self, restore_bytes: u64) -> Duration {
+        self.deadline(CLEANUP_BASE + Duration::from_secs_f64(2.0 * restore_bytes as f64 / RESTORE_FLOOR))
     }
 
     pub fn exists(&self) -> ExistsFn {

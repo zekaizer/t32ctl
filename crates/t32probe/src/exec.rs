@@ -16,11 +16,11 @@
 
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use t32rcl::{Cancel, CancelReason, Error, Health, Session};
-use t32stage::{CleanupReport, Journal, Ledger, StageError};
+use t32stage::{CleanupReport, Journal, Ledger, StageError, Undo};
 
 use crate::{
     ctx::{ProbeCtx, ProbeFail},
@@ -28,9 +28,6 @@ use crate::{
     outcome::{ErrorRecord, Outcome, Revive, SkipReason, TraceSummary, Verdict, cleanup_records},
     registry::{ProbeDef, ProbeId},
 };
-
-/// Deadline of the cleanup after each probe, independent of the probe's own.
-pub const CLEANUP_BUDGET: Duration = Duration::from_secs(30);
 
 pub trait Observer {
     fn starting(&mut self, def: &ProbeDef);
@@ -103,7 +100,9 @@ impl<'a> Executor<'a> {
         let cancelled = probe_cancel.reason(self.session.now());
         self.session.set_tuning(parts.learned.tuning());
 
-        self.session.set_cancel(Cancel::new().with_deadline(self.session.now() + CLEANUP_BUDGET));
+        let restore_bytes = restore_bytes(parts.ledger.pending()) + parts.stage.restore_bytes();
+        let budget = self.env.cleanup_deadline(restore_bytes);
+        self.session.set_cancel(Cancel::new().with_deadline(self.session.now() + budget));
         let revive = (def.needs_connection && self.session.health() != Health::Live).then(|| self.revive());
         let mut cleanup = CleanupReport::default();
         cleanup.extend(parts.stage.close(self.session));
@@ -192,6 +191,11 @@ impl<'a> Executor<'a> {
             }
         }
     }
+}
+
+/// Bytes the pending `VM:` restores write back.
+pub(crate) fn restore_bytes(pending: &[Undo]) -> u64 {
+    pending.iter().map(|u| if let Undo::RestoreVm(s) = u { u64::from(s.region().len()) } else { 0 }).sum()
 }
 
 fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {

@@ -56,7 +56,7 @@ pub struct Args {
     #[arg(long, default_value_t = 10.0)]
     pub timeout: f64,
 
-    /// Multiply every probe deadline, e.g. 2 on a slow PC.
+    /// Multiply every probe and cleanup deadline, e.g. 2 on a slow PC.
     #[arg(long, default_value_t = 1.0)]
     pub scale: f64,
 

@@ -66,6 +66,15 @@ pub enum StageSlot {
 }
 
 impl StageSlot {
+    /// Bytes its pending `VM:` restores write back.
+    pub fn restore_bytes(&self) -> u64 {
+        match self {
+            StageSlot::Unopened => 0,
+            StageSlot::Open(stage) => crate::exec::restore_bytes(stage.pending()),
+            StageSlot::Failed(ledger) => crate::exec::restore_bytes(ledger.pending()),
+        }
+    }
+
     /// Run whatever the stage registered.
     pub fn close(self, session: &mut Session) -> CleanupReport {
         match self {

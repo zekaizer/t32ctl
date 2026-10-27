@@ -357,6 +357,11 @@ impl Stage {
         self.ledger.push(undo)
     }
 
+    /// Undos `close` will run, oldest first.
+    pub fn pending(&self) -> &[Undo] {
+        self.ledger.pending()
+    }
+
     /// Run every pending undo and release the lease.
     pub fn close(self, session: &mut Session) -> CleanupReport {
         self.ledger.run(session)

@@ -309,6 +309,15 @@ fn ctrl_c_finishes_the_current_cleanup_and_marks_the_rest_interrupted() {
 }
 
 #[test]
+fn the_cleanup_budget_grows_with_pending_restores_and_scale() {
+    let mut env = test_env("exec-budget");
+    assert_eq!(env.cleanup_deadline(0), Duration::from_secs(30));
+    assert_eq!(env.cleanup_deadline(5_000_000), Duration::from_secs(40), "write back and read back at 1 MB/s");
+    env.cfg.scale = 2.0;
+    assert_eq!(env.cleanup_deadline(5_000_000), Duration::from_secs(80));
+}
+
+#[test]
 fn verdict_table() {
     let (v, e, _) = verdict_of(Ok(Ok(())), Some(CancelReason::Deadline));
     assert_eq!((v, e.map(|e| e.tag)), (Verdict::Fail, Some("deadline".to_string())));

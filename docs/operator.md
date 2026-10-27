@@ -13,7 +13,7 @@ t32probe --only bundle                    one probe and the probes it requires
 t32probe --skip gzip,tar-download         all safe probes except these, unless one is required
 t32probe --list                           the catalogue: id, tier, deadline, prerequisites
 t32probe --host 172.28.80.1 --port 20003  explicit endpoint instead of --host auto
-t32probe --scale 2                        slow PC: double every probe deadline
+t32probe --scale 2                        slow PC: double every probe and cleanup deadline
 t32probe --timeout 20                     idle timeout per RCL call in seconds (default 10)
 t32probe --prompt B::                     the PowerView command-line prompt was changed
 t32probe --stage-root 'C:\t32stage'       stage files here instead of OS.PTD()\t32ctl
@@ -96,6 +96,7 @@ Cleanup residue does not change the exit status; it is reported on `RESIDUE` lin
 ## Ctrl-C
 
 The first Ctrl-C stops the current probe at its next RCL call, runs its cleanup with a fresh
-30-second budget, marks the remaining probes `INTR` and prints the partial report. A second
-Ctrl-C exits at once with 130; the JSON written after the previous probe stays valid, and the
-journal lets the next run finish the cleanup.
+budget (30 seconds plus time to write back and verify the `VM:` it touched at 1 MB/s, times
+`--scale`), marks the remaining probes `INTR` and prints the partial report. A second Ctrl-C
+exits at once with 130; the JSON written after the previous probe stays valid, and the journal
+lets the next run finish the cleanup.
