@@ -198,3 +198,34 @@ fn tar_download_removes_a_directory_it_made_before_a_later_mkdir_failed() {
     assert!(o.cleanup.iter().any(|c| c.what.ends_with("probe-r1\\o") && c.result == "done"), "{:?}", o.cleanup);
     assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
 }
+
+#[test]
+fn elf_unzip_reports_a_timed_out_direct_load_not_the_poisoned_call_after_it() {
+    let elf = b"\x7fELF t32probe test".to_vec();
+    let gz = t32stage::transfer::gzip(&elf);
+    let (at, n) = (0x0180_0000u64, gz.len());
+    let vm_read = Request::MemRead { access: "VM".into(), addr: at, len: n as u16 };
+    let file = format!("{STAGE}\\x.elf.gz");
+    let mut s = stage_opened(Script::new().attach()).expect_req(vm_read.clone()).reply_mem(&vec![0; n]);
+    s = s.expect_req(Request::MemWrite { access: "VM".into(), addr: at, data: gz.clone() }).reply_ok();
+    s = s.expect_cmd(&format!("Data.SAVE.Binary \"{file}\" VM:0x01800000++0x{:08X}", n - 1)).reply_ok();
+    for _ in 0..2 {
+        s = s.expect_fn(&format!("OS.FILE.SIZE(\"{file}\")")).reply_decimal(n as i64);
+    }
+    s = s.expect_cmd(&format!("Data.LOAD.Elf \"{file}\" /UNZIP /NoCODE /NoReg"));
+    let first = s.silence(Duration::from_millis(1100));
+    let mut s = Script::new().attach().expect_fn("TRUE()").reply_bool(true);
+    s = s.expect_req(Request::MemWrite { access: "VM".into(), addr: at, data: vec![0; n] }).reply_ok();
+    s = s.expect_req(vm_read).reply_mem(&vec![0; n]);
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{file}\")")).reply_bool(true);
+    s = s.expect_cmd(&format!("RM \"{file}\"")).reply_ok();
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{file}\")")).reply_bool(false);
+    let second = stage_closed(s);
+    let mut session = connect(vec![Ok(first), Ok(second)]);
+    let mut env = test_env("probe-elf-timeout");
+    env.cfg.gates.elf = Some(crate::cli::ElfInput { path: "x.elf".into(), bytes: elf, symbol: None });
+    let r = run(&mut env, &mut session, &[ProbeId::ElfUnzip.def()]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.error.as_ref().map(|e| e.tag.as_str()), Some("timeout"), "{:?}", o.error);
+    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+}

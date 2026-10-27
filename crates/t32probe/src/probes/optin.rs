@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use t32rcl::{Endpoint, Session, TargetState};
+use t32rcl::{Endpoint, ErrorClass, Session, TargetState};
 use t32stage::{
     Put, RunOutcome, Undo,
     practice::{cmd, fnc},
@@ -135,7 +135,10 @@ pub fn elf_unzip(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     ctx.headline("elf", Value::Bytes(elf.bytes.len() as u64));
     let (stage, session) = ctx.stage()?;
     let gz = stage.upload(session, Put::KeepGz, &elf.bytes, "x.elf.gz")?;
-    let direct = session.cmd(&cmd::load_elf_symbols(&gz.path, true));
+    let direct = match session.cmd(&cmd::load_elf_symbols(&gz.path, true)) {
+        Err(e) if matches!(e.class(), ErrorClass::ConnectionFatal | ErrorClass::Cancelled) => return Err(e.into()),
+        other => other,
+    };
     let plain = stage.upload(session, Put::Inflate, &elf.bytes, "x.elf")?;
     let fallback = soft(session.cmd(&cmd::load_elf_symbols(&plain.path, false)))?.is_some();
     let direct_ok = match direct {
