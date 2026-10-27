@@ -120,7 +120,7 @@ that probe. The probe report answers it.
 | Reading never-initialized `VM:` fails instead of returning zeros. | `vm-rw` | `t32stage::vm` |
 | `Data.CLEARVM <range>` exists on DVD 02/2024. | `vm-rw` | `practice::cmd::clear_vm` |
 | `OS.PTD()` answers; whether its text is ASCII-safe; trailing separator. | `tempdir` | `practice::fnc::PTD` |
-| `GLOBAL` and `&m=OS.PTD()+"\t32ctl"` over ExecuteCommand create and set the root macro, and later commands expand it. | `tempdir` | `practice::cmd::bind_root` |
+| `GLOBAL` and `&m=OS.PTD()+"\t32ctl"` over ExecuteCommand create and set the root macro, and both later commands and ExecuteFunction expressions expand it. | `tempdir` | `practice::cmd::bind_root` |
 | Which of `OS.FILE.readable`, `OS.FILE.EXIST`, `FILE.EXIST` answers. | `tempdir` | `practice::ExistsFn` |
 | `PRACTICE.StackDepth()` answers over ExecuteFunction. | `tempdir` | `practice::fnc::STACK_DEPTH` |
 | `/UNZIP` refuses a corrupt gzip (the bundle's integrity check). | `gzip` | `Stage::ensure_snapshot` |

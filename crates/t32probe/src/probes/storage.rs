@@ -64,8 +64,20 @@ pub fn tempdir(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     };
     ctx.measure("root_macro", Value::Text(root_text));
     let macro_mode = if bound { exercise_root(ctx, &StageRoot::Macro, "mac", &one)? } else { None };
+    // Macro mode needs both halves: `MKDIR` (a command) and `OS.DIR` (a function) must expand
+    // `&t32ctl_root`. Measured apart, so `macro=FAIL` says which half failed.
+    let root_dir = format!("OS.DIR(\"{}\")", t32stage::Macro::Root.amp());
+    let (fn_side, cmd_side) = if bound {
+        let f = soft(ctx.session.eval(&root_dir).and_then(|v| v.into_bool("OS.DIR")))?;
+        (f, soft(ctx.session.eval_string(&root_dir))?)
+    } else {
+        (None, None)
+    };
+    ctx.measure("root_fn_expand", Value::Text(format!("{fn_side:?}")));
+    ctx.measure("root_cmd_eval", Value::Text(format!("{cmd_side:?}")));
     ctx.text("literal", if ascii { ok(literal.is_some()) } else { "n/a" });
     ctx.text("macro", ok(macro_mode.is_some()));
+    ctx.text("macro_fn", ok(fn_side == Some(true)));
 
     let chosen = match &ctx.env.cfg.stage_root {
         Some(p) => StageRoot::Literal(p.clone()),

@@ -134,7 +134,8 @@ pub enum StageRoot {
     Literal(PvPath),
     /// `&t32ctl_root`, bound by `cmd::bind_root` and expanded by PowerView, so a temp directory in
     /// an unknown code page never travels through the client's command bytes.
-    /// ASSUMED(tempdir): command-line assignment creates the global and later commands expand it.
+    /// ASSUMED(tempdir): command-line assignment creates the global, and both later commands and
+    /// expressions sent over ExecuteFunction expand it; the probe measures the two apart.
     Macro,
 }
 
