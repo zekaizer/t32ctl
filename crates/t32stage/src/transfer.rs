@@ -160,4 +160,13 @@ mod tests {
         .unwrap();
         assert_eq!(seen, ["a/b"]);
     }
+
+    #[test]
+    fn a_refused_registration_stops_ensure_dir_before_its_mkdir() {
+        let dir = StageRoot::from_ptd("C:\\T").path(RelPath::new("a/b").unwrap());
+        let s = Script::new().attach().expect_fn("OS.DIR(\"C:\\T\\t32ctl\\a\")").reply_bool(false);
+        let journal_full =
+            |_: &StagePath| Err(StageError::Journal { path: "j".into(), source: std::io::Error::other("disk full") });
+        assert!(matches!(ensure_dir(&mut session(s), &dir, journal_full), Err(StageError::Journal { .. })));
+    }
 }
