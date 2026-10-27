@@ -1,0 +1,11 @@
+[package]
+name = "t32ctl"
+description = "Agent-facing TRACE32 CLI over RCL (skeleton: status only)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,37 @@
+# t32rcl    RCL client over NETTCP. Protocol only, std only, reusable outside the CLI.
+# t32stage  Staging over RCL: VM: transfer, self-extracting bundles, script runner, cleanup.
+# t32probe  Phase 0 measurement binary.
+# t32ctl    Phase 1 CLI skeleton (`status` only).
+#
+# Dependency direction: t32ctl, t32probe -> t32stage -> t32rcl.
+
+[workspace]
+resolver = "3"
+members = ["crates/t32rcl", "crates/t32stage", "crates/t32probe", "crates/t32ctl"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# std::fs::File::try_lock (VM: lease, journal lock) is stable from 1.89.
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/zekaizer/t32ctl"
+
+[workspace.dependencies]
+t32rcl = { path = "crates/t32rcl" }
+t32stage = { path = "crates/t32stage" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+# panic = "unwind" stays: t32probe catches a panicking probe so its cleanup still runs.
