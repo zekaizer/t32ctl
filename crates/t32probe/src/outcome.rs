@@ -36,6 +36,16 @@ impl Verdict {
     }
 }
 
+/// Measurement keys the `config` line reads, shared with the probes that record them.
+pub mod key {
+    pub const CHUNK_R: &str = "chunk_r";
+    pub const CHUNK_W: &str = "chunk_w";
+    pub const SPELLING: &str = "spelling";
+    pub const KEEPALIVE_INTERVAL: &str = "interval";
+    pub const EXISTS: &str = "exists";
+    pub const ROOT: &str = "root";
+}
+
 /// A measured quantity with a unit. Formatting happens once, in `report`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "unit", content = "v", rename_all = "snake_case")]

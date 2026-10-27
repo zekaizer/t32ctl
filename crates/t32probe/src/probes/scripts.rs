@@ -9,7 +9,7 @@ use t32stage::{RunOutcome, Undo, practice::fnc, transfer};
 use super::{bundle_of, ok, pattern, run_entry, soft};
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
-    outcome::Value,
+    outcome::{Value, key},
 };
 
 fn name(s: &str) -> MacroName {
@@ -46,7 +46,7 @@ pub fn macro_probe(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     };
     ctx.session.set_tuning(base.with_macro_spelling(spelling));
     ctx.learned.macro_spelling = Some(spelling);
-    ctx.text("spelling", spelling.tag());
+    ctx.text(key::SPELLING, spelling.tag());
     ctx.text("declare", declare);
 
     ctx.session.macro_set(&a, "keep")?;

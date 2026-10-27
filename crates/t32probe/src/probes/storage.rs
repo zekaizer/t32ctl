@@ -13,7 +13,7 @@ use t32stage::{
 use super::{ok, pattern, scratch_regions, soft};
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
-    outcome::Value,
+    outcome::{Value, key},
     stats::mb_per_sec,
 };
 
@@ -71,7 +71,7 @@ pub fn tempdir(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
         Some(p) => StageRoot::Literal(p.clone()),
         None => StageRoot::from_ptd(&ptd),
     };
-    ctx.text("root", chosen.tag());
+    ctx.text(key::ROOT, chosen.tag());
     let file = match (&chosen, literal, macro_mode) {
         (StageRoot::Macro, _, Some(f)) => f,
         (StageRoot::Literal(_), Some(f), _) if ctx.env.cfg.stage_root.is_none() => f,
@@ -104,7 +104,7 @@ pub fn tempdir(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
         return Err(ProbeFail::Check("no file-exists function answers correctly".into()));
     };
     ctx.learned.exists = Some(exists);
-    ctx.text("exists", exists.name());
+    ctx.text(key::EXISTS, exists.name());
 
     let again = soft(ctx.session.cmd(&cmd::mkdir(&dir)))?.is_some();
     ctx.text("mkdir_exists", if again { "ok" } else { "error" });
@@ -191,8 +191,8 @@ pub fn vm_rw(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
         }
     }
     if let Some((r, w)) = best {
-        ctx.measure("chunk_r", Value::Count(r as u64));
-        ctx.measure("chunk_w", Value::Count(w as u64));
+        ctx.measure(key::CHUNK_R, Value::Count(r as u64));
+        ctx.measure(key::CHUNK_W, Value::Count(w as u64));
         let limit = if stop.is_none() { "(client-limit)" } else { "" };
         ctx.text("chunk", format!("r{r}/w{w}{limit}"));
     }

@@ -24,6 +24,9 @@ use crate::{
     vm::{RestoreOutcome, VmSnapshot},
 };
 
+/// How `Undo::describe` begins for a `VM:` restore; reports find restores by it.
+pub const RESTORE_VM: &str = "restore VM:";
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Undo {
@@ -48,7 +51,7 @@ impl Undo {
         match self {
             Undo::RemoveFile(p) => format!("remove file {p}"),
             Undo::RemoveDir(p) => format!("remove dir {p}"),
-            Undo::RestoreVm(s) => format!("restore VM:{:#x}+{:#x}", s.region().start(), s.region().len()),
+            Undo::RestoreVm(s) => format!("{RESTORE_VM}{:#x}+{:#x}", s.region().start(), s.region().len()),
             Undo::UnwindPractice => "unwind PRACTICE stack".to_string(),
             Undo::ClearMacros(m) => {
                 format!("clear macros {}", m.iter().map(MacroName::as_str).collect::<Vec<_>>().join(","))

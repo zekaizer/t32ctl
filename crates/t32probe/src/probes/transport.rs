@@ -12,7 +12,7 @@ use t32stage::practice::fnc;
 use super::{hex, ok};
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
-    outcome::Value,
+    outcome::{Value, key},
     stats::Stats,
 };
 
@@ -131,10 +131,12 @@ pub fn keepalive(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     match (at.first(), Stats::from_samples(&mut gaps)) {
         (Some(first), Some(st)) => {
             ctx.measure("first", Value::Seconds(first.as_secs_f64()));
-            ctx.headline("interval", Value::Seconds(st.p50.as_secs_f64()));
+            ctx.headline(key::KEEPALIVE_INTERVAL, Value::Seconds(st.p50.as_secs_f64()));
         }
-        (Some(first), None) => ctx.headline("interval", Value::Text(format!("once@{:.2}s", first.as_secs_f64()))),
-        (None, _) => ctx.headline("interval", Value::Text("none".into())),
+        (Some(first), None) => {
+            ctx.headline(key::KEEPALIVE_INTERVAL, Value::Text(format!("once@{:.2}s", first.as_secs_f64())));
+        }
+        (None, _) => ctx.headline(key::KEEPALIVE_INTERVAL, Value::Text("none".into())),
     }
     let raw: Vec<String> = trace.keepalive_raw.iter().map(|b| hex(b)).collect();
     ctx.measure("raw", Value::Text(raw.join(" ")));

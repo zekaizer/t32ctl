@@ -25,7 +25,7 @@ use t32stage::CleanupReport;
 use crate::{
     env::{Env, WslFacts},
     exec::RunResult,
-    outcome::{CleanupRecord, Outcome, Value, Verdict, cleanup_records, exit_code},
+    outcome::{CleanupRecord, Outcome, Value, Verdict, cleanup_records, exit_code, key},
     registry::ProbeId,
 };
 
@@ -103,7 +103,7 @@ pub fn render_line(o: &Outcome, width: usize) -> String {
             tokens.push(format!("first_call={}", ms(f)));
         }
     }
-    for c in o.cleanup.iter().filter(|c| c.what.starts_with("restore VM:")) {
+    for c in o.cleanup.iter().filter(|c| c.what.starts_with(t32stage::RESTORE_VM)) {
         tokens.push(format!("restore={}", if c.clean { "ok" } else { "FAILED" }));
     }
     let residue = o.residue().count();
@@ -163,12 +163,12 @@ pub fn config(outcomes: &[Outcome]) -> Config {
         _ => None,
     };
     Config {
-        read_chunk: count(ProbeId::VmRw, "chunk_r"),
-        write_chunk: count(ProbeId::VmRw, "chunk_w"),
-        macro_spelling: text(ProbeId::Macro, "spelling"),
-        keepalive: find(outcomes, ProbeId::Keepalive, "interval").map(format_value),
-        exists_fn: text(ProbeId::Tempdir, "exists"),
-        stage_root: text(ProbeId::Tempdir, "root"),
+        read_chunk: count(ProbeId::VmRw, key::CHUNK_R),
+        write_chunk: count(ProbeId::VmRw, key::CHUNK_W),
+        macro_spelling: text(ProbeId::Macro, key::SPELLING),
+        keepalive: find(outcomes, ProbeId::Keepalive, key::KEEPALIVE_INTERVAL).map(format_value),
+        exists_fn: text(ProbeId::Tempdir, key::EXISTS),
+        stage_root: text(ProbeId::Tempdir, key::ROOT),
     }
 }
 
@@ -424,11 +424,35 @@ mod tests {
     #[test]
     fn the_config_line_comes_from_passing_measurements_only() {
         let mut vm = Outcome::new(ProbeId::VmRw, Verdict::Pass);
-        vm.measurements.push(Measurement { key: "chunk_r".into(), value: Value::Count(4088), headline: false });
+        vm.measurements.push(Measurement { key: key::CHUNK_R.into(), value: Value::Count(4088), headline: false });
         let mut mac = Outcome::new(ProbeId::Macro, Verdict::Fail);
-        mac.measurements.push(Measurement { key: "spelling".into(), value: Value::Text("amp".into()), headline: true });
+        mac.measurements.push(Measurement {
+            key: key::SPELLING.into(),
+            value: Value::Text("amp".into()),
+            headline: true,
+        });
         let c = config(&[vm, mac]);
         assert_eq!((c.read_chunk, c.macro_spelling), (Some(4088), None));
+    }
+
+    #[test]
+    fn a_vm_restore_from_a_real_ledger_shows_on_the_line_as_restore_ok_or_failed() {
+        use t32rcl::testkit::{Request, Script};
+        use t32stage::{ExistsFn, Ledger, Undo, VmRegion, VmSnapshot};
+        let at = 0x0100_0000u32;
+        let read = |s: Script| s.expect_req(Request::MemRead { access: "VM".into(), addr: at.into(), len: 16 });
+        for (back, want) in [([1u8; 16], "restore=ok"), ([2u8; 16], "restore=FAILED")] {
+            let s = read(Script::new().attach()).reply_mem(&[1; 16]);
+            let s = s.expect_req(Request::MemWrite { access: "VM".into(), addr: at.into(), data: vec![1; 16] });
+            let s = read(s.reply_ok()).reply_mem(&back);
+            let mut session = crate::exec::tests::connect(vec![Ok(s)]);
+            let region = VmRegion::new(at, std::num::NonZeroU32::new(16).unwrap()).unwrap();
+            let mut ledger = Ledger::new(ExistsFn::default());
+            ledger.push(Undo::RestoreVm(VmSnapshot::capture(&mut session, region).unwrap())).unwrap();
+            let mut o = Outcome::new(ProbeId::VmRw, Verdict::Pass);
+            o.cleanup = cleanup_records(&ledger.run(&mut session));
+            assert!(line(&o).split(' ').any(|t| t == want), "{}", line(&o));
+        }
     }
 
     #[test]
