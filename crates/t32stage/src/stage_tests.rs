@@ -88,6 +88,20 @@ fn stage(session: &mut Session, cfg: StageConfig) -> Stage {
 }
 
 #[test]
+fn a_failed_open_hands_its_cleanup_back_without_running_it() {
+    let s = Script::new().attach().expect_fn("OS.PTD()").reply_text("C:\\T");
+    let s = s.expect(Expect::CommandStarting("GLOBAL &t32ctl_snap".into())).reply_error(90, "refused");
+    let mut session = session_with(vec![Ok(s)], |_| {});
+    let cfg = config("stage-open-failed");
+    let state_dir = cfg.state_dir.clone();
+    let failed = Stage::open(&mut session, cfg).unwrap_err();
+    assert!(matches!(failed.error, StageError::Rcl(_)), "{failed}");
+    assert!(matches!(failed.cleanup.pending(), [Undo::ClearMacros(_)]));
+    failed.cleanup.discard();
+    let _ = std::fs::remove_dir_all(state_dir);
+}
+
+#[test]
 fn a_cached_snapshot_costs_one_call_and_a_run_finishes_by_token() {
     let b = bundle();
     let dir = format!("C:\\T\\t32ctl\\{}", b.key());

@@ -3,9 +3,9 @@ use std::{sync::Arc, time::Duration};
 
 use t32rcl::{
     CallBudget, ConnectOpts, Endpoint, MacroName,
-    testkit::{ConnectFailure, ManualClock, Request, Script, ScriptedConnector},
+    testkit::{ConnectFailure, Expect, ManualClock, Request, Script, ScriptedConnector},
 };
-use t32stage::{Undo, VmWindow};
+use t32stage::{Macro, Undo, VmWindow};
 
 use super::*;
 use crate::{
@@ -128,6 +128,12 @@ fn hangs(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     Ok(())
 }
 
+fn opens_a_stage(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+    ctx.push(clear_rc())?;
+    ctx.stage()?;
+    Ok(())
+}
+
 fn kills(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     ctx.session.cmd("X")?;
     Ok(())
@@ -213,6 +219,31 @@ fn probe_deadlines_run_on_the_session_clock() {
     let mut env = test_env("exec-clock");
     let r = run(&mut env, &mut session, &[def(ProbeId::Version, &[], 5, calls_once)]);
     assert_eq!(r.outcomes[0].verdict, Verdict::Pass, "{:?}", r.outcomes[0]);
+}
+
+#[test]
+fn a_deadline_inside_stage_open_is_cleaned_up_on_the_revived_connection() {
+    let first = Script::new()
+        .attach()
+        .expect_fn("OS.PTD()")
+        .reply_text("C:\\T")
+        .expect(Expect::CommandStarting("GLOBAL &t32ctl_snap".into()))
+        .silence(Duration::from_secs(6));
+    let mut second = Script::new().attach().expect_fn("TRUE()").reply_bool(true);
+    for m in Macro::ALL.iter().filter(|m| **m != Macro::Root) {
+        second = second.expect_req(Request::MacroSet { name: m.text().into(), value: String::new() }).reply_macro("");
+    }
+    let second = cleared(second).expect_fn("TRUE()").reply_bool(true);
+    let mut session = connect(vec![Ok(first), Ok(second)]);
+    let mut env = test_env("exec-stage-open");
+    let defs = [def(ProbeId::Keepalive, &[], 5, opens_a_stage), def(ProbeId::Latency, &[], 5, calls_once)];
+    let r = run(&mut env, &mut session, &defs);
+    let o = &r.outcomes[0];
+    assert_eq!(o.error.as_ref().map(|e| e.tag.as_str()), Some("deadline"));
+    assert!(o.revive.as_ref().is_some_and(|v| v.ok), "{:?}", o.revive);
+    assert!(o.cleanup.iter().any(|c| c.what.starts_with("clear macros t32ctl_snap")), "{:?}", o.cleanup);
+    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+    assert_eq!(r.outcomes[1].verdict, Verdict::Pass, "{:?}", r.outcomes[1]);
 }
 
 #[test]

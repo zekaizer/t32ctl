@@ -33,7 +33,7 @@ pub use ledger::{
 pub use macros::Macro;
 pub use practice::{ExistsFn, PvPath, RelPath, StagePath, StageRoot, Symbol};
 pub use runner::{PollSchedule, PollStats, PracticeErrorInfo, RunOutcome, RunReport, RunRequest, runner_cmm};
-pub use stage::{Outputs, Retention, Snapshot, Stage, StageConfig, StagedFile, UploadStats};
+pub use stage::{OpenError, Outputs, Retention, Snapshot, Stage, StageConfig, StagedFile, UploadStats};
 pub use tar::{TarDiag, TarEntry, diagnose as diagnose_tar, walk as walk_tar};
 pub use transfer::Put;
 pub use vm::{Prior, RestoreOutcome, SNAPSHOT_UNIT, VmGuard, VmLease, VmRegion, VmSnapshot, VmWindow};

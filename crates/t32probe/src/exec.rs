@@ -102,9 +102,7 @@ impl<'a> Executor<'a> {
         self.session.set_cancel(Cancel::new().with_deadline(self.session.now() + CLEANUP_BUDGET));
         let revive = (def.needs_connection && self.session.health() != Health::Live).then(|| self.revive());
         let mut cleanup = CleanupReport::default();
-        if let Some(stage) = parts.stage {
-            cleanup.extend(stage.close(self.session));
-        }
+        cleanup.extend(parts.stage.close(self.session));
         cleanup.extend(parts.ledger.run(self.session));
         drop(parts.lease);
         self.session.set_cancel(self.env.cancel.clone());

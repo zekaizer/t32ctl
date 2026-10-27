@@ -4,7 +4,8 @@
 
 use t32rcl::{Feature, RemoteKind, Session, Support};
 use t32stage::{
-    ExistsFn, LeaseError, Ledger, Retention, Stage, StageConfig, StageError, StagePath, Undo, VmLease, VmWindow,
+    CleanupReport, ExistsFn, LeaseError, Ledger, OpenError, Retention, Stage, StageConfig, StageError, StagePath, Undo,
+    VmLease, VmWindow,
 };
 
 use crate::{
@@ -55,6 +56,26 @@ via_stage!(t32stage::VmError, t32stage::PathError, t32stage::LeaseError, t32stag
 
 pub type ProbeResult = Result<(), ProbeFail>;
 
+/// The probe's `Stage`. A failed open keeps the cleanup it registered for the executor, which
+/// runs it under the cleanup `Cancel`; the open is not retried.
+#[derive(Debug)]
+pub enum StageSlot {
+    Unopened,
+    Open(Box<Stage>),
+    Failed(Ledger),
+}
+
+impl StageSlot {
+    /// Run whatever the stage registered.
+    pub fn close(self, session: &mut Session) -> CleanupReport {
+        match self {
+            StageSlot::Unopened => CleanupReport::default(),
+            StageSlot::Open(stage) => stage.close(session),
+            StageSlot::Failed(ledger) => ledger.run(session),
+        }
+    }
+}
+
 pub struct ProbeCtx<'a> {
     pub session: &'a mut Session,
     pub env: &'a Env,
@@ -62,7 +83,7 @@ pub struct ProbeCtx<'a> {
     /// Register undos here before creating anything; the executor runs it on every exit path.
     pub ledger: Ledger,
     pub learned: Learned,
-    stage: Option<Stage>,
+    stage: StageSlot,
     lease: Option<VmLease>,
     measurements: Vec<Measurement>,
 }
@@ -71,7 +92,7 @@ pub struct ProbeCtx<'a> {
 pub struct Parts {
     pub measurements: Vec<Measurement>,
     pub ledger: Ledger,
-    pub stage: Option<Stage>,
+    pub stage: StageSlot,
     pub learned: Learned,
     /// Dropped after cleanup, so the restore runs under the lease.
     pub lease: Option<VmLease>,
@@ -79,7 +100,16 @@ pub struct Parts {
 
 impl<'a> ProbeCtx<'a> {
     pub fn new(session: &'a mut Session, env: &'a Env, probe: ProbeId, ledger: Ledger) -> Self {
-        Self { session, env, probe, ledger, learned: env.learned, stage: None, lease: None, measurements: Vec::new() }
+        Self {
+            session,
+            env,
+            probe,
+            ledger,
+            learned: env.learned,
+            stage: StageSlot::Unopened,
+            lease: None,
+            measurements: Vec::new(),
+        }
     }
 
     /// JSON only.
@@ -138,7 +168,7 @@ impl<'a> ProbeCtx<'a> {
     /// A `Stage` on `probe-<run id>` in the second half of the window, snapshotting `VM:` it
     /// touches and removing everything it creates. Closed by the executor.
     pub fn stage(&mut self) -> Result<(&mut Stage, &mut Session), ProbeFail> {
-        if self.stage.is_none() {
+        if matches!(self.stage, StageSlot::Unopened) {
             let cfg = StageConfig {
                 window: self.env.stage_window(),
                 guard: t32stage::VmGuard::SnapshotRestore,
@@ -151,9 +181,19 @@ impl<'a> ProbeCtx<'a> {
                 holder: format!("t32probe {}", self.env.cfg.run_id),
                 journal_name: format!("{}-{}-stage", self.env.cfg.run_id, self.probe.name()),
             };
-            self.stage = Some(Stage::open(self.session, cfg)?);
+            self.stage = match Stage::open(self.session, cfg) {
+                Ok(stage) => StageSlot::Open(Box::new(stage)),
+                Err(failed) => {
+                    let OpenError { error, cleanup } = *failed;
+                    self.stage = StageSlot::Failed(cleanup);
+                    return Err(error.into());
+                }
+            };
         }
-        Ok((self.stage.as_mut().expect("opened above"), &mut *self.session))
+        match &mut self.stage {
+            StageSlot::Open(stage) => Ok((&mut **stage, &mut *self.session)),
+            _ => Err(ProbeFail::Check("the stage failed to open earlier in this probe".into())),
+        }
     }
 
     /// `probe-<run id>/<rel>` below the stage root, its removal registered with the stage so it

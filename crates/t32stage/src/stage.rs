@@ -15,6 +15,7 @@
 
 use std::{
     collections::BTreeSet,
+    fmt,
     num::NonZeroU32,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
@@ -98,6 +99,26 @@ pub struct Outputs {
 
 const UNPACK_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// `Stage::open` failed. `cleanup` holds what was registered before the failure. The caller runs
+/// it under a `Cancel` of its own: the failure may be the caller's deadline or Ctrl-C firing.
+#[derive(Debug)]
+pub struct OpenError {
+    pub error: StageError,
+    pub cleanup: Ledger,
+}
+
+impl fmt::Display for OpenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for OpenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 #[derive(Debug)]
 pub struct Stage {
     cfg: StageConfig,
@@ -111,10 +132,14 @@ pub struct Stage {
 
 impl Stage {
     /// Take the VM: lease, open the journal, resolve the root, declare the macros, ensure the
-    /// root and subdirectory exist. On failure everything registered so far is undone.
-    pub fn open(session: &mut Session, cfg: StageConfig) -> Result<Self, StageError> {
-        let lease = VmLease::acquire(&cfg.state_dir, cfg.window, &cfg.holder)?;
-        let ledger = Ledger::journaled(Journal::create(&cfg.state_dir, &cfg.journal_name)?, cfg.exists);
+    /// root and subdirectory exist. On failure nothing is undone here: `OpenError::cleanup`
+    /// carries what was registered so far.
+    pub fn open(session: &mut Session, cfg: StageConfig) -> Result<Self, Box<OpenError>> {
+        let exists = cfg.exists;
+        let bare = move |error: StageError| Box::new(OpenError { error, cleanup: Ledger::new(exists) });
+        let lease = VmLease::acquire(&cfg.state_dir, cfg.window, &cfg.holder).map_err(|e| bare(e.into()))?;
+        let journal = Journal::create(&cfg.state_dir, &cfg.journal_name).map_err(bare)?;
+        let ledger = Ledger::journaled(journal, cfg.exists);
         let claimed_end = cfg.window.base();
         let mut stage = Stage {
             root: StageRoot::Macro,
@@ -127,10 +152,7 @@ impl Stage {
         };
         match stage.setup(session) {
             Ok(()) => Ok(stage),
-            Err(e) => {
-                let _ = stage.close(session);
-                Err(e)
-            }
+            Err(error) => Err(Box::new(OpenError { error, cleanup: stage.ledger })),
         }
     }
 
