@@ -20,8 +20,8 @@ use crate::{
 
 /// Measure what a live TRACE32 PowerView does over RCL and print a report short enough to paste.
 ///
-/// Run it in WSL2 on the PC that runs PowerView, with RCL enabled
-/// (`SETUP.API.RCL.Enable /PRotocol TCP`). The default run uses only the `safe` probes.
+/// Run it in WSL2 on the PC that runs PowerView, with RCL enabled (`RCL=NETTCP` and `PORT=` in
+/// `config.t32`). The default run uses only the `safe` probes.
 #[derive(Debug, Parser)]
 #[command(name = "t32probe", version, about, long_about = None)]
 pub struct Args {

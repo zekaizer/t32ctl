@@ -487,7 +487,7 @@ impl ConnectError {
     pub fn hint(&self) -> &'static str {
         match self {
             ConnectError::Refused { .. } => {
-                "PowerView not running, RCL not enabled (SETUP.API.RCL.Enable /PRotocol TCP), or wrong --port"
+                "PowerView not running, RCL not enabled (RCL=NETTCP in config.t32), or wrong --port"
             }
             ConnectError::TimedOut { .. } | ConnectError::Unreachable { .. } => {
                 "wrong --host for this WSL networking mode, or a firewall drops the port"
