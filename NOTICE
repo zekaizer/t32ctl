@@ -17,8 +17,9 @@ request header forms, response matching and keepalive handling, EXP reply parsin
 pyrcl (lauterbach-trace32-rcl) 1.1.6: _rc/hlinknet.py, _rc/_library.py, _rc/_address.py,
 _rc/_practice.py, rcl.py
 
-Ported into crates/t32rcl/src/wire.rs, wait.rs and value.rs: request encodings, the memory
-address object, EXP 2 PRACTICE macro access, status codes, function result types.
+Ported into crates/t32rcl/src/frame.rs, link.rs, wait.rs, wire.rs and value.rs: the NETTCP
+framing and receive loop of hlinknet.py, request encodings, the memory address object, EXP 2
+PRACTICE macro access, status codes, function result types.
 tools/golden/gen.py imports pyrcl at run time to regenerate test vectors; it contains no
 pyrcl code.
 
