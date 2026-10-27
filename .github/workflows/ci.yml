@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-unknown-linux-musl
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+      - name: musl release build
+        run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: socket smoke tests against the musl binary
+        env:
+          T32PROBE_BIN: target/x86_64-unknown-linux-musl/release/t32probe
+        run: cargo test -p t32probe --test smoke
+      - name: README probe table matches t32probe --list --markdown
+        run: |
+          target/x86_64-unknown-linux-musl/release/t32probe --list --markdown > probe-table.md
+          sed -n '/<!-- probe-table:start -->/,/<!-- probe-table:end -->/{//!p}' README.md > readme-table.md
+          diff -u probe-table.md readme-table.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: t32ctl-x86_64-unknown-linux-musl
+          path: |
+            target/x86_64-unknown-linux-musl/release/t32probe
+            target/x86_64-unknown-linux-musl/release/t32ctl

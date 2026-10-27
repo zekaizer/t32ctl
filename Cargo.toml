@@ -1,0 +1,48 @@
+# t32rcl    RCL client over NETTCP. Protocol only, std only, reusable outside the CLI.
+# t32stage  Staging over RCL: VM: transfer, self-extracting bundles, script runner, cleanup.
+# t32probe  Phase 0 measurement binary.
+# t32ctl    Phase 1 CLI skeleton (`status` only).
+#
+# Dependency direction: t32ctl, t32probe -> t32stage -> t32rcl.
+
+[workspace]
+resolver = "3"
+members = ["crates/t32rcl", "crates/t32stage", "crates/t32probe", "crates/t32ctl"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# std::fs::File::try_lock (VM: lease, journal lock) is stable from 1.89.
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/zekaizer/t32ctl"
+
+[workspace.dependencies]
+t32rcl = { path = "crates/t32rcl" }
+t32stage = { path = "crates/t32stage" }
+# gzip for bundles and transfers; the default backend is pure Rust, so musl needs no C toolchain.
+flate2 = "1.1"
+# Content key of a bundle: the snapshot cache is only as correct as this hash.
+sha2 = "0.10"
+# Command lines of t32probe and t32ctl.
+clap = { version = "4.6", features = ["derive"] }
+# t32probe --json only.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# SIGINT/SIGTERM into an AtomicBool without unsafe; a second Ctrl-C exits at once.
+signal-hook = "0.3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+# panic = "unwind" stays: t32probe catches a panicking probe so its cleanup still runs.

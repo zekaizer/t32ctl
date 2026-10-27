@@ -1,0 +1,23 @@
+[package]
+name = "t32probe"
+description = "Phase 0 measurement tool: runs a probe catalogue against a live TRACE32 PowerView"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+t32rcl.workspace = true
+t32stage.workspace = true
+clap.workspace = true
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+signal-hook.workspace = true
+
+[dev-dependencies]
+t32rcl = { workspace = true, features = ["testkit"] }
+
+[lints]
+workspace = true
