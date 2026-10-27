@@ -29,7 +29,8 @@ cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 The static binaries are `target/x86_64-unknown-linux-musl/release/t32probe` and `.../t32ctl`.
-CI builds the same binaries on every push and keeps them as an artifact.
+CI builds the same binaries on every push and keeps them as an artifact. Publishing a GitHub
+release builds them from the release tag and attaches them, each with a `.sha256` file.
 
 ## Run the probe
 

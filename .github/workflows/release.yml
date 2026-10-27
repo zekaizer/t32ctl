@@ -1,0 +1,47 @@
+name: release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  assets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+      - name: test
+        run: cargo test --locked --workspace
+      - name: build
+        run: cargo build --locked --release --target "$TARGET"
+      # The binary reports the Cargo version, so a tag that disagrees with it ships a mislabeled
+      # build. A pre-release suffix (v0.1.0-alpha.1) is compared without the suffix.
+      - name: tag matches the Cargo version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          want="${TAG#v}"
+          want="${want%%-*}"
+          got="$(target/$TARGET/release/t32probe --version | cut -d' ' -f2)"
+          test "$want" = "$got" || { echo "tag $TAG does not match Cargo version $got"; exit 1; }
+      - name: package
+        run: |
+          mkdir dist
+          for bin in t32probe t32ctl; do
+            cp "target/$TARGET/release/$bin" "dist/$bin-x86_64-linux-musl"
+            (cd dist && sha256sum "$bin-x86_64-linux-musl" > "$bin-x86_64-linux-musl.sha256")
+          done
+      - name: upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/* --clobber
