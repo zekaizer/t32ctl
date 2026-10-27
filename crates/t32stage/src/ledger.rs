@@ -102,9 +102,11 @@ impl Undo {
                 RestoreOutcome::Mismatch { first } => {
                     Ok(CleanupOutcome::Failed(format!("reads back different at offset {first:#x}")))
                 }
-                RestoreOutcome::Uncleared { regions } => {
-                    Ok(CleanupOutcome::Failed(format!("{} uninitialized units could not be cleared", regions.len())))
-                }
+                RestoreOutcome::Unrestored { unwritten, uncleared } => Ok(CleanupOutcome::Failed(format!(
+                    "{} units not written back, {} uninitialized units not cleared",
+                    unwritten.len(),
+                    uncleared.len()
+                ))),
             },
             Undo::UnwindPractice => unwind_practice(session),
             Undo::ClearMacros(names) => {

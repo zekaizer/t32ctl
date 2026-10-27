@@ -9,7 +9,7 @@ use std::{
     path::Path,
 };
 
-use t32rcl::{MemAddr, RemoteKind, Session};
+use t32rcl::{ErrorClass, MemAddr, RemoteKind, Session};
 
 use crate::{
     error::{LeaseError, StageError, VmError},
@@ -160,8 +160,9 @@ pub enum RestoreOutcome {
     Restored { uninit: usize },
     /// A readable unit reads back different at this region offset.
     Mismatch { first: u64 },
-    /// Units that were uninitialized could not be cleared again; they hold our data now.
-    Uncleared { regions: Vec<VmRegion> },
+    /// Units that hold our data now: captured bytes PowerView refused to take back (`unwritten`,
+    /// not verified), or uninitialized units it could not clear again (`uncleared`).
+    Unrestored { unwritten: Vec<VmRegion>, uncleared: Vec<VmRegion> },
 }
 
 impl VmSnapshot {
@@ -201,20 +202,23 @@ impl VmSnapshot {
         self.chunks.iter().filter(|c| c.bytes.is_none()).count()
     }
 
-    /// Write captured units back, clear uninitialized ones, then read everything back to verify.
+    /// Write captured units back, clear uninitialized ones, then read back every unit that was
+    /// put back to verify it. A refused unit is recorded and the rest still restored; only an
+    /// error that ends the connection or the call stops the restore.
     pub fn restore(&self, session: &mut Session) -> Result<RestoreOutcome, StageError> {
-        let mut uncleared = Vec::new();
+        let (mut unwritten, mut uncleared) = (Vec::new(), Vec::new());
         for c in &self.chunks {
-            match &c.bytes {
-                Some(b) => session.mem_write(&c.region.addr(), b)?,
-                None => match session.cmd(&cmd::clear_vm(&c.region)) {
-                    Ok(()) => {}
-                    Err(e) if e.remote().is_some() => uncleared.push(c.region),
-                    Err(e) => return Err(e.into()),
-                },
+            let (result, refused) = match &c.bytes {
+                Some(b) => (session.mem_write(&c.region.addr(), b), &mut unwritten),
+                None => (session.cmd(&cmd::clear_vm(&c.region)), &mut uncleared),
+            };
+            match result {
+                Ok(()) => {}
+                Err(e) if e.class() == ErrorClass::Rejected => refused.push(c.region),
+                Err(e) => return Err(e.into()),
             }
         }
-        for c in &self.chunks {
+        for c in self.chunks.iter().filter(|c| !unwritten.contains(&c.region)) {
             let back = session.mem_read(&c.region.addr(), c.region.len() as usize);
             match (&c.bytes, back) {
                 (Some(want), Ok(got)) => {
@@ -232,10 +236,10 @@ impl VmSnapshot {
                 (_, Err(e)) => return Err(e.into()),
             }
         }
-        if uncleared.is_empty() {
+        if unwritten.is_empty() && uncleared.is_empty() {
             Ok(RestoreOutcome::Restored { uninit: self.uninitialized() })
         } else {
-            Ok(RestoreOutcome::Uncleared { regions: uncleared })
+            Ok(RestoreOutcome::Unrestored { unwritten, uncleared })
         }
     }
 }
@@ -333,6 +337,23 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_write_back_skips_that_unit_and_restores_the_rest() {
+        let mut s = read(Script::new().attach(), 0x1000_0000).reply_mem(&[7; 4096]);
+        s = read(s, 0x1000_1000).reply_mem(&[8; 4096]);
+        s = s.expect_req(Request::MemWrite { access: "VM".into(), addr: 0x1000_0000, data: vec![7; 4096] });
+        s = s.reply_error(16, "bus error");
+        s = write(s, 0x1000_1000, 8);
+        s = read(s, 0x1000_1000).reply_mem(&[8; 4096]);
+        let mut session = connect(s);
+        let snap = VmSnapshot::capture(&mut session, region()).unwrap();
+        let first = region().slice(0, 4096).unwrap();
+        assert_eq!(
+            snap.restore(&mut session).unwrap(),
+            RestoreOutcome::Unrestored { unwritten: vec![first], uncleared: vec![] }
+        );
+    }
+
+    #[test]
     fn a_missing_clearvm_and_a_wrong_readback_are_reported() {
         let mut s = read(Script::new().attach(), 0x1000_0000).reply_error(16, "");
         s = read(s, 0x1000_1000).reply_mem(&[3; 4096]);
@@ -343,7 +364,10 @@ mod tests {
         let mut session = connect(s);
         let snap = VmSnapshot::capture(&mut session, region()).unwrap();
         let first = region().slice(0, 4096).unwrap();
-        assert_eq!(snap.restore(&mut session).unwrap(), RestoreOutcome::Uncleared { regions: vec![first] });
+        assert_eq!(
+            snap.restore(&mut session).unwrap(),
+            RestoreOutcome::Unrestored { unwritten: vec![], uncleared: vec![first] }
+        );
 
         let mut s = read(Script::new().attach(), 0x1000_0000).reply_mem(&[1; 4096]);
         s = read(s, 0x1000_1000).reply_mem(&[2; 4096]);
