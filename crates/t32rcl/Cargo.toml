@@ -9,3 +9,7 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# Hardware-free test support: scripted transport, manual clock. Enable from dev-dependencies only.
+testkit = []

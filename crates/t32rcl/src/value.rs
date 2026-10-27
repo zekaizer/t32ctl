@@ -171,6 +171,35 @@ pub enum FuncValue {
     },
 }
 
+impl FuncValue {
+    pub fn into_bool(self, expr: &str) -> Result<bool, crate::Error> {
+        match self {
+            FuncValue::Bool(b) => Ok(b),
+            other => Err(other.mismatch("bool", expr)),
+        }
+    }
+
+    pub fn into_int(self, expr: &str) -> Result<i64, crate::Error> {
+        match self {
+            FuncValue::Int(v) => Ok(v),
+            FuncValue::Uint(v) => i64::try_from(v).map_err(|_| FuncValue::Uint(v).mismatch("int", expr)),
+            other => Err(other.mismatch("int", expr)),
+        }
+    }
+
+    pub fn into_text(self, expr: &str) -> Result<String, crate::Error> {
+        match self {
+            FuncValue::Text(t) => Ok(t),
+            FuncValue::Empty => Ok(String::new()),
+            other => Err(other.mismatch("text", expr)),
+        }
+    }
+
+    fn mismatch(&self, wanted: &'static str, expr: &str) -> crate::Error {
+        crate::Error::UnexpectedResult { op: crate::Op::Function, wanted, got: format!("{self} from {expr}") }
+    }
+}
+
 impl fmt::Display for FuncValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
