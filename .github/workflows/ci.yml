@@ -9,9 +9,9 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -33,7 +33,7 @@ jobs:
           target/x86_64-unknown-linux-musl/release/t32probe --list --markdown > probe-table.md
           sed -n '/<!-- probe-table:start -->/,/<!-- probe-table:end -->/{//!p}' README.md > readme-table.md
           diff -u probe-table.md readme-table.md
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: t32ctl-x86_64-unknown-linux-musl
           path: |
