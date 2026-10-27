@@ -7,5 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+t32rcl.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+t32rcl = { workspace = true, features = ["testkit"] }
+
 [lints]
 workspace = true
