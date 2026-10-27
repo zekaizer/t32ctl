@@ -2,7 +2,12 @@
 //! Command line. Defaults live here; validation into typed values happens in `Args::plan`, so a
 //! probe never reads a flag and an opt-in gate cannot open without its input.
 
-use std::{path::PathBuf, time::Duration};
+use std::{
+    fs::{self, OpenOptions},
+    io,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use clap::Parser;
 use t32rcl::DevicePrompt;
@@ -143,6 +148,20 @@ fn parse_u32(s: &str) -> Result<u32, String> {
     u32::from_str_radix(&digits.replace('_', ""), radix).map_err(|e| e.to_string())
 }
 
+/// The JSON report is written to `<path>.tmp` and renamed; prove the first step works before
+/// anything is sent. A `.tmp` that already exists is opened, never replaced or removed.
+fn check_json_dest(path: &Path) -> Result<(), String> {
+    let tmp = crate::report::json_tmp(path);
+    let err = |e: io::Error| format!("--json {}: {e}", path.display());
+    match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+        Ok(_) => fs::remove_file(&tmp).map_err(err),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            OpenOptions::new().write(true).open(&tmp).map(drop).map_err(err)
+        }
+        Err(e) => Err(err(e)),
+    }
+}
+
 fn ids(names: &[String]) -> Result<Vec<ProbeId>, String> {
     names
         .iter()
@@ -192,6 +211,9 @@ impl Args {
         if !(self.scale > 0.0 && self.scale <= MAX_SCALE) {
             return Err(format!("--scale must be above 0 and at most {MAX_SCALE}"));
         }
+        if let Some(path) = &self.json {
+            check_json_dest(path)?;
+        }
         let hosts = if self.host == "auto" { wsl.candidates() } else { vec![self.host.clone()] };
         let env = Env::new(crate::env::EnvConfig {
             run_id,
@@ -232,5 +254,17 @@ mod tests {
         }
         assert!(plan(&["--timeout", "1e30"]).is_err());
         assert!(plan(&["--scale", "2", "--timeout", "20"]).is_ok());
+    }
+
+    #[test]
+    fn an_unwritable_json_path_is_a_usage_error_and_a_writable_one_leaves_nothing() {
+        let e = plan(&["--json", "/nonexistent-t32probe-dir/p.json"]).unwrap_err();
+        assert!(e.starts_with("--json /nonexistent-t32probe-dir/p.json: "), "{e}");
+        let dir = std::env::temp_dir().join(format!("t32probe-cli-json-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = dir.join("p.json");
+        assert_eq!(plan(&["--json", json.to_str().unwrap()]), Ok(()));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "the check leaves no file behind");
+        std::fs::remove_dir(&dir).unwrap();
     }
 }

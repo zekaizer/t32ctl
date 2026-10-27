@@ -333,9 +333,14 @@ pub fn json_report<'a>(
     }
 }
 
+/// Where `write_json_atomic` writes before it renames.
+pub fn json_tmp(path: &Path) -> std::path::PathBuf {
+    path.with_extension("tmp")
+}
+
 /// Write `<path>.tmp`, then rename: a reader never sees half a file.
 pub fn write_json_atomic(path: &Path, doc: &JsonReport<'_>) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
+    let tmp = json_tmp(path);
     let mut f = fs::File::create(&tmp)?;
     f.write_all(&serde_json::to_vec_pretty(doc).map_err(std::io::Error::other)?)?;
     f.sync_data()?;
