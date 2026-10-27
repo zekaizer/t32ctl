@@ -6,7 +6,7 @@
 //!   token boundary with `…`;
 //! - one line per probe: `<id:12> <TAG:5> <tokens>`, tokens are `key=value` with units;
 //! - a FAIL adds at most two indented lines (`why:`, `hint:`); consecutive SKIPs with one
-//!   reason collapse into `skipped(n): ids  <- reason`;
+//!   reason collapse into `skipped(n) <reason>: <ids>`;
 //! - `RESIDUE <probe>: <command>` lines carry the exact PowerView command to type by hand,
 //!   one per line and uncut; a residue without one reads `RESIDUE <probe>: <what> (<result>)`;
 //! - a `config` line with the tunables Phase 1 pins, then a `summary` line.
