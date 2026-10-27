@@ -97,6 +97,37 @@ as the paste-back text and as JSON, so the two cannot disagree. Probes run in ta
 learn as they go: `tempdir` picks the file-exists function and `macro` the EXP 2 name spelling
 that later probes use.
 
+## t32ctl: the Phase 1 contract
+
+The command-line contract is in [cli.md](cli.md), board profiles in [profiles.md](profiles.md),
+literal sessions in [cli-sessions.md](cli-sessions.md), and the decisions in
+[ADR 0002](adr/0002-phase1-cli-contract.md). `t32ctl` stays a layer on top of `t32stage` and
+`t32rcl`: a command body receives a `Ctx<G>` typed by its grade and never sees a `Session` or a
+`Stage`. The per-PowerView state directory, `pv/<host>-<port>/` keyed by the endpoint as
+configured, is passed to `t32stage` as its state directory, so journal replay and the `VM:` lease
+are per PowerView. `t32probe` must key its state directory by the same rule, or the two tools
+lock and journal different directories.
+
+`t32ctl` walks a board's profile directory itself: it skips hidden files and editor leftovers,
+refuses symlinks and special files, hashes the rest into the profile hash, and builds the bundle
+from the same files with `Bundle::insert`. `Bundle::key` still keys the staging cache.
+
+The contract needs these additions below `t32ctl`. Where an addition relies on PowerView
+behavior, its code is marked `ASSUMED(<probe>)` until a probe report confirms it, like the
+assumptions under [Open questions](#open-questions).
+
+| Addition | Crate | Assumed until |
+|---|---|---|
+| Debugger builders in `practice`: run, run to a location, step, halt, the return register after a step out, breakpoints with condition and count, on-chip watchpoints, register and variable writes, core select, address translation to physical, `Frame.view`, symbol and source-line queries, window printing with a printer restore undo, `Data.LOAD.Elf` with code | `t32stage` | `ASSUMED(run-control)`, which gains cases for step, breakpoint options and counts, software breakpoints in RAM, address translation, source lines, and printer routing |
+| Parameter macros `t32ctl_p_<name>`: validated dynamic names, declared `GLOBAL` and set over EXP 2 before the run, cleared through `Undo::ClearMacros`, carried by `RunRequest` | `t32stage` | `ASSUMED(macro)` |
+| Sliced append upload: a file larger than the `VM:` window is saved slice by slice with `Data.SAVE.Binary /Append`, then size-checked | `t32stage` | `ASSUMED(vm-file)`, which gains an append case |
+| Result macros `t32ctl_rc` and `t32ctl_msg`: declared `GLOBAL` and emptied before a run, read after it; an empty rc is success except for a `burn` procedure | `t32stage` | `ASSUMED(macro)` |
+| An instance marker macro; a missing marker reads as unknown, because `PMACRO.RESet` deletes it as well as a restart | `t32stage` | `ASSUMED(macro)` |
+| One per-PowerView state directory rule, `pv/<host>-<port>/` with the host as configured, beside `default_state_dir()`; `t32probe` uses it as its default `--state-dir` | `t32stage`, `t32probe` | none: no PowerView behavior |
+
+`toml` is the one new workspace dependency. `t32ctl` also starts to depend on `t32stage`, `serde`,
+`serde_json`, `sha2`, and `signal-hook`, which the workspace already has.
+
 ## Testing without hardware
 
 No PowerView stand-in exists. Tests use canned frames at the transport boundary

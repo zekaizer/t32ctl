@@ -12,12 +12,28 @@ This repository holds the foundation and the Phase 0 measurement tool:
 | `t32rcl` | RCL client over NETTCP: framing, attach, keepalive, commands, functions, PRACTICE state, memory, global macros. Reusable outside the CLI. |
 | `t32stage` | Staging over RCL: `VM:` transfer, self-extracting bundles, the script runner, cleanup with a write-ahead journal. |
 | `t32probe` | Phase 0 binary. Measures how a live PowerView behaves and prints a report short enough to paste. |
-| `t32ctl` | Phase 1 CLI skeleton. `t32ctl status` only. |
+| `t32ctl` | Phase 1 CLI. Its contract is specified in [docs/cli.md](docs/cli.md); the binary is still the skeleton with `t32ctl status` only. |
 
 Phase 0 exists because the build machine has no TRACE32: every behavior the design depends on
 and the manuals do not settle is measured by `t32probe` on the operator's PC. The design is in
 [docs/architecture.md](docs/architecture.md); running the probe is in
 [docs/operator.md](docs/operator.md).
+
+## Phase 1 contract
+
+The Phase 1 command line is specified before it is built; the implementation follows on the same
+branch.
+
+- [docs/cli.md](docs/cli.md): grades and permission rules, commands, notation, output, exit
+  codes, state between calls, and the lease.
+- [docs/profiles.md](docs/profiles.md): the connection config, board profiles, and procedures.
+- [docs/cli-sessions.md](docs/cli-sessions.md): literal agent sessions and workflow coverage.
+- [skills/t32ctl/SKILL.md](skills/t32ctl/SKILL.md): the agent skill draft.
+- [ADR 0002](docs/adr/0002-phase1-cli-contract.md): the decisions behind the contract.
+
+A board's profile and scripts live in `<board dir>/support/t32ctl/`. Phase 1 runs a procedure at
+the grade its profile declares and has no operator trust yet, so review changes to that directory
+like code.
 
 ## Build
 
