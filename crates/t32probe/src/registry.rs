@@ -130,6 +130,8 @@ probes! {
         "self-extracting bundle, nested DO chain, marker, runner rc, state during the chain";
     ScriptLab = "script-lab", Safe, [VmFile], true, 180, scriptlab::script_lab,
         "file-existence oracle for DO'd scripts; Data.Set VM: and WRITE channels; DO timing, PRACTICE state while scripts run, RCL during WAIT, loops and an 8 MiB SAVE";
+    ScriptHalt = "script-halt", Safe, [ScriptLab], true, 90, scriptlab::script_halt,
+        "STOP, uncaught errors, T32_Stop status, END, ERROR.* reads, files and globals after END";
     ScriptError = "script-error", Safe, [Bundle], true, 90, scripts::script_error,
         "failing scripts surface as failures, never as success";
     TarDownload = "tar-download", Safe, [Bundle], true, 60, storage::tar_download,
@@ -256,6 +258,7 @@ mod tests {
             "macro",
             "bundle",
             "script-lab",
+            "script-halt",
             "script-error",
             "tar-download",
         ];
@@ -275,7 +278,7 @@ mod tests {
         let names = |v: Vec<&ProbeDef>| v.iter().map(|d| d.id.name()).collect::<Vec<_>>();
         assert_eq!(names(select(&[ProbeId::VmFile], &[], &none).unwrap()), ["connect", "tempdir", "vm-rw", "vm-file"]);
         let default = select(&[], &[ProbeId::Latency], &none).unwrap();
-        assert_eq!(default.len(), 14);
+        assert_eq!(default.len(), 15);
         assert!(default.iter().all(|d| d.tier == Tier::Safe));
         assert_eq!(select(&[ProbeId::Dialog], &[], &none).unwrap_err(), "dialog needs --allow-dialog");
         let gates = Gates { dialog: true, ..Gates::default() };

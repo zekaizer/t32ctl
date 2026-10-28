@@ -82,7 +82,14 @@ fn cmdset(s: Script) -> Script {
 }
 
 fn asks(s: Script, id: &str, answers: &[(&str, bool)]) -> Script {
-    answers.iter().fold(s, |s, (k, yes)| marker(marker(s, id, &format!("{k}-yes"), *yes), id, &format!("{k}-no"), !yes))
+    asks_in(s, TAG, id, answers)
+}
+
+fn asks_in(s: Script, tag: &str, id: &str, answers: &[(&str, bool)]) -> Script {
+    answers.iter().fold(s, |s, (k, yes)| {
+        let s = readable(s, tag, &format!("{id}-{k}-yes.bin"), *yes);
+        readable(s, tag, &format!("{id}-{k}-no.bin"), !yes)
+    })
 }
 
 #[test]
@@ -169,5 +176,94 @@ fn script_lab_fails_when_o0_never_ends() {
     assert!(o.error.as_ref().is_some_and(|e| e.message.contains("file-existence oracle failed")), "{:?}", o.error);
     assert_eq!(o.lookup("oracle"), Some(&Value::Text("FAIL".into())));
     assert_eq!(env.learned.script_out, None);
+    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+}
+
+const HALT: &str = "halt";
+
+fn mark(s: Script, id: &str, m: &str, v: bool) -> Script {
+    readable(s, HALT, &format!("{id}-{m}.bin"), v)
+}
+
+/// Staged and started in the script-halt Lab.
+fn begun(s: Script, case: &Case) -> Script {
+    started(staged(s, HALT, case, ScriptOut::Off), HALT, case)
+}
+
+/// `a` and `h` found while halted, held for three samples, diagnosed.
+fn halted_after_h(s: Script, case: &Case) -> Script {
+    let id = case.id.as_str();
+    let s = mark(mark(mark(sampled(begun(s, case), 0, 1), id, "a", true), id, "h", true), id, "z", false);
+    let s = mark(sampled(mark(sampled(s, 0, 1), id, "z", false), 0, 1), id, "z", false);
+    diagnosed(s, "unknown command", "#err")
+}
+
+/// `finish` on a halted stack: one `END`, then the markers still missing.
+fn ended_by_finish(s: Script, id: &str, missing: &[&str]) -> Script {
+    let s = s.expect_fn(DEPTH).reply_decimal(1).expect_fn(DEPTH).reply_decimal(1);
+    let s = s.expect_cmd("END").reply_ok().expect_fn(DEPTH).reply_decimal(0);
+    missing.iter().fold(s, |s, m| mark(s, id, m, false))
+}
+
+/// `w` found while running.
+fn at_w(s: Script, case: &Case) -> Script {
+    let id = case.id.as_str();
+    mark(mark(mark(sampled(begun(s, case), 1, 1), id, "a", true), id, "w", true), id, "z", false)
+}
+
+#[test]
+fn script_halt_records_t32_stop_status_1() {
+    let (stop, err, wait, unwind, open, glob, read) =
+        (hs_stop(), hs_err(), hs_wait(), hs_unwind(), hs_open(), hs_glob(), hs_read());
+    let mut s = opened(Script::new().attach(), HALT);
+    s = ended_by_finish(sampled(halted_after_h(s, &stop), 0, 1), "hs-stop", &["z"]);
+    s = diagnosed(halted_after_h(s, &err).expect_cmd("ERROR.RESet").reply_ok(), "", "");
+    s = ended_by_finish(s, "hs-err", &["z"]);
+    s = sampled(at_w(s, &wait).expect_req(Request::Stop).reply_error(1, ""), 0, 1);
+    s = s.expect_fn(DEPTH).reply_decimal(1).expect_cmd("END").reply_ok().expect_fn(DEPTH).reply_decimal(0);
+    s = mark(s.expect_fn(DEPTH).reply_decimal(0), "hs-wait", "z", false);
+    s = s.expect_fn(DEPTH).reply_decimal(0).expect_req(Request::Stop).reply_ok();
+    s = at_w(s, &unwind).expect_req(Request::PracticeState).reply_state(1).expect_req(Request::Stop).reply_ok();
+    s = s.expect_fn(DEPTH).reply_decimal(1).expect_fn(DEPTH).reply_decimal(1);
+    s = s.expect_cmd("END").reply_ok().expect_fn(DEPTH).reply_decimal(0);
+    s = s.expect_fn(DEPTH).reply_decimal(0).expect_fn(DEPTH).reply_decimal(0);
+    s = mark(s, "hs-unwind", "z", false);
+    s = ended_by_finish(halted_after_h(s, &open), "hs-open", &["z"]);
+    let txt = format!("{}\\hs-open.txt", crate::probes::lab::lab_tests::dir(HALT));
+    s = readable(s.expect_cmd(&format!("RM \"{txt}\"")).reply_ok(), HALT, "hs-open.txt", false);
+    s = ended_by_finish(halted_after_h(s, &glob), "hs-glob", &["z"]);
+    s = mark(mark(sampled(begun(s, &read), 0, 0), "hs-read", "a", true), "hs-read", "z", true);
+    s = mark(s.expect_fn(DEPTH).reply_decimal(0), "hs-read", "v", true);
+    s = asks_in(s, HALT, "hs-read", &[("kept", true), ("empty", false)]);
+    s = s.expect_req(Request::MacroGet { name: "t32ctl_qr1_hg".into() }).reply_macro("hg-r1");
+    s = s.expect_req(Request::MacroGet { name: "&t32ctl_qr1_hg".into() }).reply_macro("hg-r1");
+    s = listed(s, HALT, &[]);
+    s = files_removed(files_removed(s, HALT, &read, ScriptOut::Off, &[]), HALT, &glob, ScriptOut::Off, &[]);
+    s = s.expect_req(Request::MacroSet { name: "t32ctl_qr1_hg".into(), value: String::new() }).reply_macro("");
+    for c in [&open, &unwind, &wait, &err, &stop] {
+        s = files_removed(s, HALT, c, ScriptOut::Off, &[]);
+    }
+    let mut session = connect(vec![Ok(closed_down(s, HALT))]);
+    let mut env = test_env("script-halt");
+    let r = run(&mut env, &mut session, &[ProbeId::ScriptHalt.def()]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
+    for (k, v) in [
+        ("stop", "0/1"),
+        ("err", "0/1"),
+        ("errmsg", "both"),
+        ("errid", "#err"),
+        ("reset", "clears"),
+        ("t32stop", "st1"),
+        ("stop_idle", "st0"),
+        ("wait_cut", "yes"),
+        ("end1", "ok"),
+        ("unwind", "done"),
+        ("stop_save", "n/a"),
+        ("open_closed", "yes"),
+        ("glob_end", "kept"),
+    ] {
+        assert_eq!(o.lookup(k), Some(&Value::Text(v.into())), "{k}");
+    }
     assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
 }

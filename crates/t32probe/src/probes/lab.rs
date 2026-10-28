@@ -515,6 +515,11 @@ impl LabWatch {
         self.seen.contains(name)
     }
 
+    /// The latest sample as `<state>/<depth>`.
+    pub fn last(&self) -> Option<String> {
+        self.last.map(|(s, d)| format!("{s}/{d}"))
+    }
+
     /// The probe stopped the script on purpose: a held halt concludes without a marker.
     pub fn stopped(&mut self) {
         self.stopped = true;
@@ -615,6 +620,14 @@ const DIAG_FUNCTIONS: [&str; 6] = [
 ];
 
 impl Diag {
+    pub fn function(&self, expr: &str) -> Option<&str> {
+        self.functions.iter().find(|(e, _)| e == expr).and_then(|(_, v)| v.as_deref())
+    }
+
+    pub fn evaluated(&self, expr: &str) -> Option<&str> {
+        self.eval.iter().find(|(e, _)| e == expr).and_then(|(_, v)| v.as_deref())
+    }
+
     fn text(&self) -> String {
         let mut parts = Vec::new();
         for (tag, v) in [("", &self.functions), ("eval:", &self.eval), ("again:", &self.again)] {
@@ -832,6 +845,25 @@ impl Lab {
 
     pub fn r_slot(&self, k: u32) -> VmRegion {
         self.r.slice(SLOT * k, SLOT).expect("16 slots fit the result region")
+    }
+
+    /// A pause between the probe's own steps; none in tests.
+    pub fn pause(&self, d: Duration) {
+        std::thread::sleep(d.mul_f64(self.timing.pause));
+    }
+
+    /// Samples for `d`, at least one, fed to the watch; the last as `<state>/<depth>`.
+    pub fn observe(&self, ctx: &mut ProbeCtx<'_>, run: &mut Run, d: Duration) -> Result<String, ProbeFail> {
+        let t = ctx.session.now();
+        loop {
+            let now = ctx.session.now();
+            let (state, depth) = sample(ctx)?;
+            run.watch.sample(now, Until::Done, state, depth);
+            if self.timing.sample.is_zero() || now.saturating_duration_since(t) >= d {
+                return Ok(format!("{}/{depth}", state_code(state)));
+            }
+            std::thread::sleep(self.timing.sample);
+        }
     }
 
     /// Every result slot back to the "never written" fill.

@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Probes on Lab scripts: script-lab.
+//! Probes on Lab scripts: script-lab, script-halt.
 
 use std::time::Duration;
 
-use t32rcl::{CallBudget, FuncValue, MacroName, PracticeState};
-use t32stage::Undo;
+use t32rcl::{CallBudget, FuncValue, MacroName, MacroSpelling, PracticeState};
+use t32stage::{
+    CleanupOutcome, Undo,
+    practice::{cmd, fnc},
+    transfer,
+};
 
 use super::{
-    lab::{Answer, Case, CaseRecord, Expect, Lab, LabSizes, Seen, Slot, Until, raw_note, stack_depth, vm_slot},
+    hex,
+    lab::{
+        Answer, Case, CaseRecord, Ending, Expect, Lab, LabSizes, Run, Seen, Slot, Until, raw_note, stack_depth,
+        stop_token, vm_slot,
+    },
     pattern, soft,
 };
 use crate::{
@@ -159,7 +167,8 @@ fn script_lab_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
 
     let e1 = MacroName::new(&format!("{}_e1", lab.q()))?;
     ctx.push(Undo::ClearMacros(vec![e1.clone()]))?;
-    soft(ctx.session.macro_set(&e1, &lab.fill("e1-{run}")?))?;
+    let e1_set = soft(ctx.session.macro_set(&e1, &lab.fill("e1-{run}")?))?.is_some();
+    ctx.measure("globals_left", Value::Count(e1_set.into()));
     let w3 = during(ctx, lab, &w3(), &e1)?;
     let lp = during(ctx, lab, &looped(), &e1)?;
     let big = match lab.l {
@@ -288,6 +297,205 @@ fn during(ctx: &mut ProbeCtx<'_>, lab: &mut Lab, case: &Case, e1: &MacroName) ->
     let rec = lab.finish(ctx, run)?;
     Ok(Some(During { rec, calls, states, commands, ppf }))
 }
+
+pub(crate) fn hs_stop() -> Case {
+    case("hs-stop", "@a\n@h\nSTOP\n@z\nENDDO", Expect::HaltAfter("h"), 10)
+}
+pub(crate) fn hs_err() -> Case {
+    case("hs-err", "@a\n@h\nT32PROBE_NO_SUCH_COMMAND\n@z\nENDDO", Expect::HaltAfter("h"), 10)
+}
+pub(crate) fn hs_wait() -> Case {
+    case("hs-wait", "@a\n@w\nWAIT 5.s\n@z\nENDDO", Expect::End, 15)
+}
+pub(crate) fn hs_unwind() -> Case {
+    case("hs-unwind", "@a\n@w\nWAIT 3.s\n@z\nENDDO", Expect::End, 15)
+}
+pub(crate) fn hs_save() -> Case {
+    let body = "@a\n@w\nData.SAVE.Binary \"{S}\\hs-save.bin\" VM:{L}++0x007FFFFF\n@z\nENDDO";
+    case("hs-save", body, Expect::End, 30).outputs(&["hs-save.bin"])
+}
+pub(crate) fn hs_open() -> Case {
+    let body = "@a\nOPEN #1 \"{S}\\hs-open.txt\" /Create\nWRITE #1 \"x\"\n@h\nSTOP\nCLOSE #1\n@z\nENDDO";
+    case("hs-open", body, Expect::HaltAfter("h"), 10).outputs(&["hs-open.txt"])
+}
+pub(crate) fn hs_glob() -> Case {
+    let body = "@a\nGLOBAL &{q}_hg\n&{q}_hg=\"hg-{run}\"\n@h\nSTOP\n@z\nENDDO";
+    case("hs-glob", body, Expect::HaltAfter("h"), 10)
+}
+pub(crate) fn hs_read() -> Case {
+    let body = "@a\n@ask kept \"&{q}_hg\" == \"hg-{run}\"\n@ask empty \"&{q}_hg\" == \"\"\n@z\n@put 0 \"[&{q}_hg]\"\n@v\nENDDO";
+    case("hs-read", body, Expect::End, 10)
+}
+
+/// How scripts stop and what is left after `END`: `STOP`, an uncaught error, `T32_Stop` during a
+/// `WAIT` and during a long `SAVE`, unwinding, an open file and a global. Passes when every case
+/// left an empty stack.
+pub fn script_halt(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+    let (mut lab, _) = Lab::open(ctx, "halt", LabSizes { large: Some(LARGE), extra: Vec::new() })?;
+    let result = script_halt_cases(ctx, &mut lab);
+    let closed = lab.close(ctx);
+    result.and(closed)
+}
+
+/// `stage` + `start`; `None` when the case did not get that far.
+fn begin(ctx: &mut ProbeCtx<'_>, lab: &mut Lab, case: &Case) -> Result<Option<Run>, ProbeFail> {
+    let staged = match lab.stage(ctx, case)? {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
+    Ok(lab.start(ctx, staged)?.ok())
+}
+
+fn script_halt_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
+    let dash = || "-".to_string();
+    let mut finished: Vec<CaseRecord> = Vec::new();
+
+    let mut stop = dash();
+    if let Some(mut run) = begin(ctx, lab, &hs_stop())? {
+        let seen = lab.wait(ctx, &mut run, Until::Done)?;
+        stop = match seen {
+            Seen::End(Ending::Halted { .. }) => lab.observe(ctx, &mut run, Duration::from_secs(1))?,
+            _ => run.watch.last().unwrap_or_else(dash),
+        };
+        finished.push(lab.finish(ctx, run)?);
+    }
+    ctx.text("stop", stop);
+
+    let (mut err, mut errmsg, mut errid, mut reset) = (dash(), "none", "none".to_string(), dash());
+    if let Some(mut run) = begin(ctx, lab, &hs_err())? {
+        let seen = lab.wait(ctx, &mut run, Until::Done)?;
+        err = run.watch.last().unwrap_or_else(dash);
+        if let Some(d) = run.diags.first() {
+            let full = |v: Option<&str>| v.is_some_and(|t| !t.is_empty());
+            errmsg = match (full(d.function(fnc::ERROR_MESSAGE)), full(d.evaluated(fnc::ERROR_MESSAGE))) {
+                (true, true) => "both",
+                (true, false) => "fn",
+                (false, true) => "eval",
+                (false, false) => "none",
+            };
+            errid = d.function(ERROR_ID).filter(|t| !t.is_empty()).unwrap_or("none").to_string();
+        }
+        if matches!(seen, Seen::End(Ending::Halted { .. })) {
+            soft(ctx.session.cmd(cmd::ERROR_RESET))?;
+            let after = lab.diag(ctx, "hs-err.reset")?;
+            reset = if after.function(fnc::ERROR_MESSAGE) == Some("") { "clears" } else { "keeps" }.to_string();
+        }
+        finished.push(lab.finish(ctx, run)?);
+    }
+    ctx.text("err", err);
+    ctx.text("errmsg", errmsg);
+    ctx.text("errid", errid);
+    ctx.text("reset", reset);
+
+    let (mut t32stop, mut wait_cut, mut end1) = (dash(), dash(), dash());
+    if let Some(mut run) = begin(ctx, lab, &hs_wait())? {
+        if lab.wait(ctx, &mut run, Until::Marker("w"))? == Seen::Reached {
+            lab.pause(Duration::from_millis(500));
+            let (token, took) = lab.stop(ctx, &mut run)?;
+            ctx.measure("t32stop_ms", Value::Seconds(took.as_secs_f64()));
+            t32stop = token;
+            let after = lab.observe(ctx, &mut run, Duration::from_millis(300))?;
+            ctx.measure("after_stop", Value::Text(after));
+            end1 = match lab.end(ctx, 1)? {
+                0 => "ok".to_string(),
+                n => format!("depth{n}"),
+            };
+        }
+        let rec = lab.finish(ctx, run)?;
+        wait_cut = if rec.has("z") { "no" } else { "yes" }.to_string();
+        finished.push(rec);
+    }
+    let stop_idle = match stack_depth(ctx)? {
+        0 => stop_token(ctx.session.stop_practice())?,
+        _ => dash(),
+    };
+    ctx.text("t32stop", t32stop);
+    ctx.text("stop_idle", stop_idle);
+    ctx.text("wait_cut", wait_cut);
+    ctx.text("end1", end1);
+
+    let mut unwind = dash();
+    if let Some(mut run) = begin(ctx, lab, &hs_unwind())? {
+        if lab.wait(ctx, &mut run, Until::Marker("w"))? == Seen::Reached {
+            unwind = match soft(t32stage::unwind_practice(ctx.session))? {
+                Some(CleanupOutcome::Done) => "done".to_string(),
+                Some(other) => other.label(),
+                None => "refused".to_string(),
+            };
+            let depth = stack_depth(ctx)?;
+            ctx.measure("unwind_depth", Value::Text(depth.to_string()));
+        }
+        finished.push(lab.finish(ctx, run)?);
+    }
+    ctx.text("unwind", unwind);
+
+    let mut stop_save = "n/a".to_string();
+    if let Some(l) = lab.l {
+        stop_save = dash();
+        ctx.session.mem_write(&l.addr(), &pattern(u64::from(LARGE) + 1, LARGE as usize))?;
+        if let Some(mut run) = begin(ctx, lab, &hs_save())? {
+            let mut took = None;
+            if lab.wait(ctx, &mut run, Until::Marker("w"))? == Seen::Reached {
+                lab.pause(Duration::from_millis(50));
+                let (token, t) = lab.stop(ctx, &mut run)?;
+                ctx.measure("stop_save_status", Value::Text(token));
+                took = Some(t);
+                lab.wait(ctx, &mut run, Until::Done)?;
+            }
+            let rec = lab.finish(ctx, run)?;
+            let size = soft(transfer::file_size(ctx.session, &lab.path("hs-save.bin")?))?;
+            ctx.measure("stop_save_size", Value::Text(format!("{size:?}")));
+            stop_save = match (rec.has("z"), size, took) {
+                (true, _, _) => "after".into(),
+                (false, s, Some(_)) if s != Some(u64::from(LARGE)) => "cut".into(),
+                (false, _, Some(t)) => format!("{}ms", t.as_millis()),
+                (false, _, None) => dash(),
+            };
+            finished.push(rec);
+        }
+    }
+    ctx.text("stop_save", stop_save);
+
+    let mut open_closed = dash();
+    let rec = lab.run(ctx, &hs_open())?;
+    if rec.ran() {
+        let txt = lab.path("hs-open.txt")?;
+        let removed = soft(ctx.session.cmd(&cmd::rm(&txt)))?.is_some();
+        let exists = ctx.exists_fn();
+        let gone = !ctx.session.eval(&exists.call(&txt))?.into_bool(exists.name())?;
+        open_closed = if removed && gone { "yes" } else { "no" }.to_string();
+        finished.push(rec);
+    }
+    ctx.text("open_closed", open_closed);
+
+    let hg = MacroName::new(&format!("{}_hg", lab.q()))?;
+    ctx.push(Undo::ClearMacros(vec![hg.clone()]))?;
+    let glob = lab.run(ctx, &hs_glob())?;
+    let read = lab.run(ctx, &hs_read())?;
+    let base = ctx.session.tuning();
+    for spelling in [MacroSpelling::Bare, MacroSpelling::Ampersand] {
+        ctx.session.set_tuning(base.with_macro_spelling(spelling));
+        let got = soft(ctx.session.macro_get_payload(&hg))?;
+        ctx.measure(&format!("glob_exp_{}", spelling.tag()), Value::Text(got.map_or("refused".into(), |p| hex(&p))));
+    }
+    ctx.session.set_tuning(base);
+    ctx.measure("globals_left", Value::Count(glob.has("h").into()));
+    let glob_end = match (read.answer("kept"), read.answer("empty")) {
+        _ if !read.ran() => "-",
+        (Answer::Yes, _) => "kept",
+        (_, Answer::Yes) => "empty",
+        _ => "lost",
+    };
+    ctx.text("glob_end", glob_end);
+    finished.extend([glob, read].into_iter().filter(CaseRecord::ran));
+
+    match finished.iter().find(|r| r.depth != 0) {
+        Some(r) => Err(ProbeFail::Check(format!("END left depth {} after {}", r.depth, r.id))),
+        None => Ok(()),
+    }
+}
+
+const ERROR_ID: &str = "ERROR.ID(\"PLAIN\")";
 
 /// `<key>=<p50>/<max>ms` over every call kind, and each kind on its own in the JSON.
 fn rcl_tokens(ctx: &mut ProbeCtx<'_>, key: &str, d: Option<&During>) {
