@@ -140,8 +140,8 @@ probes! {
         "file-existence oracle for DO'd scripts; Data.Set VM: and WRITE channels; DO timing, PRACTICE state while scripts run, RCL during WAIT, loops and an 8 MiB SAVE";
     ScriptHalt = "script-halt", Safe, [ScriptLab], true, 90, scriptlab::script_halt,
         "STOP, uncaught errors, T32_Stop status, END, ERROR.* reads, files and globals after END";
-    ScriptError = "script-error", Safe, [Bundle], true, 90, scripts::script_error,
-        "failing scripts surface as failures, never as success";
+    ScriptError = "script-error", Safe, [ScriptLab], true, 120, scripts::script_error,
+        "failing scripts surface as failures, never as success: ON ERROR JUMPTO across DO, STOP, ENDDO FALSE(), a failed SAVE, IF and GOTO";
     ChannelIn = "channel-in", Safe, [ScriptLab], true, 180, channels::channel_in,
         "client to script without macros: VM: strings, DO arguments, EVAL, READ, OS.PPD, ~~~~ reads";
     ChannelOut = "channel-out", Safe, [ScriptLab], true, 150, channels::channel_out,

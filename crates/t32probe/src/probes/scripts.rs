@@ -4,9 +4,13 @@
 use std::time::{Duration, Instant};
 
 use t32rcl::{MacroName, MacroSpelling};
-use t32stage::{RunOutcome, Undo, practice::fnc, transfer};
+use t32stage::{RunOutcome, Undo, transfer};
 
-use super::{bundle_of, exp_as, hex, macro_prefix, ok, pattern, run_entry, soft};
+use super::{
+    bundle_of, exp_as, hex,
+    lab::{Answer, Case, CaseRecord, Expect, Lab, LabSizes, Slot},
+    macro_prefix, ok, pattern, run_entry, soft,
+};
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
     outcome::{Value, key},
@@ -265,64 +269,145 @@ pub fn bundle(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     })
 }
 
-/// One argument per group of `practice::render_args` characters; `args.cmm` returns them joined.
-const SAFE_ARGS: [&str; 5] = ["x,y", "a/b", "k=v", "P:0x10", "m+n@o-p.q_r"];
-const ARGS: &str = "LOCAL &a &b &c &d &e\nENTRY &a &b &c &d &e\nENDDO \"&a|&b|&c|&d|&e\"\n";
+/// Scripts the script-error cases `DO`: file name below `{S}` without `.cmm`, whether running
+/// it must fail, and its text.
+pub(crate) const ERR_SUBS: [(&str, bool, &str); 8] = [
+    ("err_top", true, "T32PROBE_NO_SUCH_COMMAND\nENDDO\n"),
+    ("err_nested", true, "DO \"{S}\\err_top.cmm\"\nENDDO\n"),
+    ("err_missing", true, "DO \"{S}\\does_not_exist.cmm\"\nENDDO\n"),
+    ("err_data", true, "Data.LOAD.Binary \"{S}\\missing.bin\" VM:{B}\nENDDO\n"),
+    ("err_syntax", true, "IF\nENDDO\n"),
+    ("err_save", true, "Data.SAVE.Binary \"{S}\\no_such_dir\\x.bin\" VM:{M}++0x0\nENDDO\n"),
+    ("stop", false, "STOP\nENDDO\n"),
+    ("ok_false", false, "ENDDO FALSE()\n"),
+];
+
+/// `DO`es one of `ERR_SUBS` under `ON ERROR JUMPTO`. `failed` is the handler's first line after
+/// the reset; the depth and message reads come after `@z`. A halt inside the `DO` cannot be
+/// declared (no `DO` after a halt marker), so it ends by the case timeout.
+const RUNNER: &str = "@a\nON ERROR JUMPTO t32p_failed\nDO \"{S}\\<case>.cmm\"\n@mark d\nON ERROR inherit\n\
+                      @mark ok\n@z\nENDDO\nt32p_failed:\nON ERROR inherit\n@mark failed\n@z\n\
+                      @ask d1 PRACTICE.StackDepth() == 1.\nPRIVATE &m\n&m=ERROR.MESSAGE()\n@put 0 \"[&m]\"\n@v\nENDDO";
+const ES: &str = "@a\nON ERROR JUMPTO t32p_f\nData.SAVE.Binary \"{S}\\no_such_dir\\x.bin\" VM:{M}++0x0\n\
+                  ON ERROR inherit\n@mark notcaught\n@z\nENDDO\nt32p_f:\nON ERROR inherit\n@mark caught\n@z\nENDDO";
+const IG: &str = "@a\nIF 1==1\n  GOTO t32p_l1\n@mark fell\nt32p_l1:\n@mark jumped\nIF 1==0\n  @mark iffalse\n\
+                  IF OS.DIR(\"{S}\\nope\")==FALSE()\n  @mark dirfalse\n\
+                  IF OS.FILE.SIZE(\"{S}\\ig-a.bin\")!=0x00000002\n  @mark sizene\n@z\nENDDO";
+
+/// The runner case of `ERR_SUBS[i]`: id `r-<name>` with `_` turned into `-`.
+pub(crate) fn err_case(name: &str) -> Case {
+    let id = format!("r-{}", name.replace('_', "-"));
+    Case::new(id, RUNNER.replace("<case>", name), Expect::HaltAfter("d"), Duration::from_secs(20))
+}
+
+pub(crate) fn es_case() -> Case {
+    Case::new("es", ES, Expect::HaltAfter("a"), Duration::from_secs(20))
+}
+
+pub(crate) fn ig_case() -> Case {
+    Case::new("ig", IG, Expect::End, Duration::from_secs(10))
+}
+
+/// What the script-error cases showed, as report tokens.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ErrTokens {
+    pub caught: String,
+    pub false_ok: String,
+    pub stop: &'static str,
+    pub ok_false: &'static str,
+    pub hdepth: &'static str,
+    pub after: String,
+    pub msg: &'static str,
+    pub save_err: &'static str,
+    pub ifgoto: &'static str,
+}
+
+impl ErrTokens {
+    /// `runs` pairs each `ERR_SUBS` name and its must-fail flag with its runner's record.
+    /// `created`: the file `err_save` and `es` must not create exists.
+    pub fn of(runs: &[(&str, bool, CaseRecord)], es: &CaseRecord, ig: &CaseRecord, created: bool) -> Self {
+        let must: Vec<&(&str, bool, CaseRecord)> = runs.iter().filter(|(_, m, _)| *m).collect();
+        let caught = must.iter().filter(|(_, _, r)| r.has("failed")).count();
+        let false_ok: Vec<&str> = must.iter().filter(|(_, _, r)| r.has("ok")).map(|(n, _, _)| *n).collect();
+        let rec = |name: &str| runs.iter().find(|(n, _, _)| *n == name).map(|(_, _, r)| r);
+        let stop = match rec("stop") {
+            Some(r) if r.has("failed") => "caught",
+            Some(r) if r.has("ok") => "ok",
+            _ => "halted",
+        };
+        let ok_false = if rec("ok_false").is_some_and(|r| r.has("ok")) { "ok" } else { "FAIL" };
+        let hdepth = match runs.iter().find(|(_, _, r)| r.has("failed")).map(|(_, _, r)| r.answer("d1")) {
+            Some(Answer::Yes) => "1",
+            Some(Answer::No) => "other",
+            _ => "?",
+        };
+        let deepest = runs.iter().map(|(_, _, r)| r).chain([es, ig]).map(|r| r.depth).max().unwrap_or(0);
+        let msg = runs.iter().flat_map(|(_, _, r)| &r.puts).any(|(_, s)| matches!(s, Slot::Text(_)));
+        let save_err = if created {
+            "created"
+        } else if es.has("caught") {
+            "caught"
+        } else {
+            "not"
+        };
+        let ig_ok = ig.has("jumped") && !ig.has("fell") && !ig.has("iffalse") && ig.has("dirfalse") && ig.has("sizene");
+        Self {
+            caught: format!("{caught}/{}", must.len()),
+            false_ok: if false_ok.is_empty() { "none".into() } else { false_ok.join(",") },
+            stop,
+            ok_false,
+            hdepth,
+            after: if deepest == 0 { "clean".into() } else { format!("depth{deepest}") },
+            msg: if msg { "slot" } else { "none" },
+            save_err,
+            ifgoto: if ig_ok { "ok" } else { "FAIL" },
+        }
+    }
+}
 
 /// A failing script must never look like success, and the stack is empty after every case.
-/// Also passes `SAFE_ARGS` through the runner's `DO` line and compares what `ENTRY` received.
+/// Every case runs on literal paths under `ON ERROR JUMPTO`; the oracle files say which path it
+/// took.
 pub fn script_error(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
-    let scratch = ctx.env.scratch_window().base();
-    let data_err = format!("Data.LOAD.Binary \"~~~~/missing.bin\" VM:0x{scratch:08X}\nENDDO\n");
-    let cases: [(&str, String, bool); 7] = [
-        ("err_top.cmm", "T32PROBE_NO_SUCH_COMMAND\nENDDO\n".into(), true),
-        ("err_nested.cmm", "DO \"~~~~/err_top.cmm\"\nENDDO\n".into(), true),
-        ("err_missing.cmm", "DO \"~~~~/does_not_exist.cmm\"\nENDDO\n".into(), true),
-        ("err_data.cmm", data_err, true),
-        ("err_syntax.cmm", "IF\nENDDO\n".into(), true),
-        ("stop.cmm", "STOP\nENDDO\n".into(), false),
-        ("ok_false.cmm", "ENDDO FALSE()\n".into(), false),
-    ];
-    let mut files: Vec<(&str, &[u8])> = cases.iter().map(|(n, t, _)| (*n, t.as_bytes())).collect();
-    files.push(("args.cmm", ARGS.as_bytes()));
-    let bundle = bundle_of(&files)?;
-    let (stage, session) = ctx.stage()?;
-    let snap = stage.ensure_snapshot(session, &bundle)?;
-    let (mut caught, mut halted, mut false_success, mut stack_clean) = (0, 0, Vec::new(), true);
-    let mut results = Vec::new();
-    for (entry, _, must_fail) in &cases {
-        let r = run_entry(stage, session, &snap, entry, &[], Duration::from_secs(20))?;
-        let depth = session.eval(fnc::STACK_DEPTH)?.into_int(fnc::STACK_DEPTH)?;
-        stack_clean &= depth == 0;
-        match &r.outcome {
-            RunOutcome::Finished { rc, .. } if *rc != 0 => caught += 1,
-            RunOutcome::Halted { .. } => halted += 1,
-            _ => {}
-        }
-        if *must_fail && r.outcome.is_success() {
-            false_success.push(*entry);
-        }
-        results.push(format!("{entry}={:?}", r.outcome));
+    let (mut lab, _) = Lab::open(ctx, "err", LabSizes::default())?;
+    let result = script_error_cases(ctx, &mut lab);
+    let closed = lab.close(ctx);
+    result.and(closed)
+}
+
+fn script_error_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
+    lab.register(ctx, "no_such_dir", true)?;
+    lab.register(ctx, "no_such_dir/x.bin", false)?;
+    for (name, _, body) in ERR_SUBS {
+        lab.stage_file(ctx, &format!("{name}.cmm"), body)?;
     }
-    let ok_false = results.last().is_some_and(|r| r.contains("rc: 0") && r.contains("FALSE"));
-    let r = run_entry(stage, session, &snap, "args.cmm", &SAFE_ARGS, Duration::from_secs(20))?;
-    let got = match &r.outcome {
-        RunOutcome::Finished { rc: 0, ret, .. } => Some(ret.trim_matches('"').to_string()),
-        _ => None,
-    };
-    let args_ok = got.as_deref() == Some(SAFE_ARGS.join("|").as_str());
-    ctx.measure("args_ret", Value::Text(format!("{got:?} from {:?}", r.outcome)));
-    ctx.measure("results", Value::Text(results.join(" | ")));
-    ctx.headline("cases", Value::Count(cases.len() as u64));
-    ctx.headline("caught", Value::Count(caught));
-    ctx.headline("halted", Value::Count(halted));
-    ctx.text("stack_clean", if stack_clean { "yes" } else { "NO" });
-    ctx.text("false_ok", ok(ok_false));
-    ctx.text("args", ok(args_ok));
-    ctx.check(false_success.is_empty() && stack_clean && args_ok, || {
-        format!(
-            "reported success for {false_success:?}; stack clean after every case: {stack_clean}; \
-             arguments intact: {args_ok}"
-        )
+    let mut runs = Vec::new();
+    for (name, must_fail, _) in ERR_SUBS {
+        runs.push((name, must_fail, lab.run(ctx, &err_case(name))?));
+    }
+    let es = lab.run(ctx, &es_case())?;
+    let ig = lab.run(ctx, &ig_case())?;
+    let created = lab.readable(ctx, "no_such_dir/x.bin")?;
+    let dir = lab.dir_exists(ctx, "no_such_dir")?;
+    ctx.measure("no_such_dir", Value::Text(format!("dir={dir} file={created}")));
+    let t = ErrTokens::of(&runs, &es, &ig, created);
+    ctx.text("caught", t.caught.clone());
+    ctx.text("false_ok", t.false_ok.clone());
+    ctx.text("stop", t.stop);
+    ctx.text("ok_false", t.ok_false);
+    ctx.text("hdepth", t.hdepth);
+    ctx.text("after", t.after.clone());
+    ctx.text("msg", t.msg);
+    ctx.text("save_err", t.save_err);
+    ctx.text("ifgoto", t.ifgoto);
+    if !lab.cut.is_empty() {
+        return Err(ProbeFail::Check(format!("cut by the probe deadline: {}", lab.cut.join(","))));
+    }
+    ctx.check(t.false_ok == "none" && t.after == "clean", || {
+        format!("reported success for {}; stack after the cases: {}", t.false_ok, t.after)
     })
 }
+
+#[cfg(test)]
+#[path = "scripts_tests.rs"]
+mod tests;

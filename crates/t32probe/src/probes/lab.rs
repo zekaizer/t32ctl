@@ -941,6 +941,15 @@ impl Lab {
         Ok(ctx.session.eval(&e.call(&p))?.into_bool(e.name())?)
     }
 
+    /// Register the removal of a file or directory below `{S}` that a case may create but does
+    /// not name in its outputs, before any case runs.
+    pub fn register(&mut self, ctx: &mut ProbeCtx<'_>, rel: &str, dir: bool) -> Result<(), ProbeFail> {
+        let p = self.path(rel)?;
+        ctx.push(if dir { Undo::RemoveDir(p) } else { Undo::RemoveFile(p) })?;
+        self.registered.insert(rel.to_ascii_lowercase());
+        Ok(())
+    }
+
     /// Refuse a name that exists before anything writes it, then register its removal.
     fn claim(&mut self, ctx: &mut ProbeCtx<'_>, names: &[String]) -> Result<(), ProbeFail> {
         for n in names {
