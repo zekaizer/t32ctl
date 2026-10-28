@@ -77,7 +77,8 @@ pub struct ProcDecl {
     pub about: String,
     /// The entry script, relative to the profile directory.
     pub script: RelPath,
-    pub grade: GradeId,
+    /// Read only through `policy::effective_grade`.
+    pub(in crate::profile) grade: GradeId,
     pub timeout: ScriptTimeout,
     pub effects: Vec<Effect>,
     /// Files the script writes into `&t32ctl_out`.

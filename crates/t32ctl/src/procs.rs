@@ -126,23 +126,29 @@ pub fn split(tokens: &[String]) -> ProcCall {
     call
 }
 
-fn params_error(decl: &ProcDecl, message: String) -> CtlError {
-    CtlError::new(ErrorKind::ProcParams, message).with_details(vec![format!("usage: {}", decl.usage(decl.grade))])
+fn params_error<G: Grade>(adm: &Admitted<G>, message: String) -> CtlError {
+    CtlError::new(ErrorKind::ProcParams, message).with_details(vec![format!("usage: {}", adm.decl().usage(G::ID))])
 }
 
 /// Every declared parameter's value: as typed, else its default. Typed values are checked before
 /// defaults, so the caller's own mistake is reported first. A file must be a non-empty regular
 /// file.
-fn values(decl: &ProcDecl, call: &ProcCall, cx: &ParamCx<'_>, setup: &Setup<'_>) -> Result<Vec<Param>, CtlError> {
+fn values<G: Grade>(
+    adm: &Admitted<G>,
+    call: &ProcCall,
+    cx: &ParamCx<'_>,
+    setup: &Setup<'_>,
+) -> Result<Vec<Param>, CtlError> {
+    let decl = adm.decl();
     if let Some(stray) = call.stray.first() {
-        return Err(params_error(decl, stray.clone()));
+        return Err(params_error(adm, stray.clone()));
     }
     for (i, (flag, _)) in call.params.iter().enumerate() {
         if decl.param_by_flag(flag).is_none() {
-            return Err(params_error(decl, format!("proc {} declares no parameter {flag}", decl.name)));
+            return Err(params_error(adm, format!("proc {} declares no parameter {flag}", decl.name)));
         }
         if call.params[..i].iter().any(|(f, _)| f == flag) {
-            return Err(params_error(decl, format!("{flag} is given twice")));
+            return Err(params_error(adm, format!("{flag} is given twice")));
         }
     }
     let typed: Vec<Option<ParamValue>> = decl
@@ -153,7 +159,7 @@ fn values(decl: &ProcDecl, call: &ProcCall, cx: &ParamCx<'_>, setup: &Setup<'_>)
             text.map(|t| p.parse(t, cx)).transpose()
         })
         .collect::<Result<_, _>>()
-        .map_err(|m| params_error(decl, m))?;
+        .map_err(|m| params_error(adm, m))?;
     let mut out = Vec::with_capacity(decl.params.len());
     for (p, typed) in decl.params.iter().zip(typed) {
         let flag = p.flag();
@@ -162,12 +168,12 @@ fn values(decl: &ProcDecl, call: &ProcCall, cx: &ParamCx<'_>, setup: &Setup<'_>)
             None => p
                 .default_value(cx)
                 .unwrap_or_else(|| Err(format!("{flag} is required")))
-                .map_err(|m| params_error(decl, m))?,
+                .map_err(|m| params_error(adm, m))?,
         };
         let shown = value.shown(setup.env);
         let file_len = match &value {
             ParamValue::File(path) => {
-                let bad = |why: String| params_error(decl, format!("{flag} {}: {why}", shell_word(&shown)));
+                let bad = |why: String| params_error(adm, format!("{flag} {}: {why}", shell_word(&shown)));
                 let meta = fs::metadata(path).map_err(|e| bad(e.to_string()))?;
                 if !meta.is_file() {
                     return Err(bad("not a regular file".into()));
@@ -224,13 +230,13 @@ pub fn prepare<G: Grade>(name: &str, call: &ProcCall, setup: &Setup<'_>) -> Resu
     let decl = adm.decl();
     let build = setup.binding.build.as_ref().map(|b| b.value.as_path());
     let cx = ParamCx { target: &profile.target, cwd: &setup.env.cwd, build };
-    let params = values(decl, call, &cx, setup)?;
+    let params = values(&adm, call, &cx, setup)?;
     let bundle = profile_bundle(profile, setup)?;
     let out = OutDir::create(&setup.paths.out_base(), "p")?;
     let out_shown = format!("{}/", setup.env.display(out.path()));
     let subject = Subject::Proc {
         name: decl.name.clone(),
-        grade: decl.grade.name(),
+        grade: G::ID.name(),
         profile: Bundled {
             hash: Some(profile.hash.to_string()),
             root: None,

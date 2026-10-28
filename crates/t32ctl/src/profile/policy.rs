@@ -14,7 +14,14 @@ use crate::{
 };
 
 /// The grade procedure `proc` runs at, which the grade word must equal; `None` when the profile
-/// declares no such procedure.
+/// declares no such procedure. The declared grade is private to the profile module, so every other
+/// reader goes through this hook:
+///
+/// ```compile_fail,E0616
+/// fn declared(decl: &t32ctl::profile::ProcDecl) -> t32ctl::grade::GradeId {
+///     decl.grade
+/// }
+/// ```
 pub fn effective_grade(p: &Profile, proc: &str) -> Option<GradeId> {
     p.proc(proc).map(|d| d.grade)
 }
