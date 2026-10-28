@@ -134,8 +134,6 @@ probes! {
         "VM: window at full size: RCL write, Data.SAVE/LOAD.Binary time and keepalives at 4 MiB, 8 MiB and the whole window (blocks the GUI for seconds)";
     TarDownload = "tar-download", Safe, [VmFile], true, 60, storage::tar_download,
         "TAR + ZIP of a work directory in PowerView, download through VM:, untar and gunzip in Rust";
-    Bundle = "bundle", Safe, [Gzip, Macro], true, 90, scripts::bundle,
-        "self-extracting bundle, nested DO chain, marker, runner rc, state during the chain";
     ScriptLab = "script-lab", Safe, [VmFile], true, 180, scriptlab::script_lab,
         "file-existence oracle for DO'd scripts; Data.Set VM: and WRITE channels; DO timing, PRACTICE state while scripts run, RCL during WAIT, loops and an 8 MiB SAVE";
     ScriptHalt = "script-halt", Safe, [ScriptLab], true, 90, scriptlab::script_halt,
@@ -152,6 +150,8 @@ probes! {
         "script macros seen by the client and later scripts: script GLOBAL over EXP, writes into client globals, frames during WAIT, EXP while halted with CONTinue, markers across END, storage form, generated wrappers";
     UnpackLiteral = "unpack-literal", Safe, [ScriptLab], true, 300, unpack::unpack_literal,
         "the unpack shape on literal paths: time per file and per MiB, .bak on rerun, pre-RM, the empty-or-relative path guard, ABSPATH identity";
+    Bundle = "bundle", Safe, [Gzip, Macro, MacroVisibility, UnpackLiteral], true, 150, scripts::bundle,
+        "self-extracting bundle, nested DO chain, marker, runner rc, state during the chain; only where scripts see the snapshot path, with a canary outside it";
     Dialog = "dialog", Tier::OptIn(Dialog), [Bundle], true, 40, optin::dialog,
         "script opens a dialog: state 2, T32_Stop, script ends (shows a window)";
     MultiClient = "multi-client", Tier::OptIn(MultiClient), [Bundle], true, 60, optin::multi_client,
@@ -276,7 +276,6 @@ mod tests {
             "fs-semantics",
             "vm-large",
             "tar-download",
-            "bundle",
             "script-lab",
             "script-halt",
             "script-error",
@@ -285,6 +284,7 @@ mod tests {
             "macro-visibility",
             "macro-return",
             "unpack-literal",
+            "bundle",
         ];
         let opt = [("dialog", Dialog), ("multi-client", MultiClient), ("run-control", RunControl), ("elf-unzip", Elf)];
         for n in safe {
@@ -294,6 +294,31 @@ mod tests {
             assert_eq!(ProbeId::parse(n).map(|p| p.def().tier), Some(Tier::OptIn(o)), "{n}");
         }
         assert_eq!(ALL.len(), safe.len() + opt.len());
+        let order: Vec<&str> = ALL.iter().filter(|d| d.tier == Tier::Safe).map(|d| d.id.name()).collect();
+        assert_eq!(order, safe);
+        let rows: [(&str, &[&str], u64); 16] = [
+            ("keepalive", &["connect"], 30),
+            ("gzip", &["vm-file"], 180),
+            ("macro", &["tempdir"], 45),
+            ("fn-table", &["connect", "tempdir", "vm-rw"], 60),
+            ("fs-semantics", &["vm-file"], 120),
+            ("vm-large", &["vm-file"], 300),
+            ("tar-download", &["vm-file"], 60),
+            ("script-lab", &["vm-file"], 180),
+            ("script-halt", &["script-lab"], 90),
+            ("script-error", &["script-lab"], 120),
+            ("channel-in", &["script-lab"], 180),
+            ("channel-out", &["script-lab"], 150),
+            ("macro-visibility", &["script-lab"], 180),
+            ("macro-return", &["script-lab"], 180),
+            ("unpack-literal", &["script-lab"], 300),
+            ("bundle", &["gzip", "macro", "macro-visibility", "unpack-literal"], 150),
+        ];
+        for (n, req, secs) in rows {
+            let d = ProbeId::parse(n).expect("listed").def();
+            assert_eq!(d.requires.iter().map(|r| r.name()).collect::<Vec<_>>(), req, "{n}");
+            assert_eq!(d.deadline.as_secs(), secs, "{n}");
+        }
     }
 
     #[test]

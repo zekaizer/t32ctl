@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Probes about PRACTICE scripts: macro, bundle, script-error.
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeSet,
+    time::{Duration, Instant},
+};
 
 use t32rcl::{MacroName, MacroSpelling};
-use t32stage::{RunOutcome, Undo, transfer};
+use t32stage::{Macro, RunOutcome, Undo, transfer};
 
 use super::{
-    bundle_of, exp_as, hex,
+    Listing, bundle_of, exp_as, hex,
     lab::{Answer, Case, CaseRecord, Expect, Lab, LabSizes, Slot},
-    macro_prefix, ok, pattern, run_entry, soft,
+    list_dir, macro_prefix, ok, pattern, run_entry, soft,
 };
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
-    outcome::{Value, key},
+    outcome::{SkipReason, Value, key},
 };
 
 fn name(s: &str) -> MacroName {
@@ -215,33 +218,94 @@ const SUB_B: &str = "IF OS.FILE.SIZE(OS.PresentPracticeDirectory()+\"/deep/data.
 /// Proves the end of the chain ran in this run: the client compares the global with the token.
 const SUB_C: &str = "GLOBAL &t32ctl_probe_deep\n&t32ctl_probe_deep=\"&t32ctl_token\"\nWAIT 1.s\nENDDO\n";
 
-/// The self-extracting bundle end to end: upload, cache hit, repair after a missing marker, a
-/// nested `DO ~~~~/...` chain through the runner, and what `GetPracticeState` reports meanwhile.
-pub fn bundle(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+/// The bundle of run `run`, every file below `pb-<run>/`: a snapshot path that expands to nothing
+/// in the unpack script would put them below PowerView's working directory, where the canary
+/// looks.
+pub(crate) fn probe_bundle(run: &str) -> Result<t32stage::Bundle, ProbeFail> {
     let data = pattern(4097, 4097);
-    let bundle = bundle_of(&[
+    let files: [(&str, &[u8]); 6] = [
         ("main.cmm", MAIN.as_bytes()),
         ("sub/b.cmm", SUB_B.as_bytes()),
         ("sub/deep/c.cmm", SUB_C.as_bytes()),
         ("sub/deep/data.bin", &data),
         ("empty.txt", b""),
         ("dir with space/x.cmm", b"ENDDO\n"),
-    ])?;
+    ];
+    let named: Vec<(String, &[u8])> = files.iter().map(|(p, b)| (format!("pb-{run}/{p}"), *b)).collect();
+    let refs: Vec<(&str, &[u8])> = named.iter().map(|(p, b)| (p.as_str(), *b)).collect();
+    bundle_of(&refs)
+}
+
+/// `OS.DIR` of `\pb-<run>` and `pb-<run>`: `Check` when either exists, `when` naming the step.
+pub(crate) fn canary(ctx: &mut ProbeCtx<'_>, when: &str) -> ProbeResult {
+    let top = format!("pb-{}", ctx.env.cfg.run_id);
+    for p in [format!("\\{top}"), top] {
+        let expr = format!("OS.DIR(\"{p}\")");
+        let found = soft(ctx.session.eval(&expr).and_then(|v| v.into_bool(&expr)))?;
+        ctx.measure(&format!("canary.{when}.{p}"), Value::Text(format!("{found:?}")));
+        if found == Some(true) {
+            ctx.text("canary", "FAIL");
+            return Err(ProbeFail::Check(format!("{when}: the bundle wrote outside the snapshot directory: {p}")));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a script reads `&t32ctl_snap` as the value just set over EXP 2.
+pub(crate) fn sn_case(dir: &str) -> Case {
+    let body = format!("@a\n@ask snap \"&t32ctl_snap\" == \"{dir}\"\n@ask empty \"&t32ctl_snap\" == \"\"\n@z\nENDDO");
+    Case::new("sn", body, Expect::HaltAfter("a"), Duration::from_secs(10))
+}
+
+fn gate_closed(ctx: &mut ProbeCtx<'_>, gate: &str, why: &str) -> ProbeResult {
+    ctx.text("gate", format!("skip:{gate}"));
+    Err(ProbeFail::Skip(SkipReason::NotApplicable { why: why.into() }))
+}
+
+/// The self-extracting bundle end to end: upload, cache hit, repair after a missing marker, a
+/// nested `DO ~~~~/...` chain through the runner, and what `GetPracticeState` reports meanwhile.
+/// Runs only where macro-visibility and unpack-literal showed that the unpack script sees its
+/// snapshot path, and where a script reads `&t32ctl_snap` under its real name.
+pub fn bundle(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+    if ctx.learned.exp_to_script != Some(true) {
+        return gate_closed(ctx, "a", "EXP 2 values do not reach scripts (macro-visibility v1)");
+    }
+    if ctx.learned.abspath_same != Some(true) {
+        return gate_closed(ctx, "b", "OS.FILE.ABSPATH rewrites the snapshot path; the unpack guard would refuse it");
+    }
+    canary(ctx, "before")?;
+    let run = ctx.env.cfg.run_id.clone();
+    let bundle = probe_bundle(&run)?;
     let (main_macro, deep_macro) = (name("t32ctl_probe_main"), name("t32ctl_probe_deep"));
     ctx.push(Undo::ClearMacros(vec![main_macro.clone(), deep_macro.clone()]))?;
+    let (stage, session) = ctx.stage()?;
+    let dir = stage.path(&bundle.key().hex())?;
+    session.macro_set(&Macro::Snap.name(), &dir.text())?;
+    let (mut lab, _) = Lab::open(ctx, "bun", LabSizes::default())?;
+    let sn = lab.run(ctx, &sn_case(&dir.text()));
+    let closed = lab.close(ctx);
+    let sn = sn?;
+    closed?;
+    ctx.measure("sn", Value::Text(format!("snap={} empty={}", sn.answer("snap").token(), sn.answer("empty").token())));
+    if sn.answer("snap") != Answer::Yes {
+        return gate_closed(ctx, "c", "&t32ctl_snap is not visible to a script under its real name");
+    }
+    ctx.text("gate", "run");
+
+    let top = format!("pb-{run}");
     let (stage, session) = ctx.stage()?;
     let snap = stage.ensure_snapshot(session, &bundle)?;
     let upload = snap.upload.unwrap_or_default();
     let mut sizes_ok = true;
     for (rel, want) in [("main.cmm", MAIN.len() as u64), ("sub/deep/data.bin", 4097), ("empty.txt", 0)] {
-        sizes_ok &= transfer::file_size(session, &snap.dir.join(rel)?)? == want;
+        sizes_ok &= transfer::file_size(session, &snap.dir.join(&format!("{top}/{rel}"))?)? == want;
     }
     let t = Instant::now();
     let cached = stage.ensure_snapshot(session, &bundle)?.cached;
     let cached_time = t.elapsed();
     session.cmd(&t32stage::practice::cmd::rm(&snap.dir.join(".t32ctl/complete")?))?;
     let repaired = !stage.ensure_snapshot(session, &bundle)?.cached;
-    let report = run_entry(stage, session, &snap, "main.cmm", &[], Duration::from_secs(30))?;
+    let report = run_entry(stage, session, &snap, &format!("{top}/main.cmm"), &[], Duration::from_secs(30))?;
     let script_wrote = soft(session.macro_get(&main_macro))?.as_deref() == Some("main-ran");
     let deep = soft(session.macro_get(&deep_macro))?;
     let deep_ran = deep.as_deref().is_some_and(|v| v.trim_matches('"') == report.token);
@@ -261,12 +325,49 @@ pub fn bundle(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     ctx.measure("polls", Value::Count(report.polls.samples.into()));
     ctx.measure("running_samples", Value::Count(report.polls.running.into()));
     ctx.text("script_write", ok(script_wrote));
+    canary(ctx, "after")?;
+    ctx.text("canary", "clean");
+    snapshot_strays(ctx, &bundle, &snap.dir)?;
     ctx.check(sizes_ok && cached && repaired && nested && deep_ran && script_wrote, || {
         format!(
             "bundle: sizes={sizes_ok} cached={cached} repaired={repaired} deep={deep_ran} outcome={:?}",
             report.outcome
         )
     })
+}
+
+/// List the snapshot directory and every directory the unpack script creates: a file the stage
+/// did not register gets its removal registered and is reported as `stray`.
+fn snapshot_strays(ctx: &mut ProbeCtx<'_>, bundle: &t32stage::Bundle, snap: &t32stage::StagePath) -> ProbeResult {
+    let mut dirs = vec![snap.clone()];
+    for d in bundle.pack(0).dirs {
+        dirs.push(snap.join(&d)?);
+    }
+    let mut stray = Vec::new();
+    for d in &dirs {
+        let Listing::Names { names, .. } = list_dir(ctx.session, d)? else { continue };
+        let (stage, _) = ctx.stage()?;
+        let known: BTreeSet<String> = stage
+            .pending()
+            .iter()
+            .filter_map(|u| match u {
+                Undo::RemoveFile(p) | Undo::RemoveDir(p) => Some(p.text().to_ascii_lowercase()),
+                _ => None,
+            })
+            .collect();
+        for n in names {
+            let Ok(p) = d.join(&n) else { continue };
+            if !known.contains(&p.text().to_ascii_lowercase()) && !dirs.contains(&p) {
+                stray.push(p.text());
+                stage.register(Undo::RemoveFile(p))?;
+            }
+        }
+    }
+    ctx.measure("stray_names", Value::Text(stray.join(",")));
+    if !stray.is_empty() {
+        ctx.headline("stray", Value::Count(stray.len() as u64));
+    }
+    Ok(())
 }
 
 /// Scripts the script-error cases `DO`: file name below `{S}` without `.cmm`, whether running

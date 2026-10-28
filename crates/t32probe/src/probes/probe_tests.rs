@@ -500,3 +500,70 @@ fn macro_cross_spelling_reads_split_when_neither_side_sees_the_other() {
     }
     assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
 }
+
+/// Runs only the canary check after the bundle.
+fn canary_after(ctx: &mut crate::ctx::ProbeCtx<'_>) -> crate::ctx::ProbeResult {
+    super::scripts::canary(ctx, "after")
+}
+
+#[test]
+fn bundle_fails_when_the_canary_appears() {
+    let s = Script::new().attach().expect_fn("OS.DIR(\"\\pb-r1\")").reply_bool(false);
+    let mut session = connect(vec![Ok(s.expect_fn("OS.DIR(\"pb-r1\")").reply_bool(true))]);
+    let mut env = test_env("bundle-canary");
+    let def: &'static crate::registry::ProbeDef = Box::leak(Box::new(crate::registry::ProbeDef {
+        id: ProbeId::Bundle,
+        tier: crate::registry::Tier::Safe,
+        requires: &[],
+        needs_connection: true,
+        deadline: Duration::from_secs(5),
+        about: "",
+        run: canary_after,
+    }));
+    let r = run(&mut env, &mut session, &[def]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Fail);
+    let msg = o.error.as_ref().map(|e| e.message.clone()).unwrap_or_default();
+    assert!(msg.contains("outside the snapshot directory: pb-r1"), "{msg}");
+    assert_eq!(o.lookup("canary"), Some(&Value::Text("FAIL".into())));
+}
+
+#[test]
+fn bundle_skips_unless_all_three_gates_hold() {
+    use crate::probes::{
+        channels::channels_tests::ran,
+        lab::lab_tests::{closed_down, files_removed, listed, opened},
+        scripts::{probe_bundle, sn_case},
+    };
+    let skipped = |env: &mut crate::exec::tests::TestEnv, s: Script| {
+        let mut session = connect(vec![Ok(s)]);
+        let r = run(env, &mut session, &[ProbeId::Bundle.def()]);
+        let o = r.outcomes.into_iter().next().unwrap();
+        assert_eq!(o.verdict, Verdict::Skipped, "{o:?}");
+        assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+        o
+    };
+    let mut env = test_env("bundle-gates");
+    let o = skipped(&mut env, Script::new().attach());
+    assert_eq!(o.lookup("gate"), Some(&Value::Text("skip:a".into())));
+    env.learned.exp_to_script = Some(true);
+    let o = skipped(&mut env, Script::new().attach());
+    assert_eq!(o.lookup("gate"), Some(&Value::Text("skip:b".into())));
+
+    env.learned.abspath_same = Some(true);
+    let snap = format!("{STAGE}\\{}", probe_bundle("r1").unwrap().key().hex());
+    let case = sn_case(&snap);
+    let mut s = Script::new().attach().expect_fn("OS.DIR(\"\\pb-r1\")").reply_bool(false);
+    s = stage_opened(s.expect_fn("OS.DIR(\"pb-r1\")").reply_bool(false));
+    s = s.expect_req(set_req("t32ctl_snap", &snap)).reply_macro("");
+    s = listed(ran(opened(s, "bun"), "bun", &case, &[], None), "bun", &[]);
+    s = stage_closed(s);
+    s = files_removed(s, "bun", &case, crate::env::ScriptOut::Off, &["sn.cmm", "sn-a.bin", "sn-z.bin"]);
+    s = closed_down(s, "bun");
+    for m in ["t32ctl_probe_main", "t32ctl_probe_deep"] {
+        s = s.expect_req(set_req(m, "")).reply_macro("");
+    }
+    let o = skipped(&mut env, s);
+    assert_eq!(o.lookup("gate"), Some(&Value::Text("skip:c".into())));
+    assert_eq!(o.lookup("sn"), Some(&Value::Text("snap=n empty=n".into())));
+}
