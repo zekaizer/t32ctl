@@ -118,13 +118,13 @@ fn connect_failures_name_what_to_check() {
     assert_eq!(
         refused.details,
         ["PowerView not running, RCL not enabled (RCL=NETTCP in config.t32), or wrong [connection] port in \
-          ~/.config/t32ctl/config.toml"]
+          t32ctl's config.toml"]
     );
     let dropped = from_connect(&ConnectError::TimedOut { endpoint: endpoint.clone(), after: Duration::from_secs(3) });
     assert_eq!(
         dropped.details,
-        ["wrong [connection] host in ~/.config/t32ctl/config.toml for this WSL networking mode, or a firewall drops \
-          the port"]
+        ["wrong [connection] host in t32ctl's config.toml for this WSL networking mode, or a firewall drops the \
+          port"]
     );
     let silent = ConnectError::NoAnswer { endpoint: endpoint.clone(), waited: Duration::from_secs(5) };
     assert_eq!(from_connect(&silent).kind, ErrorKind::NoAnswer);

@@ -386,16 +386,17 @@ pub fn from_connect(e: &ConnectError) -> CtlError {
     CtlError::new(kind, e.to_string()).with_details(vec![connect_hint(e).to_string()])
 }
 
-/// t32rcl's hint names `t32probe`'s `--host` and `--port`; t32ctl takes both from the config.
+/// t32rcl's hint names `t32probe`'s `--host` and `--port`; t32ctl takes both from the config. The
+/// file is not named by path: `$XDG_CONFIG_HOME` moves it, and no caller of this knows the `Env`.
 fn connect_hint(e: &ConnectError) -> &'static str {
     match e {
         ConnectError::Refused { .. } => {
             "PowerView not running, RCL not enabled (RCL=NETTCP in config.t32), or wrong [connection] port in \
-             ~/.config/t32ctl/config.toml"
+             t32ctl's config.toml"
         }
         ConnectError::TimedOut { .. } | ConnectError::Unreachable { .. } => {
-            "wrong [connection] host in ~/.config/t32ctl/config.toml for this WSL networking mode, or a firewall \
-             drops the port"
+            "wrong [connection] host in t32ctl's config.toml for this WSL networking mode, or a firewall drops the \
+             port"
         }
         _ => e.hint(),
     }

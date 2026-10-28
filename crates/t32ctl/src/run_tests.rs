@@ -258,7 +258,7 @@ fn every_candidate_refused_is_unreachable_with_what_was_tried() {
         out.text,
         "error[unreachable]: 127.0.0.1:20000: connection refused\n\
          \x20 PowerView not running, RCL not enabled (RCL=NETTCP in config.t32), or wrong [connection] port in \
-         ~/.config/t32ctl/config.toml\n\
+         t32ctl's config.toml\n\
          \x20 tried 127.0.0.1:20000 (refused), 172.29.32.1:20000 (refused)\n"
     );
     assert_eq!(out.code, 5);
