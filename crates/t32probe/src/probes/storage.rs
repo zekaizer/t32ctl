@@ -5,12 +5,12 @@ use std::time::{Duration, Instant};
 
 use t32rcl::{Session, Tuning};
 use t32stage::{
-    ExistsFn, Put, RelPath, StagePath, StageRoot, Undo, VmRegion,
+    ExistsFn, RelPath, StagePath, StageRoot, Undo, VmRegion,
     practice::{cmd, fnc},
     transfer,
 };
 
-use super::{ok, pattern, scratch_regions, soft};
+use super::{ok, pattern, scratch_regions, soft, stage_root, workdir};
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
     outcome::{Value, key},
@@ -360,35 +360,75 @@ pub(crate) fn corrupt_token(accepted: &[&str], cases: usize) -> String {
     if accepted.is_empty() { format!("rejected({cases}/{cases})") } else { format!("ACCEPTED({})", accepted.join(",")) }
 }
 
-/// PowerView packs a directory with `TAR` and `ZIP`; the client downloads and untars it.
+/// PowerView packs a work directory with `TAR` and `ZIP`; the client downloads both through `VM:`,
+/// untars and gunzips them. No `Stage`: its `GLOBAL` macros are not part of what is measured.
+/// TAR and ZIP never run twice on one name: an overwrite may ask in a dialog.
 pub fn tar_download(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
-    let files: [(&str, Vec<u8>); 3] =
-        [("a.txt", vec![b'A']), ("b.bin", pattern(1000, 1000)), ("sub/c.bin", pattern(70000, 70000))];
-    let (stage, session) = ctx.stage()?;
-    let dir = stage.path("o")?;
-    let sub = dir.join("sub")?;
-    transfer::ensure_dir(session, &sub, |p| stage.register(Undo::RemoveDir(p.clone())))?;
-    for (name, bytes) in &files {
-        stage.upload(session, Put::Plain, bytes, &format!("o/{name}"))?;
+    let root = stage_root(ctx)?;
+    let dir = workdir(ctx, &root, "tar")?;
+    let regions = scratch_regions(ctx, &[256 * 1024, 256 * 1024])?;
+    let (up, down) = (regions[0], regions[1]);
+    let o = dir.join("o")?;
+    for d in ["o", "o/sub", "o/s d"] {
+        mkdir_checked(ctx, &dir.join(d)?)?;
     }
-    let archive = stage.path("o.tar")?;
-    stage.register(Undo::RemoveFile(archive.clone()))?;
-    session.cmd(&cmd::tar(&archive, &dir))?;
-    let tar_len = transfer::file_size(session, &archive)?;
-    let bytes = stage.download(session, &archive)?;
+    let files: [(&str, Vec<u8>); 4] = [
+        ("a.txt", vec![b'A']),
+        ("b.bin", pattern(1000, 1000)),
+        ("sub/c.bin", pattern(70000, 70000)),
+        ("s d/e.bin", pattern(10, 10)),
+    ];
+    for (name, bytes) in &files {
+        let p = o.join(name)?;
+        ctx.push(Undo::RemoveFile(p.clone()))?;
+        transfer::put_file(ctx.session, &up, bytes, &p)?;
+    }
+    let archive = dir.join("o.tar")?;
+    ctx.push(Undo::RemoveFile(archive.clone()))?;
+    ctx.session.cmd(&cmd::tar(&archive, &o))?;
+    let tar_len = transfer::file_size(ctx.session, &archive)?;
+    ctx.headline("tar", Value::Bytes(tar_len));
+    ctx.check(tar_len <= u64::from(down.len()), || format!("the archive of {tar_len} bytes exceeds 256 KiB"))?;
+    let bytes = transfer::get_file(ctx.session, &archive, &down, tar_len as u32)?;
     let diag = t32stage::diagnose_tar(&bytes);
     let entries = t32stage::walk_tar(&bytes)?;
     ctx.measure("first_header", Value::Text(diag.first_header_hex.clone()));
     ctx.measure("first_name", Value::Text(diag.first_name_raw.clone()));
     ctx.headline("files", Value::Count(entries.len() as u64));
-    ctx.headline("tar", Value::Bytes(tar_len));
     ctx.text("flavor", if diag.ustar_magic { "ustar" } else { "other" });
     ctx.text("sep", if diag.backslash { "\\" } else { "/" });
     let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
     ctx.measure("names", Value::Text(names.join(" ")));
-    let matched = files.iter().all(|(name, bytes)| entries.iter().any(|e| e.name.ends_with(name) && &e.data == bytes));
+    let holds = |name: &str, bytes: &[u8]| entries.iter().any(|e| e.name.ends_with(name) && e.data == bytes);
+    let matched = files.iter().all(|(name, bytes)| holds(name, bytes));
     let relative = files.iter().all(|(name, _)| names.contains(name));
     ctx.text("names", if relative { "relative" } else { "prefixed" });
     ctx.text("roundtrip", ok(matched));
+    ctx.text("space_dir", ok(holds(files[3].0, &files[3].1)));
+
+    let gz = dir.join("o.tar.gz")?;
+    ctx.push(Undo::RemoveFile(gz.clone()))?;
+    let zip = match soft(ctx.session.cmd(&cmd::zip(&archive, &gz)))? {
+        None => "refused",
+        Some(()) => match soft(transfer::file_size(ctx.session, &gz))? {
+            Some(n) if n <= u64::from(down.len()) => {
+                let raw = transfer::get_file(ctx.session, &gz, &down, n as u32)?;
+                ctx.measure("zip_header", Value::Text(super::hex(&raw[..raw.len().min(10)])));
+                let same = transfer::gunzip(&raw).is_ok_and(|t| t == bytes);
+                if raw.starts_with(&[0x1F, 0x8B, 0x08]) && same { "gzip" } else { "other" }
+            }
+            _ => "other",
+        },
+    };
+    ctx.text("zip", zip);
     ctx.check(matched, || format!("archive holds {names:?}, contents or names differ"))
+}
+
+/// `MKDIR` after its removal was registered; `Check` when `OS.DIR` does not see it.
+fn mkdir_checked(ctx: &mut ProbeCtx<'_>, p: &StagePath) -> ProbeResult {
+    ctx.push(Undo::RemoveDir(p.clone()))?;
+    ctx.session.cmd(&cmd::mkdir(p))?;
+    let expr = fnc::dir_exists(p);
+    let made = ctx.session.eval(&expr)?.into_bool(&expr)?;
+    ctx.check(made, || format!("MKDIR did not create {p}"))
 }

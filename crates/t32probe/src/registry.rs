@@ -132,6 +132,8 @@ probes! {
         ".bak naming on overwrite, pre-RM, /Append, RMDIR of a full directory, idempotent cleanup, path punctuation, OS.FIRSTFILE listing, ABSPATH identity";
     VmLarge = "vm-large", Safe, [VmFile], true, 300, files::vm_large,
         "VM: window at full size: RCL write, Data.SAVE/LOAD.Binary time and keepalives at 4 MiB, 8 MiB and the whole window (blocks the GUI for seconds)";
+    TarDownload = "tar-download", Safe, [VmFile], true, 60, storage::tar_download,
+        "TAR + ZIP of a work directory in PowerView, download through VM:, untar and gunzip in Rust";
     Bundle = "bundle", Safe, [Gzip, Macro], true, 90, scripts::bundle,
         "self-extracting bundle, nested DO chain, marker, runner rc, state during the chain";
     ScriptLab = "script-lab", Safe, [VmFile], true, 180, scriptlab::script_lab,
@@ -148,8 +150,6 @@ probes! {
         "client macros seen by DO'd scripts: EXP bare/amp, command-line GLOBAL and assignment, declared-only, undeclared, EXPLICIT, implicit visibility";
     MacroReturn = "macro-return", Safe, [ScriptLab], true, 180, macros::macro_return,
         "script macros seen by the client and later scripts: script GLOBAL over EXP, writes into client globals, frames during WAIT, EXP while halted with CONTinue, markers across END, storage form, generated wrappers";
-    TarDownload = "tar-download", Safe, [Bundle], true, 60, storage::tar_download,
-        "TAR + ZIP in PowerView, download through VM:, untar in Rust";
     Dialog = "dialog", Tier::OptIn(Dialog), [Bundle], true, 40, optin::dialog,
         "script opens a dialog: state 2, T32_Stop, script ends (shows a window)";
     MultiClient = "multi-client", Tier::OptIn(MultiClient), [Bundle], true, 60, optin::multi_client,
@@ -273,6 +273,7 @@ mod tests {
             "fn-table",
             "fs-semantics",
             "vm-large",
+            "tar-download",
             "bundle",
             "script-lab",
             "script-halt",
@@ -281,7 +282,6 @@ mod tests {
             "channel-out",
             "macro-visibility",
             "macro-return",
-            "tar-download",
         ];
         let opt = [("dialog", Dialog), ("multi-client", MultiClient), ("run-control", RunControl), ("elf-unzip", Elf)];
         for n in safe {

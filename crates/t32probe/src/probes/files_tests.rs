@@ -115,3 +115,22 @@ fn vm_large_sends_each_save_under_a_data_budget() {
     }
     assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
 }
+
+#[test]
+fn tar_download_never_opens_a_stage() {
+    let d = dir("tar");
+    let s = captured(work_opened(Script::new().attach(), "tar"), 128);
+    let s = s.expect_cmd(&format!("MKDIR \"{d}\\o\"")).reply_ok();
+    let s = yes_no(s, &format!("OS.DIR(\"{d}\\o\")"), true);
+    let s = s.expect_cmd(&format!("MKDIR \"{d}\\o\\sub\"")).reply_error(90, "access denied");
+    let s = yes_no(s, &format!("OS.DIR(\"{d}\\o\\sub\")"), false);
+    let s = yes_no(s, &format!("OS.DIR(\"{d}\\o\")"), true).expect_cmd(&format!("RMDIR \"{d}\\o\"")).reply_ok();
+    let s = yes_no(s, &format!("OS.DIR(\"{d}\\o\")"), false);
+    let mut session = connect(vec![Ok(work_closed(s, "tar", 128))]);
+    let mut env = test_env("tar-no-stage");
+    let r = run(&mut env, &mut session, &[ProbeId::TarDownload.def()]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Fail);
+    assert!(o.cleanup.iter().any(|c| c.what.ends_with("probe-r1-tar\\o") && c.result == "done"), "{:?}", o.cleanup);
+    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+}

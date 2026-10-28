@@ -220,24 +220,6 @@ fn files_below_the_stage_unwind_before_the_stage_directory() {
 }
 
 #[test]
-fn tar_download_removes_a_directory_it_made_before_a_later_mkdir_failed() {
-    let mut s = stage_opened(Script::new().attach()).expect_fn(&format!("OS.DIR(\"{STAGE}\")")).reply_bool(true);
-    s = s.expect_fn(&format!("OS.DIR(\"{STAGE}\\o\")")).reply_bool(false);
-    s = s.expect_cmd(&format!("MKDIR \"{STAGE}\\o\"")).reply_ok();
-    s = s.expect_fn(&format!("OS.DIR(\"{STAGE}\\o\\sub\")")).reply_bool(false);
-    s = s.expect_cmd(&format!("MKDIR \"{STAGE}\\o\\sub\"")).reply_error(90, "access denied");
-    s = s.expect_fn(&format!("OS.DIR(\"{STAGE}\\o\\sub\")")).reply_bool(false);
-    s = stage_closed(dir_removed(s, "o"));
-    let mut session = connect(vec![Ok(s)]);
-    let mut env = test_env("probe-tar-mkdir");
-    let r = run(&mut env, &mut session, &[ProbeId::TarDownload.def()]);
-    let o = &r.outcomes[0];
-    assert_eq!(o.verdict, Verdict::Fail);
-    assert!(o.cleanup.iter().any(|c| c.what.ends_with("probe-r1\\o") && c.result == "done"), "{:?}", o.cleanup);
-    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
-}
-
-#[test]
 fn elf_unzip_reports_a_timed_out_direct_load_not_the_poisoned_call_after_it() {
     let elf = b"\x7fELF t32probe test".to_vec();
     let gz = t32stage::transfer::gzip(&elf);
