@@ -215,10 +215,10 @@ impl Stage {
         let tmp = self.path(&format!("{key}.gz"))?;
         self.ledger.push(Undo::RemoveFile(tmp.clone()))?;
         transfer::put_file(session, &a, &packed.gz, &tmp)?;
-        session.cmd(&cmd::data_load_binary(&tmp, b.start(), true))?;
+        transfer::load_region(session, &tmp, b.start(), packed.raw_len, true)?;
         let unpack = dir.join(UNPACK_PATH)?;
         let script = b.slice(0, packed.unpack_len).ok_or(VmError::ZeroLength)?;
-        session.cmd(&cmd::data_save_binary(&unpack, &script, false))?;
+        transfer::save_region(session, &unpack, &script)?;
         session.cmd(&cmd::rm(&tmp))?;
 
         session.macro_set(&Macro::Snap.name(), &dir.text())?;
@@ -316,9 +316,9 @@ impl Stage {
                 self.ledger.push(Undo::RemoveFile(tmp.clone()))?;
                 let r = self.claim(session, &[gz.len() as u32, bytes.len() as u32])?;
                 transfer::put_file(session, &r[0], &gz, &tmp)?;
-                session.cmd(&cmd::data_load_binary(&tmp, r[1].start(), true))?;
+                transfer::load_region(session, &tmp, r[1].start(), bytes.len() as u32, true)?;
                 let plain = r[1].slice(0, bytes.len() as u32).ok_or(VmError::ZeroLength)?;
-                session.cmd(&cmd::data_save_binary(&dest, &plain, false))?;
+                transfer::save_region(session, &dest, &plain)?;
                 session.cmd(&cmd::rm(&tmp))?;
             }
         }
@@ -331,7 +331,9 @@ impl Stage {
     pub fn download(&mut self, session: &mut Session, src: &StagePath) -> Result<Vec<u8>, StageError> {
         let gz = src.root().path(RelPath::new(&format!("{}.gz", src.rel()))?);
         self.ledger.push(Undo::RemoveFile(gz.clone()))?;
-        session.cmd(&cmd::zip(src, &gz))?;
+        let src_len = transfer::file_size(session, src)?;
+        let budget = transfer::data_budget(session, src_len);
+        session.with_budget(budget).cmd(&cmd::zip(src, &gz))?;
         let len = transfer::file_size(session, &gz)?;
         let len = u32::try_from(len)
             .map_err(|_| VmError::WindowTooSmall { need: len, have: self.cfg.window.len().into() })?;

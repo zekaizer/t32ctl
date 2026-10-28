@@ -183,6 +183,11 @@ impl Session {
         self.link.as_mut().map(Link::take_trace).unwrap_or_default()
     }
 
+    /// The budget calls are made under now, a `with_budget` scope included.
+    pub fn budget(&self) -> CallBudget {
+        self.opts.budget
+    }
+
     /// Replace the call budget until the guard drops.
     pub fn with_budget(&mut self, budget: CallBudget) -> BudgetScope<'_> {
         let saved = std::mem::replace(&mut self.opts.budget, budget);

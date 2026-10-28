@@ -362,6 +362,7 @@ fn download_gunzips_what_powerview_zipped() {
     let payload: Vec<u8> = (0..3000).map(|i| (i % 13) as u8).collect();
     let gz = transfer::gzip(&payload);
     let mut s = opened(Script::new().attach());
+    s = s.expect_fn("OS.FILE.SIZE(\"C:\\T\\t32ctl\\a.bin\")").reply_decimal(payload.len() as i64);
     s = s.expect_cmd("ZIP \"C:\\T\\t32ctl\\a.bin\" \"C:\\T\\t32ctl\\a.bin.gz\"").reply_ok();
     s = s.expect_fn("OS.FILE.SIZE(\"C:\\T\\t32ctl\\a.bin.gz\")").reply_decimal(gz.len() as i64);
     s = s.expect_cmd(&format!("Data.LOAD.Binary \"C:\\T\\t32ctl\\a.bin.gz\" VM:0x{BASE:08X}")).reply_ok();
