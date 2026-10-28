@@ -141,9 +141,9 @@ probes! {
     ScriptLab = "script-lab", Safe, [VmFile], true, 180, scriptlab::script_lab,
         "file-existence oracle for DO'd scripts; Data.Set VM: and WRITE channels; DO timing, PRACTICE state while scripts run, RCL during WAIT, loops and an 8 MiB SAVE";
     ScriptHalt = "script-halt", Safe, [ScriptLab], true, 90, scriptlab::script_halt,
-        "STOP, uncaught errors, T32_Stop status, END, ERROR.* reads, files and globals after END";
+        "STOP, uncaught errors, T32_Stop status, END, ERROR.* reads, files and globals after END (sends END, which closes every custom dialog and OPEN file)";
     ScriptError = "script-error", Safe, [ScriptLab], true, 120, scripts::script_error,
-        "failing scripts surface as failures, never as success: ON ERROR JUMPTO across DO, STOP, ENDDO FALSE(), a failed SAVE, IF and GOTO";
+        "failing scripts surface as failures, never as success: ON ERROR JUMPTO across DO, STOP, ENDDO FALSE(), a failed SAVE, IF and GOTO (sends END, which closes every custom dialog and OPEN file)";
     ChannelIn = "channel-in", Safe, [ScriptLab], true, 180, channels::channel_in,
         "client to script without macros: VM: strings, DO arguments, EVAL, READ, OS.PPD, ~~~~ reads";
     ChannelOut = "channel-out", Safe, [ScriptLab], true, 150, channels::channel_out,
@@ -151,7 +151,7 @@ probes! {
     MacroVisibility = "macro-visibility", Safe, [ScriptLab], true, 180, macros::macro_visibility,
         "client macros seen by DO'd scripts: EXP bare/amp, command-line GLOBAL and assignment, declared-only, undeclared, EXPLICIT, implicit visibility";
     MacroReturn = "macro-return", Safe, [ScriptLab], true, 180, macros::macro_return,
-        "script macros seen by the client and later scripts: script GLOBAL over EXP, writes into client globals, frames during WAIT, EXP while halted with CONTinue, markers across END, storage form, generated wrappers";
+        "script macros seen by the client and later scripts: script GLOBAL over EXP, writes into client globals, frames during WAIT, EXP while halted with CONTinue, markers across END, storage form, generated wrappers (sends END, which closes every custom dialog and OPEN file)";
     UnpackLiteral = "unpack-literal", Safe, [ScriptLab], true, 300, unpack::unpack_literal,
         "the unpack shape on literal paths: time per file and per MiB, .bak on rerun, pre-RM, the empty-or-relative path guard, ABSPATH identity";
     Bundle = "bundle", Safe, [Gzip, Macro, MacroVisibility, UnpackLiteral], true, 150, scripts::bundle,

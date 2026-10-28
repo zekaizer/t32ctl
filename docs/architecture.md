@@ -120,7 +120,10 @@ behind an `IF` that compares it with the expected literal first.
   both read idle with a non-empty stack. A Lab sends `END` only to a stack it filled itself, and
   only after a marker allowed the halt and it held for 300 ms, after the case timeout and a
   `T32_Stop`, or after the probe stopped the script on purpose. Before each `DO` the stack must be
-  empty: our own leftover is unwound once, anybody else's script makes the probe `SKIP`.
+  empty: our own leftover is unwound once, anybody else's script makes the probe `SKIP`. The
+  stack check does not limit what `END` does beyond the stack: it also closes every custom dialog
+  and every `OPEN` file in PowerView (practice_ref `END`), which no RCL call can check
+  beforehand. After an `END` the Lab sends `CLOSE` for the buffers its own script opened.
 - Revert: settings a probe changes (an AREA, a breakpoint, a selected core, a register, a printer
   file) are undone by `Undo::Revert`, a list of commands that lives only in memory. It is never
   journaled: replaying it after a crash would act on a state the operator may have changed since,

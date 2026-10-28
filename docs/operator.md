@@ -25,7 +25,7 @@ Opt-in probes, each behind its own flag:
 |---|---|---|
 | `--allow-dialog` | `dialog` | Opens a PowerView dialog for about a second and stops it. Check that the window closed. |
 | `--allow-multi-client` | `multi-client` | Opens a second RCL connection, twice. |
-| `--allow-run-control --symbol main` | `run-control` | Runs and halts the target, steps it, sets and deletes breakpoints. Changes target state. |
+| `--allow-run-control --symbol main` | `run-control` | Runs and halts the target, steps it, sets and deletes breakpoints. If the breakpoint list differs at the end, it is restored from the `STOre` script taken first. Changes target state. |
 | `--loop-line main.c:42`, `--watch counter`, `--scratch-ram 0x80001000` | `run-control` | Optional: a `/COUNT 3` breakpoint on a line inside a loop, write breakpoints on a variable, and a RAM long and X9 written and restored. The address must be RAM nothing else uses. |
 | `--allow-target-read --symbol main` | `target-read` | Reads registers, memory and symbols of the halted target and prints windows to files with `PRinTer.OPEN`. Leave no PowerView printer file open while it runs. |
 | `--va 0xFFFF000000001000`, `--per-section GICD`, `--read-range 0x80000000++0x100000` | `target-read` | Optional: an address to translate, a peripheral section to print, and up to 16 MiB of memory to read over RCL and through a file. |
@@ -49,7 +49,12 @@ Asking for an opt-in probe without its flag is a usage error before anything is 
 - PRACTICE global macros named `t32ctl_*` and `t32ctl_probe_*`. Macros cannot be deleted over
   RCL; they are set to the empty string.
 - PRACTICE scripts it starts itself, only when no other script is running. A busy PowerView makes
-  the affected probes `SKIP`; the probe sends `END` only to scripts it started.
+  the affected probes `SKIP`.
+- `END` to end a script it started. `END` is global: besides ending every PRACTICE script it
+  closes every custom dialog and every file opened with `OPEN`, yours included (PRACTICE Script
+  Language Reference Guide, `END`). `script-halt`, `script-error` and `macro-return` always send
+  it; every script probe sends it when one of its scripts halts or times out. Close your own
+  `DIALOG` windows and `OPEN` files before a run, or `--skip` those three probes.
 - Script probes write their scripts and answer files below `OS.PTD()\t32ctl\probe-<run id>-<tag>`
   (`lab`, `halt`, `err`, `in`, `out`, `vis`, `ret`, `unp`, `bun`, ...). A script answers by saving
   a one-byte marker file such as `<case>-a.bin` or `<case>-k-yes.bin`; the probe checks whether it
