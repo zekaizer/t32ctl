@@ -235,3 +235,19 @@ fn a_macro_root_line_from_an_older_build_is_reported_not_replayed() {
     assert_eq!(report.items[0].outcome, CleanupOutcome::NotAttempted("unreadable".into()));
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn the_per_powerview_directory_keys_the_host_as_configured() {
+    let base = Path::new("/s/t32ctl");
+    assert_eq!(pv_state_dir(base, "auto", 20000), Path::new("/s/t32ctl/pv/auto-20000"));
+    assert_eq!(pv_state_dir(base, "127.0.0.1", 20001), Path::new("/s/t32ctl/pv/127.0.0.1-20001"));
+    assert_eq!(pv_state_dir(base, "my-pc.local", 1), Path::new("/s/t32ctl/pv/my-pc.local-1"));
+}
+
+#[test]
+fn bytes_a_file_name_cannot_carry_become_underscores() {
+    let base = Path::new("/s");
+    assert_eq!(pv_state_dir(base, "../x", 20000), Path::new("/s/pv/.._x-20000"));
+    assert_eq!(pv_state_dir(base, "fe80::1%eth0", 20000), Path::new("/s/pv/fe80__1_eth0-20000"));
+    assert_eq!(pv_state_dir(base, "h\\ö", 20000), Path::new("/s/pv/h___-20000"));
+}

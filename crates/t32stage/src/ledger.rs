@@ -278,6 +278,15 @@ pub fn default_state_dir() -> Option<PathBuf> {
     Some(base.join("t32ctl"))
 }
 
+/// `<base>/pv/<host>-<port>`: the state directory of one PowerView. `host` is the endpoint as
+/// configured, so `auto` stays `auto` whatever address it resolves to, and t32ctl and t32probe
+/// share one lease and one journal per PowerView. Bytes outside `[A-Za-z0-9._-]` become `_`.
+pub fn pv_state_dir(base: &Path, host: &str, port: u16) -> PathBuf {
+    let host: String =
+        host.bytes().map(|b| if b.is_ascii_alphanumeric() || b"._-".contains(&b) { b as char } else { '_' }).collect();
+    base.join("pv").join(format!("{host}-{port}"))
+}
+
 const JOURNAL_DIR: &str = "journal";
 const JOURNAL_EXT: &str = "undo";
 
