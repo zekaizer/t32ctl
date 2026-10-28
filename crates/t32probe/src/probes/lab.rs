@@ -423,6 +423,8 @@ pub(crate) enum Until {
     Done,
     /// Return as soon as this marker exists; the script keeps running.
     Marker(&'static str),
+    /// Return at the first sample in state 2; the caller stops the script.
+    Dialog,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -438,6 +440,8 @@ pub(crate) enum Ending {
     /// Empty stack for the grace period, `a` but no `z`.
     Vanished,
     TimedOut,
+    /// `Until::Dialog` saw state 2.
+    Dialog,
 }
 
 impl Ending {
@@ -448,6 +452,7 @@ impl Ending {
             Ending::NotStarted => "not-started".into(),
             Ending::Vanished => "vanished".into(),
             Ending::TimedOut => "timeout".into(),
+            Ending::Dialog => "dialog".into(),
         }
     }
 }
@@ -585,6 +590,9 @@ impl LabWatch {
             && self.has(m)
         {
             return Some(Seen::Reached);
+        }
+        if until == Until::Dialog && state == PracticeState::Dialog {
+            return Some(Seen::End(Ending::Dialog));
         }
         if empty && self.has("z") {
             return Some(Seen::End(Ending::Ended));

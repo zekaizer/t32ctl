@@ -152,10 +152,10 @@ probes! {
         "the unpack shape on literal paths: time per file and per MiB, .bak on rerun, pre-RM, the empty-or-relative path guard, ABSPATH identity";
     Bundle = "bundle", Safe, [Gzip, Macro, MacroVisibility, UnpackLiteral], true, 150, scripts::bundle,
         "self-extracting bundle, nested DO chain, marker, runner rc, state during the chain; only where scripts see the snapshot path, with a canary outside it";
-    Dialog = "dialog", Tier::OptIn(Dialog), [Bundle], true, 40, optin::dialog,
-        "script opens a dialog: state 2, T32_Stop, script ends (shows a window)";
-    MultiClient = "multi-client", Tier::OptIn(MultiClient), [Bundle], true, 60, optin::multi_client,
-        "second connection: NrUsedCons, latency of B while A runs a long DO";
+    Dialog = "dialog", Tier::OptIn(Dialog), [ScriptLab], true, 40, optin::dialog,
+        "Lab script opens a dialog: state 2, T32_Stop, only our script ended (shows a window)";
+    MultiClient = "multi-client", Tier::OptIn(MultiClient), [ScriptLab], true, 60, optin::multi_client,
+        "second connection: attach and latency while A's script waits, NrUsedCons, attach while A blocks in WAIT";
     RunControl = "run-control", Tier::OptIn(RunControl), [Tempdir], true, 60, optin::run_control,
         "Go to --symbol with a timeout, Break, breakpoint list unchanged (changes target state)";
     ElfUnzip = "elf-unzip", Tier::OptIn(Elf), [Gzip, Tempdir], true, 240, optin::elf_unzip,
@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(ALL.len(), safe.len() + opt.len());
         let order: Vec<&str> = ALL.iter().filter(|d| d.tier == Tier::Safe).map(|d| d.id.name()).collect();
         assert_eq!(order, safe);
-        let rows: [(&str, &[&str], u64); 16] = [
+        let rows: [(&str, &[&str], u64); 18] = [
             ("keepalive", &["connect"], 30),
             ("gzip", &["vm-file"], 180),
             ("macro", &["tempdir"], 45),
@@ -313,6 +313,8 @@ mod tests {
             ("macro-return", &["script-lab"], 180),
             ("unpack-literal", &["script-lab"], 300),
             ("bundle", &["gzip", "macro", "macro-visibility", "unpack-literal"], 150),
+            ("dialog", &["script-lab"], 40),
+            ("multi-client", &["script-lab"], 60),
         ];
         for (n, req, secs) in rows {
             let d = ProbeId::parse(n).expect("listed").def();

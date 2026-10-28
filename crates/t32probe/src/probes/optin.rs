@@ -7,76 +7,147 @@ use std::{
     time::{Duration, Instant},
 };
 
-use t32rcl::{Endpoint, ErrorClass, Session, TargetState};
+use t32rcl::{CallBudget, ConnectError, Endpoint, ErrorClass, RemoteKind, Session, TargetState};
 use t32stage::{
-    Put, RunOutcome, Undo,
+    Put, Undo,
     practice::{cmd, fnc},
 };
 
-use super::{bundle_of, nr_used_cons, ok, run_entry, soft};
+use super::{
+    lab::{Case, Ending, Expect, Lab, LabSizes, Seen, Until},
+    nr_used_cons, ok, soft,
+};
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
     outcome::{SkipReason, Value},
     stats::Stats,
 };
 
-/// A modal `DIALOG.OK`: the client must see state 2, send `T32_Stop`, and find the stack empty.
-/// Shows a window on the operator's screen.
+/// The dialog case: `h` before the modal command, `z` only after it returned.
+pub(crate) fn dlg() -> Case {
+    let body = "@a\n@h\nDIALOG.OK \"t32probe: automatic test, this dialog closes itself\"\n@z\nENDDO";
+    Case::new("dlg", body, Expect::End, Duration::from_secs(15))
+}
+
+/// A modal `DIALOG.OK` in a Lab script: the client must see state 2, send `T32_Stop`, and end
+/// only its own script. Shows a window on the operator's screen.
 pub fn dialog(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
-    let script = "DIALOG.OK \"t32probe: automatic test, this dialog closes itself\"\nENDDO\n";
-    let bundle = bundle_of(&[("modal.cmm", script.as_bytes())])?;
-    let (stage, session) = ctx.stage()?;
-    let snap = stage.ensure_snapshot(session, &bundle)?;
-    let t = Instant::now();
-    let report = run_entry(stage, session, &snap, "modal.cmm", &[], Duration::from_secs(10))?;
-    let depth = session.eval(fnc::STACK_DEPTH)?.into_int(fnc::STACK_DEPTH)?;
-    ctx.measure("outcome", Value::Text(format!("{:?}", report.outcome)));
-    let stopped = report.outcome == RunOutcome::DialogAborted;
-    ctx.text("state2", if report.polls.dialog > 0 { "seen" } else { "never" });
-    ctx.text("stop", ok(stopped));
-    ctx.headline("after", Value::Seconds(t.elapsed().as_secs_f64()));
-    ctx.text("stack_clean", if depth == 0 { "yes" } else { "NO" });
-    ctx.check(stopped && depth == 0, || format!("dialog run ended {:?}, stack depth {depth}", report.outcome))
+    let (mut lab, _) = Lab::open(ctx, "dlg", LabSizes::default())?;
+    let result = dialog_case(ctx, &mut lab);
+    let closed = lab.close(ctx);
+    result.and(closed)
 }
 
-fn latency_series(b: &mut Session, until: Instant) -> Result<Vec<Duration>, ProbeFail> {
-    let mut v = Vec::new();
-    while Instant::now() < until {
-        let t = Instant::now();
-        b.eval("TRUE()")?;
-        v.push(t.elapsed());
-        thread::sleep(Duration::from_millis(100));
+fn dialog_case(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
+    ctx.measure("operator", Value::Text("check on the PowerView PC that the dialog window closed".into()));
+    let Some(mut run) = lab.begin(ctx, &dlg())? else {
+        return Err(ProbeFail::Check("the dialog case did not start".into()));
+    };
+    let state2 = lab.wait(ctx, &mut run, Until::Dialog)? == Seen::End(Ending::Dialog);
+    let (mut stop, mut after) = ("-".to_string(), "-".to_string());
+    if state2 {
+        let (token, took) = lab.stop(ctx, &mut run)?;
+        ctx.measure("stop_ms", Value::Seconds(took.as_secs_f64()));
+        stop = token;
+        after = lab.observe(ctx, &mut run, Duration::from_millis(300))?;
+        lab.end(ctx, 3)?;
     }
-    Ok(v)
+    let rec = lab.finish(ctx, run)?;
+    ctx.text("state2", if state2 { "seen" } else { "never" });
+    ctx.text("stop", stop);
+    ctx.text("after", after);
+    ctx.text("stack_clean", if rec.depth == 0 { "yes" } else { "NO" });
+    ctx.text("z", if rec.has("z") { "yes" } else { "no" });
+    ctx.check(state2 && rec.depth == 0, || {
+        format!(
+            "dialog case ended {}, stack depth {}",
+            rec.ending.as_ref().map_or("-".into(), |(e, _)| e.token()),
+            rec.depth
+        )
+    })
 }
 
-/// A second connection B: `NrUsedCons` from both, B's latency idle and while A runs a long `DO`.
-pub fn multi_client(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
-    let endpoint = ctx.env.endpoint.clone().unwrap_or_else(|| Endpoint::new(&ctx.env.cfg.hosts[0], ctx.env.cfg.port));
-    let mut b = Session::connect(endpoint, ctx.env.connect_opts()).map_err(|e| ProbeFail::Rcl(e.into()))?;
-    let cons = soft(nr_used_cons(&mut b))?;
-    ctx.headline("cons", cons.map_or(Value::Text("?".into()), |n| Value::Count(n.max(0) as u64)));
-    let mut idle = latency_series(&mut b, Instant::now() + Duration::from_secs(1))?;
-    let idle = Stats::from_samples(&mut idle).expect("at least one sample");
-    ctx.text("b_idle", idle.compact());
+/// The script client A runs while client B attaches.
+pub(crate) fn mw() -> Case {
+    Case::new("mw", "@a\n@w\nWAIT 5.s\n@z\nENDDO", Expect::End, Duration::from_secs(15))
+}
 
-    let bundle = bundle_of(&[("long.cmm", b"WAIT 3.s\nENDDO\n")])?;
-    let (stage, session) = ctx.stage()?;
-    let snap = stage.ensure_snapshot(session, &bundle)?;
-    let (a_result, during) = thread::scope(|s| {
-        let a = s.spawn(|| run_entry(stage, session, &snap, "long.cmm", &[], Duration::from_secs(20)));
-        thread::sleep(Duration::from_millis(300));
-        let during = latency_series(&mut b, Instant::now() + Duration::from_millis(2500));
-        (a.join(), during)
+fn ms(d: Duration) -> String {
+    d.as_millis().to_string()
+}
+
+/// `err:<tag>` of a refused attach; `err:rcl-locked` when PowerView answered that the API is locked.
+fn attach_error(e: &ConnectError) -> String {
+    match e {
+        ConnectError::Rejected { remote, .. } if remote.kind == RemoteKind::Locked => "err:rcl-locked".into(),
+        other => format!("err:{}", other.tag()),
+    }
+}
+
+/// A second connection B: attach while A's `DO`'d script waits, B's latency, `NrUsedCons` from
+/// both; then attach while A blocks in a `WAIT` command.
+pub fn multi_client(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+    let (mut lab, _) = Lab::open(ctx, "mc", LabSizes::default())?;
+    let result = multi_client_cases(ctx, &mut lab);
+    let closed = lab.close(ctx);
+    result.and(closed)
+}
+
+fn multi_client_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
+    let endpoint = ctx.env.endpoint.clone().unwrap_or_else(|| Endpoint::new(&ctx.env.cfg.hosts[0], ctx.env.cfg.port));
+    let opts = ctx.env.connect_opts();
+    let mut attach_script = "-".to_string();
+    if let Some(mut run) = lab.begin(ctx, &mw())? {
+        if lab.wait(ctx, &mut run, Until::Marker("w"))? == Seen::Reached {
+            lab.pause(Duration::from_millis(500));
+            let t = Instant::now();
+            match Session::connect(endpoint.clone(), opts.clone()) {
+                Ok(mut b) => {
+                    attach_script = ms(t.elapsed());
+                    let mut lat = Vec::new();
+                    for _ in 0..10 {
+                        let t = Instant::now();
+                        if soft(b.eval("TRUE()"))?.is_none() {
+                            break;
+                        }
+                        lat.push(t.elapsed());
+                    }
+                    let b_lat =
+                        Stats::from_samples(&mut lat).map_or("-".into(), |s| format!("{}/{}", ms(s.p50), ms(s.max)));
+                    ctx.text("b_lat", b_lat);
+                    let count = |r: Option<i64>| r.map_or("?".to_string(), |n| n.to_string());
+                    let a = count(soft(nr_used_cons(ctx.session))?);
+                    let bn = count(soft(nr_used_cons(&mut b))?);
+                    ctx.text("cons", format!("{a}/{bn}"));
+                }
+                Err(e) => attach_script = attach_error(&e),
+            }
+        }
+        lab.wait(ctx, &mut run, Until::Done)?;
+        lab.finish(ctx, run)?;
+    }
+    ctx.text("attach_script", attach_script.clone());
+
+    let session = &mut *ctx.session;
+    let (b, a) = thread::scope(|s| {
+        let b = s.spawn(|| {
+            thread::sleep(Duration::from_secs(1));
+            let t = Instant::now();
+            let r = Session::connect(endpoint, opts).map(drop);
+            (t.elapsed(), r)
+        });
+        let idle = Duration::from_secs(10);
+        let a = session.with_budget(CallBudget::idle(idle).with_total(idle + Duration::from_secs(10))).cmd("WAIT 3.s");
+        (b.join(), a)
     });
-    let report = a_result.map_err(|_| ProbeFail::Check("client A thread panicked".into()))??;
-    let mut during = during?;
-    let during = Stats::from_samples(&mut during).expect("at least one sample");
-    ctx.text("b_during", during.compact());
-    let blocked = during.max > Duration::from_secs(2);
-    ctx.text("b_blocked", if blocked { "yes" } else { "no" });
-    ctx.measure("a_outcome", Value::Text(format!("{:?}", report.outcome)));
-    ctx.check(report.outcome.is_success(), || format!("client A run ended {:?}", report.outcome))
+    let (took, b) = b.map_err(|_| ProbeFail::Check("client B thread panicked".into()))?;
+    let attach_cmdwait = match b {
+        Ok(()) => ms(took),
+        Err(e) => attach_error(&e),
+    };
+    ctx.measure("cmdwait_a", Value::Text(soft(a)?.map_or("refused".into(), |()| "ok".into())));
+    ctx.text("attach_cmdwait", attach_cmdwait);
+    ctx.check(attach_script != "-", || "client B never tried to attach while A's script ran".into())
 }
 
 /// Lines of a `STOre ... Break` script without comments, for comparison.
@@ -167,3 +238,7 @@ pub fn elf_unzip(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     }
     ctx.check(fallback, || "Data.LOAD.Elf of the inflated ELF failed".into())
 }
+
+#[cfg(test)]
+#[path = "optin_tests.rs"]
+mod optin_tests;
