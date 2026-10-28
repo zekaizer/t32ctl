@@ -144,6 +144,8 @@ fn every_tag_maps_to_its_exit_and_every_exit_has_a_code_and_a_next_step() {
             ("grade-mismatch", 2),
             ("unknown-proc", 2),
             ("proc-params", 2),
+            ("bad-bundle", 2),
+            ("file-exists", 2),
             ("not-halted", 3),
             ("target-down", 3),
             ("pv-script-running", 4),

@@ -145,6 +145,18 @@ pub struct Walked {
 pub struct WalkError {
     pub path: PathBuf,
     pub what: String,
+    /// A symlink or a special file: neither a regular file nor a directory.
+    pub special: bool,
+}
+
+impl WalkError {
+    /// `<path>: <what>`; a symlink or special file adds that `holder` (`a profile`) holds only
+    /// regular files and directories.
+    pub fn shown(&self, env: &Env, holder: &str) -> String {
+        let rule =
+            if self.special { format!("; {holder} holds only regular files and directories") } else { String::new() };
+        format!("{}: {}{rule}", env.display(&self.path), self.what)
+    }
 }
 
 /// Hidden files and directories and editor leftovers: `.*`, `*~`, `#*#`, `*.swp`.
@@ -159,7 +171,11 @@ fn ignored(name: &str) -> bool {
 /// separators. Anything that is neither a regular file nor a directory is refused.
 pub fn walk(root: &Path) -> Result<Vec<Walked>, WalkError> {
     fn visit(root: &Path, dir: &Path, out: &mut Vec<Walked>) -> Result<(), WalkError> {
-        let io = |path: &Path, e: std::io::Error| WalkError { path: path.to_path_buf(), what: e.to_string() };
+        let io = |path: &Path, e: std::io::Error| WalkError {
+            path: path.to_path_buf(),
+            what: e.to_string(),
+            special: false,
+        };
         for entry in fs::read_dir(dir).map_err(|e| io(dir, e))? {
             let path = entry.map_err(|e| io(dir, e))?.path();
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -167,10 +183,7 @@ pub fn walk(root: &Path) -> Result<Vec<Walked>, WalkError> {
                 continue;
             }
             let meta = fs::symlink_metadata(&path).map_err(|e| io(&path, e))?;
-            let refuse = |what: &str| WalkError {
-                path: path.clone(),
-                what: format!("{what}; a profile holds only regular files and directories"),
-            };
+            let refuse = |what: &str| WalkError { path: path.clone(), what: what.to_string(), special: true };
             if meta.file_type().is_symlink() {
                 return Err(refuse("a symlink"));
             }
@@ -178,7 +191,11 @@ pub fn walk(root: &Path) -> Result<Vec<Walked>, WalkError> {
                 visit(root, &path, out)?;
             } else if meta.is_file() {
                 let rel_text = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
-                let rel = RelPath::new(&rel_text).map_err(|e| WalkError { path: path.clone(), what: e.to_string() })?;
+                let rel = RelPath::new(&rel_text).map_err(|e| WalkError {
+                    path: path.clone(),
+                    what: e.to_string(),
+                    special: false,
+                })?;
                 let bytes = fs::read(&path).map_err(|e| io(&path, e))?;
                 out.push(Walked { rel, bytes });
             } else {
@@ -226,7 +243,7 @@ impl Profile {
 
     /// Walk and hash `dir`, parse its `profile.toml`, and apply the variant `board` selects.
     pub fn load(env: &Env, dir: &Path, board: Option<&str>) -> Result<Self, CtlError> {
-        let files = walk(dir).map_err(|e| invalid(format!("{}: {}", env.display(&e.path), e.what)))?;
+        let files = walk(dir).map_err(|e| invalid(e.shown(env, "a profile")))?;
         let file = dir.join(PROFILE_FILE);
         let shown = PathBuf::from(env.display(&file));
         let Some(toml) = files.iter().find(|f| f.rel.as_str() == PROFILE_FILE) else {

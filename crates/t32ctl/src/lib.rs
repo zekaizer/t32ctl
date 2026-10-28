@@ -115,6 +115,9 @@ pub fn run(argv: &[OsString], deps: &Deps) -> Output {
         GradeCmd::Raw(g) => match &g.leaf {
             RawLeaf::Cmd(a) => connected::<Raw, _>(a, &g.globals, deps, CpuCheck::Refuse, raw::cmd),
             RawLeaf::Eval(a) => connected::<Raw, _>(a, &g.globals, deps, CpuCheck::Refuse, raw::eval),
+            RawLeaf::Script(a) => {
+                prepared::<Raw, _, _>(a, &g.globals, deps, |_| CpuCheck::Refuse, raw::script_prepare, raw::script)
+            }
         },
     }
 }
@@ -315,6 +318,9 @@ fn call<G: Grade, L: Leaf<G>, P>(
 #[cfg(test)]
 #[path = "proc_tests.rs"]
 mod proc_tests;
+#[cfg(test)]
+#[path = "script_tests.rs"]
+mod script_tests;
 #[cfg(test)]
 #[path = "run_tests.rs"]
 mod tests;

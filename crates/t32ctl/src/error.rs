@@ -90,6 +90,8 @@ pub enum ErrorKind {
     GradeMismatch,
     UnknownProc,
     ProcParams,
+    BadBundle,
+    FileExists,
     NotHalted,
     TargetDown,
     PvScriptRunning,
@@ -113,7 +115,7 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// In the order of the error-tag table.
-    pub const ALL: [ErrorKind; 26] = [
+    pub const ALL: [ErrorKind; 28] = [
         ErrorKind::Usage,
         ErrorKind::Notation,
         ErrorKind::MemoryPolicy,
@@ -121,6 +123,8 @@ impl ErrorKind {
         ErrorKind::GradeMismatch,
         ErrorKind::UnknownProc,
         ErrorKind::ProcParams,
+        ErrorKind::BadBundle,
+        ErrorKind::FileExists,
         ErrorKind::NotHalted,
         ErrorKind::TargetDown,
         ErrorKind::PvScriptRunning,
@@ -151,6 +155,8 @@ impl ErrorKind {
             ErrorKind::GradeMismatch => "grade-mismatch",
             ErrorKind::UnknownProc => "unknown-proc",
             ErrorKind::ProcParams => "proc-params",
+            ErrorKind::BadBundle => "bad-bundle",
+            ErrorKind::FileExists => "file-exists",
             ErrorKind::NotHalted => "not-halted",
             ErrorKind::TargetDown => "target-down",
             ErrorKind::PvScriptRunning => "pv-script-running",
@@ -181,7 +187,9 @@ impl ErrorKind {
             | ErrorKind::Refused
             | ErrorKind::GradeMismatch
             | ErrorKind::UnknownProc
-            | ErrorKind::ProcParams => Exit::Fix,
+            | ErrorKind::ProcParams
+            | ErrorKind::BadBundle
+            | ErrorKind::FileExists => Exit::Fix,
             ErrorKind::NotHalted | ErrorKind::TargetDown => Exit::State,
             ErrorKind::PvScriptRunning | ErrorKind::VmBusy | ErrorKind::RclLocked => Exit::Wait,
             ErrorKind::Unreachable
@@ -222,6 +230,11 @@ impl ErrorKind {
             ErrorKind::ProcParams => {
                 "Procedure parameters do not match the declaration, or a file parameter cannot be read."
             }
+            ErrorKind::BadBundle => {
+                "The script directory cannot be bundled: a symlink or special file, a name PRACTICE cannot carry, \
+                 two names that differ only in case, or above the bundle limits; the file is named."
+            }
+            ErrorKind::FileExists => "`raw script --out` never overwrites; choose a new directory.",
             ErrorKind::NotHalted => {
                 "The command needs a stopped target, or every touched region must declare `running = true`."
             }

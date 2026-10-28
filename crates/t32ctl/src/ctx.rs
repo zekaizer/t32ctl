@@ -727,4 +727,9 @@ impl Ctx<'_, Raw> {
     pub fn eval(&mut self, text: &PracticeText) -> Result<FuncValue, CtlError> {
         self.conn.session.eval(text.as_str()).map_err(|e| from_rcl(&e, Context::Text, text.as_str()))
     }
+
+    /// A script bundle from the repository, outside every policy.
+    pub fn run_script(&mut self, run: Prepared) -> Result<Body, CtlError> {
+        self.conn.run_bundle(run)
+    }
 }

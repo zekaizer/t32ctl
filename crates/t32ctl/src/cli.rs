@@ -15,7 +15,7 @@ use t32stage::RegName;
 use crate::{
     error::{CtlError, ErrorKind},
     grade::{Grade, GradeId},
-    notation::{NotationError, OutName, Place, PracticeText, Size, reg_name},
+    notation::{NotationError, OutName, Place, PracticeText, ScriptTimeout, Size, reg_name},
 };
 
 /// TRACE32 control over RCL for coding agents. The first word is the permission grade.
@@ -197,6 +197,8 @@ pub enum RawLeaf {
     Cmd(RawCommand),
     /// One PRACTICE function
     Eval(RawEval),
+    /// Run a `.cmm` set from the repository, collect outputs
+    Script(RawScript),
 }
 
 #[derive(Debug, Args)]
@@ -212,6 +214,25 @@ pub struct RawEval {
     /// literal name
     #[arg(value_name = "'EXPR'")]
     pub text: PracticeText,
+}
+
+#[derive(Debug, Args)]
+pub struct RawScript {
+    /// The entry script, a local file below the root
+    #[arg(value_name = "ENTRY.cmm")]
+    pub entry: PathBuf,
+    /// The directory bundled with the entry; default the entry's directory
+    #[arg(long, value_name = "DIR")]
+    pub root: Option<PathBuf>,
+    /// Bound of the run, 1s to 2h
+    #[arg(long, value_name = "DUR", default_value = "5m")]
+    pub timeout: ScriptTimeout,
+    /// A new local directory for the outputs; default a fresh one in t32ctl's output directory
+    #[arg(long, value_name = "DIR")]
+    pub out: Option<PathBuf>,
+    /// Arguments for the entry script's ENTRY line: letters, digits and _ - . / : + = , @
+    #[arg(value_name = "ARG", last = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -295,6 +316,9 @@ leaf!(Raw, RawCommand, path: ["raw", "cmd"], waits: "the command", connects: tru
       examples: ["t32ctl raw cmd 'PRINT \"hello\"'", "t32ctl raw cmd 'SYStem.Mode Attach' --json"]);
 leaf!(Raw, RawEval, path: ["raw", "eval"], waits: "the function", connects: true,
       examples: ["t32ctl raw eval 'OS.PTD()'", "t32ctl raw eval 'Register(X0)' --json"]);
+leaf!(Raw, RawScript, path: ["raw", "script"], waits: "the script", connects: true,
+      examples: ["t32ctl raw script tools/t32/ddr_stress.cmm -- 0x40000000 0x100000",
+                 "t32ctl raw script tools/t32/dump.cmm --timeout 30s --out dump-1 --json"]);
 
 leaves! {
     (Read, ReadStatus),
@@ -309,6 +333,7 @@ leaves! {
     (Burn, ProcArgs),
     (Raw, RawCommand),
     (Raw, RawEval),
+    (Raw, RawScript),
 }
 
 impl Cli {
@@ -351,6 +376,7 @@ impl Cli {
             GradeCmd::Raw(g) => match g.leaf {
                 RawLeaf::Cmd(_) => &<RawCommand as Leaf<Raw>>::SPEC,
                 RawLeaf::Eval(_) => &<RawEval as Leaf<Raw>>::SPEC,
+                RawLeaf::Script(_) => &<RawScript as Leaf<Raw>>::SPEC,
             },
         }
     }

@@ -44,6 +44,21 @@ impl OutDir {
         Err(CtlError::new(ErrorKind::StateDir, format!("{}: no free run id after {TRIES} tries", base.display())))
     }
 
+    /// `path` itself, which must not exist (`file-exists`) and whose parent must (`notation`).
+    pub fn at(path: &Path, shown: &str) -> Result<Self, CtlError> {
+        match fs::create_dir(path) {
+            Ok(()) => Ok(Self { path: path.to_path_buf() }),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(CtlError::new(
+                ErrorKind::FileExists,
+                format!("--out {shown} exists; raw script --out never overwrites; choose a new directory"),
+            )),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                Err(CtlError::new(ErrorKind::Notation, format!("--out {shown}: the parent directory does not exist")))
+            }
+            Err(e) => Err(state_dir(path, &e)),
+        }
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
