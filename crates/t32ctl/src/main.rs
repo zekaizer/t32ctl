@@ -7,17 +7,18 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use t32rcl::Cancel;
 
 fn main() -> ExitCode {
-    // The first Ctrl-C or SIGTERM sets the flag: the call in flight is cancelled, cleanup runs
-    // with its own deadline, and the report says so. A second one exits at once with 130.
+    // The first Ctrl-C, SIGTERM or SIGHUP (a closed terminal) sets the flag: the call in flight is
+    // cancelled, cleanup runs with its own deadline, and the report says so. A second one exits at
+    // once with 130.
     let flag = Arc::new(AtomicBool::new(false));
-    for sig in [SIGINT, SIGTERM] {
+    for sig in [SIGINT, SIGTERM, SIGHUP] {
         signal_hook::flag::register_conditional_shutdown(sig, 130, Arc::clone(&flag))
             .and_then(|_| signal_hook::flag::register(sig, Arc::clone(&flag)))
-            .expect("SIGINT and SIGTERM accept a handler");
+            .expect("SIGINT, SIGTERM and SIGHUP accept a handler");
     }
     let deps = t32ctl::Deps::from_process(Cancel::from_flag(flag));
     let argv: Vec<_> = std::env::args_os().collect();

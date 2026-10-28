@@ -51,7 +51,7 @@ pub struct Deps {
     pub env: Env,
     pub connector: Arc<dyn Connector>,
     pub clock: Arc<dyn Clock>,
-    /// Set by the first Ctrl-C or SIGTERM.
+    /// Set by the first Ctrl-C, SIGTERM or SIGHUP.
     pub cancel: Cancel,
     pub poll: PollSchedule,
     /// The run token a scripted conversation expects (`t32stage::testkit`).

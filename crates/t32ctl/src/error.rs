@@ -274,7 +274,7 @@ impl ErrorKind {
                 "A script t32ctl started could not be unwound; the report names the PowerView command to type."
             }
             ErrorKind::StateDir => "The state or output directory cannot be written.",
-            ErrorKind::Interrupted => "Ctrl-C or SIGTERM; cleanup ran with its own deadline.",
+            ErrorKind::Interrupted => "Ctrl-C, SIGTERM or SIGHUP; cleanup ran with its own deadline.",
         }
     }
 }

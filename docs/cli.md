@@ -641,7 +641,7 @@ Each error carries a stable tag:
 | `pv-error` | 5 | PowerView failed a step t32ctl generated (a staging command, a size check, a reply t32ctl cannot use); the step and PowerView's message are shown. |
 | `residue` | 5 | A script t32ctl started could not be unwound; the report names the PowerView command to type. |
 | `state-dir` | 5 | The state or output directory cannot be written. |
-| `interrupted` | 130 | Ctrl-C or SIGTERM; cleanup ran with its own deadline. |
+| `interrupted` | 130 | Ctrl-C, SIGTERM or SIGHUP; cleanup ran with its own deadline. |
 <!-- errors:end -->
 
 Errors are classified in one module, by RCL status code, `RemoteKind`, `StageError` variant, and
@@ -862,10 +862,10 @@ The CPU check is skipped while the debug port is down and for procedures that de
 `debugger-config` effect, so an `attach` procedure can select the CPU. `read status` reports a
 mismatch instead of refusing.
 
-A signal sets a flag that reaches the session through `t32rcl`'s `Cancel`. The first Ctrl-C
-cancels the call in flight, runs cleanup under a fresh 30 s deadline that the flag does not
-cancel, reports `error[interrupted]` with what was cleaned up, and exits 130. A second one exits at
-once.
+SIGINT, SIGTERM and SIGHUP (a closed terminal) set a flag that reaches the session through
+`t32rcl`'s `Cancel`. The first one cancels the call in flight, runs cleanup under a fresh 30 s
+deadline that the flag does not cancel, reports `error[interrupted]` with what was cleaned up, and
+exits 130. A second one exits at once.
 
 Planned between these steps: `inflight/<pid>.lock` and `call.lock` after the profile; the lease
 check under `state.lock`; the dead calls' intents and the fingerprint after connecting; the
