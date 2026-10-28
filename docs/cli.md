@@ -236,7 +236,9 @@ map allows ([profiles.md](profiles.md#memory-map)).
 - `--width` defaults to the width of the touched `mmio` regions, else the profile's `word`.
   `--len` must be a multiple of it.
 - `--to NAME` writes the bytes into `~/.local/state/t32ctl/out/m-<4 hex>/NAME` instead, within
-  `[calls] transfer_timeout`. A transfer its bound stops is exit 1 and leaves no file.
+  `[calls] transfer_timeout`. The bound also covers the translation of the pages and the memory
+  map check. A transfer its bound stops is exit 1 and leaves no file; stopped before the check,
+  its `mem` line has no `phys=` and no regions, and `len=` and `width=` only as given.
 - The `mem` line prints the address without its class when the class is the profile's
   `default_class`, the physical address after `phys=` for a translated class, and the regions the
   read touched. Cells print `0x` at the cell width, little-endian, 16 bytes per line.

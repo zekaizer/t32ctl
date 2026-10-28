@@ -529,8 +529,8 @@ fn expected(doc: &str, command: &str, board: &Board, broken: &Board) -> Option<S
                 class: "D".into(),
                 addr: 0x4010_7e40,
                 phys: Some(Phys(0x4010_7e40)),
-                len: 64,
-                width: 8,
+                len: Some(64),
+                width: Some(8),
                 regions: vec![RegionRef { name: "ddr".into(), kind: "ram" }],
                 data: MemData::Cells(cells(&bytes, 8)),
             };

@@ -254,8 +254,13 @@ pub struct MemBody {
     pub addr: u64,
     /// The physical address of the first byte, for a translated class.
     pub phys: Option<Phys>,
-    pub len: u64,
-    pub width: u8,
+    /// `None` before the memory map checked the place, unless the caller gave it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub len: Option<u64>,
+    /// `None` before the memory map checked the place, unless the caller gave it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u8>,
+    /// Empty before the memory map checked the place.
     pub regions: Vec<RegionRef>,
     #[serde(flatten)]
     pub data: MemData,
@@ -318,18 +323,27 @@ const LINE: usize = 16;
 
 impl MemBody {
     fn lines(&self) -> Vec<String> {
-        let mut head = format!("mem {} len={} width={} class={}", self.shown, Size(self.len), self.width, self.class);
+        let mut head = format!("mem {}", self.shown);
+        if let Some(len) = self.len {
+            head.push_str(&format!(" len={}", Size(len)));
+        }
+        if let Some(width) = self.width {
+            head.push_str(&format!(" width={width}"));
+        }
+        head.push_str(&format!(" class={}", self.class));
         if let Some(p) = self.phys {
             head.push_str(&format!(" phys={:#x}", p.0));
         }
-        let regions: Vec<String> = self.regions.iter().map(|r| format!("{} {:?}", r.kind, r.name)).collect();
-        let noun = if regions.len() == 1 { "region" } else { "regions" };
-        head.push_str(&format!(" ({noun} {})", regions.join(", ")));
+        if !self.regions.is_empty() {
+            let regions: Vec<String> = self.regions.iter().map(|r| format!("{} {:?}", r.kind, r.name)).collect();
+            let noun = if regions.len() == 1 { "region" } else { "regions" };
+            head.push_str(&format!(" ({noun} {})", regions.join(", ")));
+        }
         let mut v = vec![head];
         let prefix = self.shown.strip_suffix(&format!("{:#x}", self.addr)).unwrap_or_default();
         match &self.data {
             MemData::Cells(cells) => {
-                let per_line = (LINE / usize::from(self.width.max(1))).max(1);
+                let per_line = (LINE / usize::from(self.width.unwrap_or(1).max(1))).max(1);
                 for (i, line) in cells.chunks(per_line).enumerate() {
                     let at = self.addr.wrapping_add((i * LINE) as u64);
                     v.push(format!("{prefix}{at:#x}: {}", line.join(" ")));

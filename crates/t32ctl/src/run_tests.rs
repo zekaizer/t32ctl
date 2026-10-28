@@ -895,6 +895,34 @@ fn a_transfer_stopped_by_its_bound_is_exit_1_and_leaves_no_file() {
     assert_eq!(run_dirs(&w), Vec::<PathBuf>::new());
 }
 
+#[test]
+fn the_bound_of_a_transfer_covers_the_translation_of_its_pages() {
+    let w = mapped("membound-mmu");
+    w.write("home/.config/t32ctl/config.toml", "schema = 1\n[calls]\ntransfer_timeout = \"1s\"\n");
+    let s = connected(2)
+        .expect_fn("MMU.PHYSICAL(D:0x40000000)")
+        .reply_text("A:0x40000000")
+        .expect_fn("MMU.PHYSICAL(D:0x40001000)")
+        .silence(std::time::Duration::from_secs(2));
+    let out = call("t32ctl read mem 0x40000000 --len 8K --to x.bin", &deps(w.env(), vec![Ok(s)]));
+    assert_eq!(
+        out.text,
+        "mem 0x40000000 len=8K class=D\n\
+         transfer stopped at the 1s bound after 0; the partial file was removed\n"
+    );
+    assert_eq!(out.code, 1);
+    assert_eq!(run_dirs(&w), Vec::<PathBuf>::new());
+    let s = connected(2).expect_fn("MMU.PHYSICAL(D:0x40000000)").silence(std::time::Duration::from_secs(2));
+    let out = call("t32ctl read mem 0x40000000 --width 4 --to x.bin --json", &deps(w.env(), vec![Ok(s)]));
+    let v: Value = serde_json::from_str(&out.text).unwrap();
+    assert_eq!(
+        v["body"],
+        serde_json::json!({"kind": "mem", "place": "D:0x40000000", "phys": null, "width": 4, "regions": [],
+            "stopped": {"bound_ms": 1000, "bytes": 0}})
+    );
+    assert_eq!(out.code, 1);
+}
+
 /// `PROFILE` with the contract's procedures (without `lease`) and their scripts.
 pub(crate) const PROCS: &str = "\n[proc.attach]\nabout = \"Connect to the A53 cluster without resetting it\"\n\
     script = \"attach.cmm\"\ngrade = \"run\"\ntimeout = \"30s\"\neffects = [\"debugger-config\"]\n\

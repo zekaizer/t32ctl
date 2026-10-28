@@ -9,7 +9,7 @@ use crate::{
     Setup,
     cli::{ReadMem, ReadReg, ReadStatus},
     config::Sourced,
-    ctx::{Ctx, MemPlan, MemRequest, Transfer},
+    ctx::{Ctx, MemPlace, MemPlan, MemRequest, MemTo, Transfer},
     error::{CtlError, ErrorKind},
     grade::Read,
     notation::{OutName, Place, Size},
@@ -122,18 +122,23 @@ pub fn mem_prepare(args: &ReadMem, setup: &Setup<'_>) -> Result<MemPrep, CtlErro
     Ok(MemPrep { req, to, bound: setup.config.transfer_timeout.as_duration() })
 }
 
-fn mem_body(plan: &MemPlan, data: MemData) -> Body {
-    let class = plan.class.as_str();
-    let shown = if plan.default_class { format!("{:#x}", plan.addr) } else { format!("{class}:{:#x}", plan.addr) };
+/// The body of a read the memory map allowed, or of one stopped before the map checked `place`:
+/// that one shows `--len` and `--width` as given.
+fn mem_body(place: &MemPlace, plan: Option<&MemPlan>, req: &MemRequest, data: MemData) -> Body {
+    let class = place.class.as_str();
+    let shown = if place.default_class { format!("{:#x}", place.addr) } else { format!("{class}:{:#x}", place.addr) };
+    let regions = plan.map_or_else(Vec::new, |p| {
+        p.regions.iter().map(|(name, kind)| RegionRef { name: name.clone(), kind: kind.name() }).collect()
+    });
     Body::Mem(MemBody {
-        place: format!("{class}:{:#x}", plan.addr),
+        place: format!("{class}:{:#x}", place.addr),
         shown,
         class: class.to_string(),
-        addr: plan.addr,
-        phys: plan.phys.map(Phys),
-        len: plan.len,
-        width: plan.width,
-        regions: plan.regions.iter().map(|(name, kind)| RegionRef { name: name.clone(), kind: kind.name() }).collect(),
+        addr: place.addr,
+        phys: plan.and_then(|p| p.phys).map(Phys),
+        len: plan.map_or(req.len, |p| Some(p.len)),
+        width: plan.map_or(req.width, |p| Some(p.width)),
+        regions,
         data,
     })
 }
@@ -144,20 +149,24 @@ pub fn mem(_args: &ReadMem, prep: MemPrep, ctx: &mut Ctx<'_, Read>, setup: &Setu
     let Some((dir, name)) = prep.to else {
         let (plan, data) = ctx.read_mem(&prep.req)?;
         let cells = cells(&data, plan.width);
-        return Ok(mem_body(&plan, MemData::Cells(cells)));
+        return Ok(mem_body(&plan.place, Some(&plan), &prep.req, MemData::Cells(cells)));
     };
     let (path, mut file) = dir.create_file(&name)?;
     let result = ctx.read_mem_to(&prep.req, prep.bound, &mut file);
     drop(file);
-    if !matches!(result, Ok((_, Transfer::Done { .. }))) {
+    if !matches!(result, Ok(MemTo::Checked(_, Transfer::Done { .. }))) {
         let _ = fs::remove_file(&path);
     }
-    let (plan, transfer) = result?;
-    let data = match transfer {
-        Transfer::Done { bytes, after_ms } => {
-            MemData::File(FileStats { path: setup.env.display(&path), bytes, after_ms })
+    Ok(match result? {
+        MemTo::Checked(plan, Transfer::Done { bytes, after_ms }) => {
+            let file = MemData::File(FileStats { path: setup.env.display(&path), bytes, after_ms });
+            mem_body(&plan.place, Some(&plan), &prep.req, file)
         }
-        Transfer::Stopped { bytes, bound_ms } => MemData::Stopped(StoppedTransfer { bound_ms, bytes }),
-    };
-    Ok(mem_body(&plan, data))
+        MemTo::Checked(plan, Transfer::Stopped { bytes, bound_ms }) => {
+            mem_body(&plan.place, Some(&plan), &prep.req, MemData::Stopped(StoppedTransfer { bound_ms, bytes }))
+        }
+        MemTo::Unchecked { place, bound_ms } => {
+            mem_body(&place, None, &prep.req, MemData::Stopped(StoppedTransfer { bound_ms, bytes: 0 }))
+        }
+    })
 }

@@ -329,7 +329,7 @@ impl MemPlan {
     /// The address object of a segment's read, `from` bytes in. ASSUMED(target-read): PowerView
     /// honors the access width of an `mmio` segment.
     fn read_addr(&self, seg: &Segment, mmio: bool, from: u64) -> MemAddr {
-        let at = MemAddr::new(self.read_class.clone(), self.addr + seg.offset + from);
+        let at = MemAddr::new(self.read_class.clone(), self.place.addr + seg.offset + from);
         if mmio { at.with_width(u16::from(self.width)) } else { at }
     }
 }
@@ -339,6 +339,12 @@ enum Halt {
     /// The bound passed after this many bytes were written.
     Deadline(u64),
     Failed(CtlError),
+}
+
+impl From<CtlError> for Halt {
+    fn from(e: CtlError) -> Self {
+        Halt::Failed(e)
+    }
 }
 
 /// Every segment of `plan` into `sink`, `BLOCK` bytes per read; the bytes written.
@@ -380,23 +386,27 @@ fn running_class(class: &AccessClass) -> Result<AccessClass, CtlError> {
 }
 
 /// The physical address of `class:page`. A refusal is `memory-policy`: without a translation the
-/// map cannot be checked.
-fn translate(s: &mut Session, class: &AccessClass, page: u64) -> Result<u64, CtlError> {
+/// map cannot be checked. A passed transfer bound is `Halt::Deadline` with nothing written.
+fn translate(s: &mut Session, class: &AccessClass, page: u64) -> Result<u64, Halt> {
     let expr = fnc::physical(&MemAddr::new(class.clone(), page));
     let v = s.eval(&expr).map_err(|e| {
+        if let Error::Cancelled { reason: CancelReason::Deadline, .. } = e {
+            return Halt::Deadline(0);
+        }
         let err = from_rcl(&e, Context::Read, &expr);
         if err.kind != ErrorKind::Refused {
-            return err;
+            return Halt::Failed(err);
         }
         let message = format!("no physical address for {}:{page:#x}: {}", class.as_str(), err.message);
-        CtlError::new(ErrorKind::MemoryPolicy, message)
+        Halt::Failed(CtlError::new(ErrorKind::MemoryPolicy, message))
     })?;
     let phys = match &v {
         FuncValue::Uint(n) => Some(*n),
         FuncValue::Text(t) | FuncValue::Raw { text: t, .. } => physical_text(t),
         _ => None,
     };
-    phys.ok_or_else(|| CtlError::new(ErrorKind::PvError, format!("{expr}: {v} names no physical address")))
+    let message = || format!("{expr}: {v} names no physical address");
+    phys.ok_or_else(|| Halt::Failed(CtlError::new(ErrorKind::PvError, message())))
 }
 
 /// The hex number after the last `:` of an address value (`A:0x40107000`).
@@ -448,7 +458,11 @@ impl<'c, G: Grade> Ctx<'c, G> {
 
     /// The bytes at `req`, after the memory map allowed every one of them.
     pub fn read_mem(&mut self, req: &MemRequest) -> Result<(MemPlan, Vec<u8>), CtlError> {
-        let plan = self.plan_mem(req)?;
+        let place = self.place_mem(req)?;
+        let plan = self.plan_mem(req, place).map_err(|h| match h {
+            Halt::Failed(e) => e,
+            Halt::Deadline(_) => unreachable!("a read without --to runs under no deadline"),
+        })?;
         let mut data = Vec::with_capacity(plan.len as usize);
         for (seg, mmio) in &plan.segments {
             let at = plan.read_addr(seg, *mmio, 0);
@@ -458,35 +472,32 @@ impl<'c, G: Grade> Ctx<'c, G> {
         Ok((plan, data))
     }
 
-    /// The bytes at `req` into `sink` in blocks, until done or until `bound` passes. The memory map
-    /// is checked before the bound starts.
-    pub fn read_mem_to(
-        &mut self,
-        req: &MemRequest,
-        bound: Duration,
-        sink: &mut dyn Write,
-    ) -> Result<(MemPlan, Transfer), CtlError> {
-        let plan = self.plan_mem(req)?;
+    /// The bytes at `req` into `sink` in blocks, until done or until `bound` passes. The bound
+    /// starts once the place is resolved: the translation and the memory map check run under it.
+    pub fn read_mem_to(&mut self, req: &MemRequest, bound: Duration, sink: &mut dyn Write) -> Result<MemTo, CtlError> {
+        let place = self.place_mem(req)?;
         let base = self.conn.cancel.clone();
+        let t0 = self.conn.session.now();
+        self.conn.session.set_cancel(base.with_deadline(t0 + bound));
+        let planned = self.plan_mem(req, place.clone());
         let s = &mut self.conn.session;
-        let t0 = s.now();
-        s.set_cancel(base.with_deadline(t0 + bound));
-        let streamed = stream(s, &plan, sink);
+        let streamed = planned.map(|plan| {
+            let streamed = stream(s, &plan, sink);
+            (plan, streamed)
+        });
         s.set_cancel(base);
         let after_ms = u64::try_from((s.now() - t0).as_millis()).unwrap_or(u64::MAX);
-        let transfer = match streamed {
-            Ok(bytes) => Transfer::Done { bytes, after_ms },
-            Err(Halt::Deadline(bytes)) => {
-                Transfer::Stopped { bytes, bound_ms: u64::try_from(bound.as_millis()).unwrap_or(u64::MAX) }
-            }
-            Err(Halt::Failed(e)) => return Err(e),
-        };
-        Ok((plan, transfer))
+        let bound_ms = u64::try_from(bound.as_millis()).unwrap_or(u64::MAX);
+        match streamed {
+            Ok((plan, Ok(bytes))) => Ok(MemTo::Checked(plan, Transfer::Done { bytes, after_ms })),
+            Ok((plan, Err(Halt::Deadline(bytes)))) => Ok(MemTo::Checked(plan, Transfer::Stopped { bytes, bound_ms })),
+            Err(Halt::Deadline(_)) => Ok(MemTo::Unchecked { place, bound_ms }),
+            Ok((_, Err(Halt::Failed(e)))) | Err(Halt::Failed(e)) => Err(e),
+        }
     }
 
-    /// Resolve the place, translate it page by page unless its class is `A`, and check every
-    /// physical byte against the memory map before any memory request.
-    fn plan_mem(&mut self, req: &MemRequest) -> Result<MemPlan, CtlError> {
+    /// The class and address of `req`: a register place reads its register.
+    fn place_mem(&mut self, req: &MemRequest) -> Result<MemPlace, CtlError> {
         if self.run == TargetState::Down {
             return Err(CtlError::new(ErrorKind::TargetDown, "the target is down: memory needs an attached target"));
         }
@@ -510,26 +521,33 @@ impl<'c, G: Grade> Ctx<'c, G> {
             }
         };
         let class = policy.class(typed)?;
+        Ok(MemPlace { default_class: class == policy.default_class, class, addr })
+    }
+
+    /// Translate `place` page by page unless its class is `A`, and check every physical byte
+    /// against the memory map before any memory request.
+    fn plan_mem(&mut self, req: &MemRequest, place: MemPlace) -> Result<MemPlan, Halt> {
+        let running = self.run == TargetState::Running;
+        let policy = effective_memory(self.profile);
+        let (class, addr) = (&place.class, place.addr);
         let mut pages = HashMap::new();
         let len = match req.len {
             Some(len) => len,
             None => {
-                let first = self.pieces(&class, addr, 1, &mut pages)?[0].phys;
+                let first = self.pieces(class, addr, 1, &mut pages)?[0].phys;
                 u64::from(req.width.unwrap_or_else(|| policy.cell_width(first)))
             }
         };
-        let pieces = self.pieces(&class, addr, len, &mut pages)?;
+        let pieces = self.pieces(class, addr, len, &mut pages)?;
         let checked = policy.check(&pieces, running, req.width)?;
         // ASSUMED(target-read): `E` before the class reads memory while the cores run.
-        let read_class = if running { running_class(&class)? } else { class.clone() };
+        let read_class = if running { running_class(class)? } else { class.clone() };
         let regions = &policy.regions;
         Ok(MemPlan {
-            default_class: class == policy.default_class,
             phys: (class.as_str() != "A").then(|| pieces.first().map(|p| p.phys)).flatten(),
             regions: checked.regions.iter().map(|&i| (regions[i].name.clone(), regions[i].kind)).collect(),
             segments: checked.segments.iter().map(|s| (*s, regions[s.region].kind == RegionKind::Mmio)).collect(),
-            class,
-            addr,
+            place,
             len,
             width: checked.width,
             read_class,
@@ -545,10 +563,10 @@ impl<'c, G: Grade> Ctx<'c, G> {
         addr: u64,
         len: u64,
         pages: &mut HashMap<u64, u64>,
-    ) -> Result<Vec<Piece>, CtlError> {
+    ) -> Result<Vec<Piece>, Halt> {
         let Some(end) = addr.checked_add(len) else {
             let message = format!("{addr:#x} + {}: past the end of the address space", Size(len));
-            return Err(CtlError::new(ErrorKind::Notation, message));
+            return Err(Halt::Failed(CtlError::new(ErrorKind::Notation, message)));
         };
         if class.as_str() == "A" {
             return Ok(vec![Piece { offset: 0, phys: addr, len }]);
@@ -567,7 +585,8 @@ impl<'c, G: Grade> Ctx<'c, G> {
                 }
             };
             let phys = phys_page.checked_add(at - page).ok_or_else(|| {
-                CtlError::new(ErrorKind::PvError, format!("{}:{page:#x} translates past 64 bits", class.as_str()))
+                let message = format!("{}:{page:#x} translates past 64 bits", class.as_str());
+                Halt::Failed(CtlError::new(ErrorKind::PvError, message))
             })?;
             let piece = Piece { offset: at - addr, phys, len: next - at };
             match out.last_mut() {
@@ -674,13 +693,19 @@ pub struct MemRequest {
     pub width: Option<u8>,
 }
 
-/// A read the memory map allowed.
+/// Where a read goes, before translation and the memory map.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MemPlan {
+pub struct MemPlace {
     pub class: AccessClass,
     /// The class is the profile's default class.
     pub default_class: bool,
     pub addr: u64,
+}
+
+/// A read the memory map allowed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemPlan {
+    pub place: MemPlace,
     pub len: u64,
     pub width: u8,
     /// The physical address of the first byte, for a translated class.
@@ -691,6 +716,16 @@ pub struct MemPlan {
     read_class: AccessClass,
     /// Each segment, and whether its region is `mmio`.
     segments: Vec<(Segment, bool)>,
+}
+
+/// How `read mem --to` ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemTo {
+    /// The memory map allowed the read, and the transfer ended so.
+    Checked(MemPlan, Transfer),
+    /// The bound passed while translating the place, before the memory map checked it: nothing
+    /// was read.
+    Unchecked { place: MemPlace, bound_ms: u64 },
 }
 
 /// How a bounded transfer ended.
