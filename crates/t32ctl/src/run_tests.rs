@@ -9,7 +9,11 @@ use t32rcl::testkit::{ConnectFailure, ManualClock, Request, Script, ScriptedConn
 use super::*;
 use crate::cli::tests::words;
 
-/// A home and a workspace in a fresh temp directory, removed when dropped.
+/// The board profile every world starts with.
+const PROFILE: &str = "schema = 1\n[target]\nname = \"acme_evb\"\ncpu = \"CortexA53\"\ncores = 4\nword = 8\n";
+
+/// A home and a workspace in a fresh temp directory, removed when dropped. `T32CTL_PROFILE`
+/// names `board/support/t32ctl`, which holds `PROFILE`.
 struct World(PathBuf);
 
 impl World {
@@ -18,13 +22,16 @@ impl World {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("ws")).unwrap();
         fs::create_dir_all(root.join("home")).unwrap();
-        Self(root)
+        let w = Self(root);
+        w.write("ws/board/support/t32ctl/profile.toml", PROFILE);
+        w
     }
 
     fn env(&self) -> Env {
         Env {
             cwd: self.0.join("ws"),
             home: Some(self.0.join("home")),
+            profile: Some("board/support/t32ctl".into()),
             auto_hosts: vec!["127.0.0.1".into()],
             ..Env::default()
         }
@@ -159,8 +166,9 @@ fn full_status_adds_the_binding_the_config_and_the_state_directory() {
     let w = World::new("full");
     let board = w.0.join("ws/boards/acme/acme_evb");
     w.write("ws/build/CMakeCache.txt", &format!("BOARD_DIR:PATH={}\nBOARD:STRING=acme_evb/a53\n", board.display()));
+    w.write("ws/boards/acme/acme_evb/support/t32ctl/profile.toml", PROFILE);
     w.write("home/.config/t32ctl/config.toml", "schema = 1\n[connection]\nport = 20000\n");
-    let env = Env { auto_hosts: vec!["127.0.0.1".into(), "172.29.32.1".into()], ..w.env() };
+    let env = Env { auto_hosts: vec!["127.0.0.1".into(), "172.29.32.1".into()], profile: None, ..w.env() };
     let d = deps(env, vec![Err(ConnectFailure::Refused), Ok(stopped_header(pv(connected(2), Some(1), 0, 0)))]);
     let out = call("t32ctl read status --full", &d);
     assert_eq!(
@@ -174,7 +182,8 @@ fn full_status_adds_the_binding_the_config_and_the_state_directory() {
     );
     let d = deps(w.env(), vec![Ok(stopped_header(pv(connected(2), Some(1), 0, 0)))]);
     let out = call("t32ctl read status --full --build elsewhere", &d);
-    assert!(out.text.contains("binding build=elsewhere (--build), profile none, BOARD none\n"), "{}", out.text);
+    let binding = "binding build=elsewhere (--build), profile=board/support/t32ctl/ (T32CTL_PROFILE), BOARD none\n";
+    assert!(out.text.contains(binding), "{}", out.text);
 }
 
 #[test]
@@ -296,4 +305,34 @@ fn describe_is_a_document_that_never_connects() {
     assert_eq!(call("t32ctl read describe --format permissions", &d).text, describe::permissions());
     assert_eq!(call("t32ctl read describe --format skill", &d).text, describe::skill());
     assert!(!Path::new(&w.0).join("home/.local").exists());
+}
+
+#[test]
+fn a_call_without_a_profile_is_no_profile_and_connects_nowhere() {
+    let w = World::new("noprofile");
+    let out = call("t32ctl read status", &deps(Env { profile: None, ..w.env() }, vec![]));
+    assert_eq!(
+        out.text,
+        "error[no-profile]: no target profile for this build\n\
+         \x20 T32CTL_PROFILE: unset\n\
+         \x20 .t32ctl.toml: not in a git repository\n\
+         \x20 BOARD_DIR: no build directory (--build, T32CTL_BUILD, .t32ctl.toml, ./build)\n"
+    );
+    assert_eq!(out.code, 5);
+    assert!(!w.pv_dir().exists(), "nothing is created before the profile loads");
+}
+
+#[test]
+fn a_broken_profile_stops_the_call_before_it_connects() {
+    let w = World::new("badprofile");
+    w.write(
+        "ws/board/support/t32ctl/profile.toml",
+        "schema = 1\n[target]\nname = \"x\"\ncpu = \"y\"\ncores = 0\nword = 8\n",
+    );
+    let out = call("t32ctl read status", &deps(w.env(), vec![]));
+    assert_eq!(
+        out.text,
+        "error[profile-invalid]: board/support/t32ctl/profile.toml:5:9: target.cores = 0 is outside 1..=4294967295\n"
+    );
+    assert_eq!(out.code, 5);
 }

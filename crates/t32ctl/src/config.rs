@@ -254,7 +254,7 @@ struct RawCalls {
     lock_wait: Option<Spanned<toml::Value>>,
 }
 
-fn invalid(message: String) -> CtlError {
+pub(crate) fn invalid(message: String) -> CtlError {
     CtlError::new(ErrorKind::ProfileInvalid, message)
 }
 
@@ -272,7 +272,7 @@ fn at(text: &str, file: &Path, span: &Range<usize>, message: &str) -> String {
 }
 
 /// The first syntax or schema error: TOML parsing stops there.
-fn syntax(text: &str, file: &Path, e: &toml::de::Error) -> CtlError {
+pub(crate) fn syntax(text: &str, file: &Path, e: &toml::de::Error) -> CtlError {
     let message = e.message().trim_end();
     match e.span() {
         Some(span) => invalid(at(text, file, &span, message)),
@@ -282,30 +282,30 @@ fn syntax(text: &str, file: &Path, e: &toml::de::Error) -> CtlError {
 
 /// Every semantic error of one file.
 #[derive(Default)]
-struct Issues(Vec<(Range<usize>, String)>);
+pub(crate) struct Issues(Vec<(Range<usize>, String)>);
 
 impl Issues {
-    fn push(&mut self, span: Range<usize>, message: String) {
+    pub(crate) fn push(&mut self, span: Range<usize>, message: String) {
         self.0.push((span, message));
     }
 
-    fn check(&mut self, ok: bool, span: Range<usize>, message: &str) {
+    pub(crate) fn check(&mut self, ok: bool, span: Range<usize>, message: &str) {
         if !ok {
             self.push(span, message.to_string());
         }
     }
 
-    fn schema(&mut self, v: &Spanned<i64>) {
+    pub(crate) fn schema(&mut self, v: &Spanned<i64>) {
         self.check(*v.get_ref() == 1, v.span(), "schema must be 1");
     }
 
-    fn planned(&mut self, span: Option<Range<usize>>, key: &str) {
+    pub(crate) fn planned(&mut self, span: Option<Range<usize>>, key: &str) {
         if let Some(span) = span {
             self.push(span, format!("{key} is planned, not in this t32ctl"));
         }
     }
 
-    fn int(&mut self, v: &Spanned<i64>, min: i64, max: i64, key: &str) -> Option<i64> {
+    pub(crate) fn int(&mut self, v: &Spanned<i64>, min: i64, max: i64, key: &str) -> Option<i64> {
         let n = *v.get_ref();
         if (min..=max).contains(&n) {
             Some(n)
@@ -317,7 +317,7 @@ impl Issues {
 
     /// The first error in the file is the message; the others follow as details, each with its
     /// position.
-    fn into_result(mut self, text: &str, file: &Path) -> Result<(), CtlError> {
+    pub(crate) fn into_result(mut self, text: &str, file: &Path) -> Result<(), CtlError> {
         self.0.sort_by_key(|(span, _)| span.start);
         let mut all = self.0.iter().map(|(span, m)| at(text, file, span, m));
         match all.next() {

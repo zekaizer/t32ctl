@@ -3,15 +3,17 @@
 
 use std::{fs, net::TcpListener, path::PathBuf, process::Command};
 
-/// A home and a workspace in a fresh temp directory, removed when dropped.
+/// A home and a workspace with a board profile in a fresh temp directory, removed when dropped.
 struct Temp(PathBuf);
 
 impl Temp {
     fn new(tag: &str) -> Self {
         let root = std::env::temp_dir().join(format!("t32ctl-bin-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("ws")).expect("temp workspace");
+        fs::create_dir_all(root.join("ws/board/support/t32ctl")).expect("temp workspace");
         fs::create_dir_all(root.join("home")).expect("temp home");
+        let profile = "schema = 1\n[target]\nname = \"b\"\ncpu = \"CortexA53\"\ncores = 1\nword = 8\n";
+        fs::write(root.join("ws/board/support/t32ctl/profile.toml"), profile).expect("profile");
         Self(root)
     }
 }
@@ -27,6 +29,7 @@ fn t32ctl(t: &Temp, args: &[&str]) -> (String, i32) {
         .args(args)
         .env_clear()
         .env("HOME", t.0.join("home"))
+        .env("T32CTL_PROFILE", "board/support/t32ctl")
         .current_dir(t.0.join("ws"))
         .output()
         .expect("t32ctl runs");

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The library behind the `t32ctl` binary, so tests run whole calls in-process.
 //!
-//! One call is [`run`]: parse, resolve the config and the binding, connect, replay journals, run
-//! the leaf under its `Ctx<G>`, read the header, and render one report.
+//! One call is [`run`]: parse, resolve the config, the binding and the board profile, connect,
+//! replay journals, run the leaf under its `Ctx<G>`, read the header, and render one report.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
@@ -14,6 +14,7 @@ pub mod describe;
 pub mod error;
 pub mod grade;
 pub mod notation;
+pub mod profile;
 pub mod read;
 pub mod report;
 
@@ -27,6 +28,7 @@ use crate::{
     ctx::{Conn, Ctx},
     error::{CtlError, ErrorKind},
     grade::{Grade, Read},
+    profile::Profile,
     report::{Body, Report},
 };
 
@@ -100,6 +102,8 @@ pub struct Setup<'e> {
     pub paths: Paths,
     pub config: Config,
     pub binding: Binding,
+    /// The board profile the binding names, with the build's variant applied.
+    pub profile: Profile,
     /// t32stage's state directory for this PowerView.
     pub pv_dir: PathBuf,
 }
@@ -109,8 +113,9 @@ impl<'e> Setup<'e> {
         let paths = Paths::new(env)?;
         let config = Config::load(paths.config_file.as_deref())?;
         let binding = Binding::resolve(env, globals.build.as_deref())?;
+        let profile = Profile::from_binding(env, &binding)?;
         let pv_dir = paths.pv_dir(&config);
-        Ok(Self { env, paths, config, binding, pv_dir })
+        Ok(Self { env, paths, config, binding, profile, pv_dir })
     }
 }
 
