@@ -218,9 +218,12 @@ fn labeled(label: &str, rest: impl fmt::Display) -> String {
     format!("{label:<7} {rest}")
 }
 
-/// `read status`: PowerView, and with `--full` the binding, the config and the state directory.
+/// `read status`: the target, the profile and PowerView, and with `--full` the profile hash, the
+/// binding, the config and the state directory.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct StatusBody {
+    pub target: TargetView,
+    pub profile: ProfileView,
     pub pv: PvStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binding: Option<BindingView>,
@@ -232,7 +235,7 @@ pub struct StatusBody {
 
 impl StatusBody {
     fn lines(&self) -> Vec<String> {
-        let mut v = Vec::new();
+        let mut v = vec![labeled("target", &self.target), labeled("profile", &self.profile)];
         if let Some(b) = &self.binding {
             v.push(labeled("binding", b));
         }
@@ -244,6 +247,66 @@ impl StatusBody {
         }
         v.push(labeled("pv", &self.pv));
         v
+    }
+}
+
+/// The connected target against the profile.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TargetView {
+    /// The profile's `target.name`.
+    pub name: String,
+    /// `SYStem.CPU()`.
+    pub cpu: String,
+    pub profile_cpu: String,
+    pub cpu_check: CpuMatch,
+    /// `CORE.NUMBER()`.
+    pub cores: i64,
+    pub profile_cores: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CpuMatch {
+    Match,
+    Mismatch,
+    /// The target is down: the prelude does not check.
+    Skipped,
+}
+
+impl fmt::Display for TargetView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} cpu={} ", self.name, self.cpu)?;
+        match self.cpu_check {
+            CpuMatch::Match => f.write_str("(matches profile)")?,
+            CpuMatch::Mismatch => write!(f, "(profile: {}, mismatch)", self.profile_cpu)?,
+            CpuMatch::Skipped => f.write_str("(not checked while down)")?,
+        }
+        write!(f, " cores={}", self.cores)?;
+        if self.cores != i64::from(self.profile_cores) {
+            write!(f, " (profile: {})", self.profile_cores)?;
+        }
+        Ok(())
+    }
+}
+
+/// The profile directory as printed; `--full` adds the hash (all 64 digits) and the file count.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProfileView {
+    pub dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<usize>,
+}
+
+impl fmt::Display for ProfileView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.dir)?;
+        if let (Some(hash), Some(n)) = (&self.hash, self.files) {
+            let files = if n == 1 { "file" } else { "files" };
+            write!(f, " profile={} ({n} {files})", &hash[..hash.len().min(8)])?;
+        }
+        Ok(())
     }
 }
 
@@ -312,25 +375,25 @@ pub struct Sourced {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct BindingView {
     pub build: Option<Sourced>,
-    pub profile: Option<Sourced>,
+    /// The rule or file that named the profile directory.
+    pub profile_from: String,
+    /// The `[variant."<board>"]` applied; `None` for the base profile.
+    pub variant: Option<String>,
     /// `BOARD` from the build's `CMakeCache.txt`.
     pub board: Option<String>,
 }
 
 impl fmt::Display for BindingView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, (name, v)) in [("build", &self.build), ("profile", &self.profile)].into_iter().enumerate() {
-            if i > 0 {
-                f.write_str(", ")?;
-            }
-            match v {
-                Some(s) => write!(f, "{name}={} ({})", s.path, s.source)?,
-                None => write!(f, "{name} none")?,
-            }
+        match &self.build {
+            Some(s) => write!(f, "build={} ({})", s.path, s.source)?,
+            None => f.write_str("build none")?,
         }
-        match &self.board {
-            Some(b) => write!(f, ", BOARD={b}"),
-            None => f.write_str(", BOARD none"),
+        write!(f, ", profile from {}, variant ", self.profile_from)?;
+        match (&self.variant, &self.board) {
+            (Some(v), _) => f.write_str(v),
+            (None, Some(b)) => write!(f, "base (BOARD={b})"),
+            (None, None) => f.write_str("base (no BOARD)"),
         }
     }
 }

@@ -4,7 +4,10 @@
 use std::path::Path;
 
 use serde_json::Value;
-use t32rcl::testkit::{ConnectFailure, ManualClock, Request, Script, ScriptedConnector};
+use t32rcl::{
+    TargetState,
+    testkit::{ConnectFailure, ManualClock, Request, Script, ScriptedConnector},
+};
 
 use super::*;
 use crate::cli::tests::words;
@@ -65,10 +68,23 @@ fn call(line: &str, deps: &Deps) -> Output {
     run(&argv, deps)
 }
 
-/// Attach, then the prelude's `T32_GetState`.
+/// Attach, then the prelude: `T32_GetState`, and `SYStem.CPU()` unless the target is down.
 fn connected(state: u8) -> Script {
-    Script::new().attach().expect_req(Request::TargetState).reply_state(state)
+    connected_to(state, "CortexA53")
 }
+
+fn connected_to(state: u8, cpu: &str) -> Script {
+    let s = Script::new().attach().expect_req(Request::TargetState).reply_state(state);
+    if state == 0 { s } else { s.expect_fn("SYStem.CPU()").reply_text(cpu) }
+}
+
+/// `read status` reads the cores before the `pv` line.
+fn cores(s: Script) -> Script {
+    s.expect_fn("CORE.NUMBER()").reply_decimal(4)
+}
+
+/// The two lines `read status` prints for `World`'s profile and a matching CPU.
+const TARGET: &str = "target  acme_evb cpu=CortexA53 (matches profile) cores=4\nprofile board/support/t32ctl/\n";
 
 /// The `pv` line's requests. `clients` `None`: PowerView refuses both spellings.
 fn pv(s: Script, clients: Option<i64>, practice: u8, depth: i64) -> Script {
@@ -101,9 +117,12 @@ fn stopped_header(s: Script) -> Script {
 #[test]
 fn read_status_prints_the_header_after_the_pv_line_it_read_first() {
     let w = World::new("stopped");
-    let d = deps(w.env(), vec![Ok(stopped_header(pv(connected(2), Some(1), 0, 0)))]);
+    let d = deps(w.env(), vec![Ok(stopped_header(pv(cores(connected(2)), Some(1), 0, 0)))]);
     let out = call("t32ctl read status", &d);
-    assert_eq!(out.text, "stopped core=0 pc=0x40083e10\npv      build=168999 clients=1 practice=idle\n");
+    assert_eq!(
+        out.text,
+        format!("stopped core=0 pc=0x40083e10\n{TARGET}pv      build=168999 clients=1 practice=idle\n")
+    );
     assert_eq!(out.code, 0);
     assert!(w.pv_dir().is_dir(), "the state directory exists before the call connects");
 }
@@ -111,19 +130,21 @@ fn read_status_prints_the_header_after_the_pv_line_it_read_first() {
 #[test]
 fn a_running_target_shows_its_cores_and_a_down_one_only_down() {
     let w = World::new("running");
-    let running = pv(connected(3), Some(1), 0, 0).expect_req(Request::TargetState).reply_state(3);
+    let running = pv(cores(connected(3)), Some(1), 0, 0).expect_req(Request::TargetState).reply_state(3);
     let d = deps(w.env(), vec![Ok(running.expect_fn("CORE.NUMBER()").reply_decimal(4))]);
     assert_eq!(call("t32ctl read status", &d).text.lines().next(), Some("running cores=0-3"));
-    let down = pv(connected(0), Some(1), 0, 0).expect_req(Request::TargetState).reply_state(0);
+    let down = cores(connected(0).expect_fn("SYStem.CPU()").reply_text("CortexA53"));
+    let down = pv(down, Some(1), 0, 0).expect_req(Request::TargetState).reply_state(0);
     let d = deps(w.env(), vec![Ok(down)]);
     let out = call("t32ctl read status", &d);
     assert_eq!((out.text.lines().next(), out.code), (Some("down"), 0));
+    assert_eq!(out.text.lines().nth(1), Some("target  acme_evb cpu=CortexA53 (not checked while down) cores=4"));
 }
 
 #[test]
 fn a_refused_pc_shortens_the_header_and_never_fails_the_call() {
     let w = World::new("nopc");
-    let s = pv(connected(2), Some(1), 0, 0).expect_req(Request::TargetState).reply_state(2);
+    let s = pv(cores(connected(2)), Some(1), 0, 0).expect_req(Request::TargetState).reply_state(2);
     let s = s.expect_fn("CORE()").reply_decimal(1).expect_fn("Register(PC)").reply_function(0, "target system down");
     let out = call("t32ctl read status", &deps(w.env(), vec![Ok(s)]));
     assert_eq!((out.text.lines().next(), out.code), (Some("stopped core=1"), 0));
@@ -132,7 +153,7 @@ fn a_refused_pc_shortens_the_header_and_never_fails_the_call() {
 #[test]
 fn clients_fall_back_to_the_api_spelling_then_print_a_question_mark() {
     let w = World::new("clients");
-    let s = connected(2)
+    let s = cores(connected(2))
         .expect_fn("SOFTWARE.BUILD()")
         .reply_decimal(172_803)
         .expect_fn("SOFTWARE.BUILD.BASE()")
@@ -146,19 +167,21 @@ fn clients_fall_back_to_the_api_spelling_then_print_a_question_mark() {
         .expect_fn("PRACTICE.StackDepth()")
         .reply_decimal(0);
     let out = call("t32ctl read status", &deps(w.env(), vec![Ok(stopped_header(s))]));
-    assert_eq!(out.text.lines().nth(1), Some("pv      build=172803 clients=2 practice=idle"));
-    let s = stopped_header(pv(connected(2), None, 0, 0));
+    assert_eq!(out.text.lines().nth(3), Some("pv      build=172803 clients=2 practice=idle"));
+    let s = stopped_header(pv(cores(connected(2)), None, 0, 0));
     let out = call("t32ctl read status", &deps(w.env(), vec![Ok(s)]));
-    assert_eq!(out.text.lines().nth(1), Some("pv      build=168999 clients=? practice=idle"));
+    assert_eq!(out.text.lines().nth(3), Some("pv      build=168999 clients=? practice=idle"));
 }
 
 #[test]
 fn an_idle_practice_with_a_non_empty_stack_is_a_halted_script() {
     let w = World::new("halted");
-    let out = call("t32ctl read status", &deps(w.env(), vec![Ok(stopped_header(pv(connected(2), Some(1), 0, 1)))]));
-    assert_eq!(out.text.lines().nth(1), Some("pv      build=168999 clients=1 practice=halted (depth 1)"));
-    let out = call("t32ctl read status", &deps(w.env(), vec![Ok(stopped_header(pv(connected(2), Some(1), 2, 1)))]));
-    assert_eq!(out.text.lines().nth(1), Some("pv      build=168999 clients=1 practice=dialog (depth 1)"));
+    let out =
+        call("t32ctl read status", &deps(w.env(), vec![Ok(stopped_header(pv(cores(connected(2)), Some(1), 0, 1)))]));
+    assert_eq!(out.text.lines().nth(3), Some("pv      build=168999 clients=1 practice=halted (depth 1)"));
+    let out =
+        call("t32ctl read status", &deps(w.env(), vec![Ok(stopped_header(pv(cores(connected(2)), Some(1), 2, 1)))]));
+    assert_eq!(out.text.lines().nth(3), Some("pv      build=168999 clients=1 practice=dialog (depth 1)"));
 }
 
 #[test]
@@ -169,28 +192,36 @@ fn full_status_adds_the_binding_the_config_and_the_state_directory() {
     w.write("ws/boards/acme/acme_evb/support/t32ctl/profile.toml", PROFILE);
     w.write("home/.config/t32ctl/config.toml", "schema = 1\n[connection]\nport = 20000\n");
     let env = Env { auto_hosts: vec!["127.0.0.1".into(), "172.29.32.1".into()], profile: None, ..w.env() };
-    let d = deps(env, vec![Err(ConnectFailure::Refused), Ok(stopped_header(pv(connected(2), Some(1), 0, 0)))]);
+    let d = deps(env, vec![Err(ConnectFailure::Refused), Ok(stopped_header(pv(cores(connected(2)), Some(1), 0, 0)))]);
     let out = call("t32ctl read status --full", &d);
+    let hash = profile::hash(&profile::walk(&w.0.join("ws/boards/acme/acme_evb/support/t32ctl")).unwrap());
     assert_eq!(
         out.text,
-        "stopped core=0 pc=0x40083e10\n\
-         binding build=build (auto-detection: ./build/CMakeCache.txt), \
-         profile=boards/acme/acme_evb/support/t32ctl/ (BOARD_DIR), BOARD=acme_evb/a53\n\
-         config  ~/.config/t32ctl/config.toml: host=auto (172.29.32.1) port=20000\n\
-         state   ~/.local/state/t32ctl/pv/auto-20000/\n\
-         pv      build=168999 clients=1 practice=idle\n"
+        format!(
+            "stopped core=0 pc=0x40083e10\n\
+             target  acme_evb cpu=CortexA53 (matches profile) cores=4\n\
+             profile boards/acme/acme_evb/support/t32ctl/ profile={} (1 file)\n\
+             binding build=build (auto-detection: ./build/CMakeCache.txt), profile from BOARD_DIR, \
+             variant base (BOARD=acme_evb/a53)\n\
+             config  ~/.config/t32ctl/config.toml: host=auto (172.29.32.1) port=20000\n\
+             state   ~/.local/state/t32ctl/pv/auto-20000/\n\
+             pv      build=168999 clients=1 practice=idle\n",
+            hash.short()
+        )
     );
-    let d = deps(w.env(), vec![Ok(stopped_header(pv(connected(2), Some(1), 0, 0)))]);
+    let d = deps(w.env(), vec![Ok(stopped_header(pv(cores(connected(2)), Some(1), 0, 0)))]);
     let out = call("t32ctl read status --full --build elsewhere", &d);
-    let binding = "binding build=elsewhere (--build), profile=board/support/t32ctl/ (T32CTL_PROFILE), BOARD none\n";
+    let binding = "binding build=elsewhere (--build), profile from T32CTL_PROFILE, variant base (no BOARD)\n";
     assert!(out.text.contains(binding), "{}", out.text);
 }
 
 #[test]
 fn json_renders_the_same_report() {
     let w = World::new("json");
-    let out =
-        call("t32ctl read status --json", &deps(w.env(), vec![Ok(stopped_header(pv(connected(2), Some(1), 0, 0)))]));
+    let out = call(
+        "t32ctl read status --json",
+        &deps(w.env(), vec![Ok(stopped_header(pv(cores(connected(2)), Some(1), 0, 0)))]),
+    );
     let v: Value = serde_json::from_str(&out.text).unwrap();
     assert_eq!(v["schema"], "t32ctl.report/1");
     assert_eq!(v["command"], "read status");
@@ -198,6 +229,8 @@ fn json_renders_the_same_report() {
     assert_eq!(v["header"], serde_json::json!({"run": "stopped", "core": 0, "at": {"pc": "0x40083e10"}}));
     assert_eq!(v["body"]["kind"], "status");
     assert_eq!(v["body"]["pv"]["clients"], 1);
+    assert_eq!(v["body"]["target"]["cpu_check"], "match");
+    assert_eq!(v["body"]["profile"], serde_json::json!({"dir": "board/support/t32ctl/"}));
     assert!(v["body"].get("binding").is_none(), "--full members are absent without --full");
     assert_eq!(out.text.lines().count(), 1);
 }
@@ -235,15 +268,18 @@ fn journals_a_dead_call_left_are_replayed_and_reported_as_notices() {
         "rm-file\tLC:\\T\\t32ctl\tk/a.bin\nunwind\n",
     );
     let s = Script::new().attach().expect_fn("OS.FILE.readable(\"C:\\T\\t32ctl\\k\\a.bin\")").reply_bool(false);
-    let s = pv(s.expect_req(Request::TargetState).reply_state(2), Some(1), 0, 0);
+    let s = s.expect_req(Request::TargetState).reply_state(2).expect_fn("SYStem.CPU()").reply_text("CortexA53");
+    let s = pv(cores(s), Some(1), 0, 0);
     let out = call("t32ctl read status", &deps(w.env(), vec![Ok(stopped_header(s))]));
     assert_eq!(
         out.text,
-        "stopped core=0 pc=0x40083e10\n\
-         ! cleaned up after an interrupted call: 1 step\n\
-         ! residue: unwind PRACTICE stack (left by an earlier run); in PowerView type: END \
-         (END also closes every dialog and OPEN file)\n\
-         pv      build=168999 clients=1 practice=idle\n"
+        format!(
+            "stopped core=0 pc=0x40083e10\n\
+             ! cleaned up after an interrupted call: 1 step\n\
+             ! residue: unwind PRACTICE stack (left by an earlier run); in PowerView type: END \
+             (END also closes every dialog and OPEN file)\n\
+             {TARGET}pv      build=168999 clients=1 practice=idle\n"
+        )
     );
     assert_eq!(out.code, 0);
     assert!(!w.pv_dir().join("journal/t32ctl-1-1.undo").exists());
@@ -252,7 +288,7 @@ fn journals_a_dead_call_left_are_replayed_and_reported_as_notices() {
 #[test]
 fn a_refused_read_is_exit_2_and_the_header_still_prints() {
     let w = World::new("refused");
-    let s = connected(2)
+    let s = cores(connected(2))
         .expect_fn("SOFTWARE.BUILD()")
         .reply_decimal(168_999)
         .expect_fn("SOFTWARE.BUILD.BASE()")
@@ -335,4 +371,43 @@ fn a_broken_profile_stops_the_call_before_it_connects() {
         "error[profile-invalid]: board/support/t32ctl/profile.toml:5:9: target.cores = 0 is outside 1..=4294967295\n"
     );
     assert_eq!(out.code, 5);
+}
+
+#[test]
+fn read_status_reports_a_cpu_mismatch_as_a_notice_and_exits_0() {
+    let w = World::new("mismatch");
+    let s = stopped_header(pv(cores(connected_to(2, "CortexA72")), Some(1), 0, 0));
+    let out = call("t32ctl read status", &deps(w.env(), vec![Ok(s)]));
+    assert_eq!(
+        out.text,
+        "stopped core=0 pc=0x40083e10\n\
+         ! connected CPU CortexA72 is not the profile's CortexA53: every other command refuses\n\
+         target  acme_evb cpu=CortexA72 (profile: CortexA53, mismatch) cores=4\n\
+         profile board/support/t32ctl/\n\
+         pv      build=168999 clients=1 practice=idle\n"
+    );
+    assert_eq!(out.code, 0);
+    let s = stopped_header(pv(cores(connected_to(2, "cortexa53")), Some(1), 0, 0));
+    let out = call("t32ctl read status", &deps(w.env(), vec![Ok(s)]));
+    assert_eq!(out.text.lines().nth(1), Some("target  acme_evb cpu=cortexa53 (matches profile) cores=4"));
+}
+
+#[test]
+fn the_prelude_refuses_a_cpu_that_is_not_the_profiles_and_skips_the_check_while_down() {
+    let w = World::new("prelude");
+    let env = w.env();
+    let setup = Setup::resolve(&env, &Globals { json: false, build: None }).unwrap();
+    let conn = |script: Script| {
+        let d = deps(w.env(), vec![Ok(script)]);
+        let opts =
+            ConnectOpts { connector: Arc::clone(&d.connector), clock: Arc::clone(&d.clock), ..ConnectOpts::default() };
+        Conn::connect(&["127.0.0.1".to_string()], 20000, &opts).unwrap()
+    };
+    let mut c = conn(connected_to(2, "CortexA72"));
+    let e = c.prelude(&setup.pv_dir, &setup.profile, CpuCheck::Refuse).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::CpuMismatch);
+    assert_eq!(e.message, "connected CPU CortexA72 is not the profile's CortexA53");
+    assert_eq!(e.exit().code(), 5);
+    let mut c = conn(connected(0));
+    assert_eq!(c.prelude(&setup.pv_dir, &setup.profile, CpuCheck::Refuse), Ok(TargetState::Down));
 }

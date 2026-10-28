@@ -85,6 +85,7 @@ pub enum ErrorKind {
     RclLocked,
     Unreachable,
     NoAnswer,
+    CpuMismatch,
     ProfileInvalid,
     NoProfile,
     TargetPower,
@@ -96,13 +97,14 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// In the order of the error-tag table.
-    pub const ALL: [ErrorKind; 13] = [
+    pub const ALL: [ErrorKind; 14] = [
         ErrorKind::Usage,
         ErrorKind::Notation,
         ErrorKind::Refused,
         ErrorKind::RclLocked,
         ErrorKind::Unreachable,
         ErrorKind::NoAnswer,
+        ErrorKind::CpuMismatch,
         ErrorKind::ProfileInvalid,
         ErrorKind::NoProfile,
         ErrorKind::TargetPower,
@@ -120,6 +122,7 @@ impl ErrorKind {
             ErrorKind::RclLocked => "rcl-locked",
             ErrorKind::Unreachable => "unreachable",
             ErrorKind::NoAnswer => "no-answer",
+            ErrorKind::CpuMismatch => "cpu-mismatch",
             ErrorKind::ProfileInvalid => "profile-invalid",
             ErrorKind::NoProfile => "no-profile",
             ErrorKind::TargetPower => "target-power",
@@ -136,6 +139,7 @@ impl ErrorKind {
             ErrorKind::RclLocked => Exit::Wait,
             ErrorKind::Unreachable
             | ErrorKind::NoAnswer
+            | ErrorKind::CpuMismatch
             | ErrorKind::ProfileInvalid
             | ErrorKind::NoProfile
             | ErrorKind::TargetPower
@@ -157,6 +161,7 @@ impl ErrorKind {
             ErrorKind::RclLocked => "PowerView's API lock is held by another RCL client (status 123).",
             ErrorKind::Unreachable => "PowerView cannot be reached; the details name what to check.",
             ErrorKind::NoAnswer => "PowerView accepted TCP but does not answer: a modal dialog, or a blocking command.",
+            ErrorKind::CpuMismatch => "The connected CPU is not the profile's CPU: wrong board or wrong profile.",
             ErrorKind::ProfileInvalid => {
                 "A profile, binding, or config file has an error; file, line, and column are shown."
             }

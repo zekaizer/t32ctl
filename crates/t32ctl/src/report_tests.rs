@@ -6,8 +6,30 @@ fn pv(practice: Practice, depth: i64, clients: Option<i64>) -> PvStatus {
     PvStatus { build: 168_999, base: Some(166_414), clients, practice, depth }
 }
 
+fn target(cpu: &str, cpu_check: CpuMatch, cores: i64) -> TargetView {
+    TargetView {
+        name: "acme_evb".into(),
+        cpu: cpu.into(),
+        profile_cpu: "CortexA53".into(),
+        cpu_check,
+        cores,
+        profile_cores: 4,
+    }
+}
+
+fn profile() -> ProfileView {
+    ProfileView { dir: "boards/acme/acme_evb/support/t32ctl/".into(), hash: None, files: None }
+}
+
 fn status(pv: PvStatus) -> Body {
-    Body::Status(StatusBody { pv, binding: None, config: None, state_dir: None })
+    Body::Status(StatusBody {
+        target: target("CortexA53", CpuMatch::Match, 4),
+        profile: profile(),
+        pv,
+        binding: None,
+        config: None,
+        state_dir: None,
+    })
 }
 
 #[test]
@@ -20,6 +42,8 @@ fn a_status_report_prints_header_notices_and_body_in_order() {
         r.text(),
         "stopped core=0 pc=0x40083e10\n\
          ! cleaned up after an interrupted call: 2 steps\n\
+         target  acme_evb cpu=CortexA53 (matches profile) cores=4\n\
+         profile boards/acme/acme_evb/support/t32ctl/\n\
          pv      build=168999 clients=1 practice=idle\n"
     );
     assert_eq!(r.exit(), Exit::Ok);
@@ -29,7 +53,10 @@ fn a_status_report_prints_header_notices_and_body_in_order() {
             r#"{"schema":"t32ctl.report/1","command":"read status","exit":{"code":0,"class":"ok"},"#,
             r#""header":{"run":"stopped","core":0,"at":{"pc":"0x40083e10"}},"#,
             r#""notices":[{"text":"cleaned up after an interrupted call: 2 steps"}],"#,
-            r#""body":{"kind":"status","pv":{"build":168999,"base":166414,"clients":1,"practice":"idle","depth":0}},"#,
+            r#""body":{"kind":"status","target":{"name":"acme_evb","cpu":"CortexA53","profile_cpu":"CortexA53","#,
+            r#""cpu_check":"match","cores":4,"profile_cores":4},"#,
+            r#""profile":{"dir":"boards/acme/acme_evb/support/t32ctl/"},"#,
+            r#""pv":{"build":168999,"base":166414,"clients":1,"practice":"idle","depth":0}},"#,
             r#""truncated":null,"error":null,"next":[]}"#,
             "\n"
         )
@@ -55,19 +82,40 @@ fn headers_print_the_run_state_and_drop_what_powerview_refused() {
 
 #[test]
 fn the_pv_line_shows_unknown_clients_and_a_non_empty_stack() {
-    let line = |p: PvStatus| status(p).lines().join("\n");
+    let line = |p: PvStatus| status(p).lines()[2].clone();
     assert_eq!(line(pv(Practice::Halted, 1, None)), "pv      build=168999 clients=? practice=halted (depth 1)");
     assert_eq!(line(pv(Practice::Running, 2, Some(2))), "pv      build=168999 clients=2 practice=running (depth 2)");
     assert_eq!(line(pv(Practice::Other(7), 1, Some(1))), "pv      build=168999 clients=1 practice=state7 (depth 1)");
 }
 
 #[test]
-fn full_status_adds_binding_config_and_state_lines_before_pv() {
+fn the_target_line_says_whether_the_cpu_matches_and_shows_the_profiles_cores_when_they_differ() {
+    assert_eq!(target("CortexA53", CpuMatch::Match, 4).to_string(), "acme_evb cpu=CortexA53 (matches profile) cores=4");
+    assert_eq!(
+        target("CortexA72", CpuMatch::Mismatch, 2).to_string(),
+        "acme_evb cpu=CortexA72 (profile: CortexA53, mismatch) cores=2 (profile: 4)"
+    );
+    assert_eq!(
+        target("CortexA53", CpuMatch::Skipped, 4).to_string(),
+        "acme_evb cpu=CortexA53 (not checked while down) cores=4"
+    );
+    assert_eq!(
+        serde_json::to_string(&target("CortexA72", CpuMatch::Mismatch, 2)).unwrap(),
+        r#"{"name":"acme_evb","cpu":"CortexA72","profile_cpu":"CortexA53","cpu_check":"mismatch","cores":2,"profile_cores":4}"#
+    );
+    assert_eq!(serde_json::to_string(&CpuMatch::Skipped).unwrap(), r#""skipped""#);
+}
+
+#[test]
+fn full_status_adds_the_hash_binding_config_and_state_lines_before_pv() {
     let body = Body::Status(StatusBody {
+        target: target("CortexA53", CpuMatch::Match, 4),
+        profile: ProfileView { hash: Some("1c07e9b2".to_string() + &"0".repeat(56)), files: Some(6), ..profile() },
         pv: pv(Practice::Idle, 0, Some(1)),
         binding: Some(BindingView {
             build: Some(Sourced { path: "build".into(), source: "auto-detection: ./build/CMakeCache.txt".into() }),
-            profile: Some(Sourced { path: "boards/acme/support/t32ctl/".into(), source: "BOARD_DIR".into() }),
+            profile_from: "BOARD_DIR".into(),
+            variant: None,
             board: Some("acme_evb/a53".into()),
         }),
         config: Some(ConfigView {
@@ -81,25 +129,39 @@ fn full_status_adds_binding_config_and_state_lines_before_pv() {
     assert_eq!(
         body.lines(),
         [
-            "binding build=build (auto-detection: ./build/CMakeCache.txt), \
-             profile=boards/acme/support/t32ctl/ (BOARD_DIR), BOARD=acme_evb/a53",
+            "target  acme_evb cpu=CortexA53 (matches profile) cores=4",
+            "profile boards/acme/acme_evb/support/t32ctl/ profile=1c07e9b2 (6 files)",
+            "binding build=build (auto-detection: ./build/CMakeCache.txt), profile from BOARD_DIR, \
+             variant base (BOARD=acme_evb/a53)",
             "config  ~/.config/t32ctl/config.toml: host=auto (127.0.0.1) port=20000",
             "state   ~/.local/state/t32ctl/pv/auto-20000/",
             "pv      build=168999 clients=1 practice=idle",
         ]
     );
-    assert_eq!(
-        serde_json::to_string(&body).unwrap(),
-        concat!(
-            r#"{"kind":"status","pv":{"build":168999,"base":166414,"clients":1,"practice":"idle","depth":0},"#,
+    let json = serde_json::to_string(&body).unwrap();
+    assert!(
+        json.contains(&format!(
+            r#""profile":{{"dir":"boards/acme/acme_evb/support/t32ctl/","hash":"1c07e9b2{}","files":6}},"#,
+            "0".repeat(56)
+        )),
+        "{json}"
+    );
+    assert!(
+        json.ends_with(concat!(
             r#""binding":{"build":{"path":"build","source":"auto-detection: ./build/CMakeCache.txt"},"#,
-            r#""profile":{"path":"boards/acme/support/t32ctl/","source":"BOARD_DIR"},"board":"acme_evb/a53"},"#,
+            r#""profile_from":"BOARD_DIR","variant":null,"board":"acme_evb/a53"},"#,
             r#""config":{"file":"~/.config/t32ctl/config.toml","host":"auto","attached":"127.0.0.1","port":20000},"#,
             r#""state_dir":"~/.local/state/t32ctl/pv/auto-20000/"}"#
-        )
+        )),
+        "{json}"
     );
-    let bare = BindingView { build: None, profile: None, board: None };
-    assert_eq!(bare.to_string(), "build none, profile none, BOARD none");
+    let one = ProfileView { hash: Some("a".repeat(64)), files: Some(1), ..profile() };
+    assert_eq!(one.to_string(), "boards/acme/acme_evb/support/t32ctl/ profile=aaaaaaaa (1 file)");
+    let bare = BindingView { build: None, profile_from: "T32CTL_PROFILE".into(), variant: None, board: None };
+    assert_eq!(bare.to_string(), "build none, profile from T32CTL_PROFILE, variant base (no BOARD)");
+    let variant =
+        BindingView { variant: Some("acme_evb/a53/up".into()), board: Some("acme_evb/a53/up".into()), ..bare };
+    assert_eq!(variant.to_string(), "build none, profile from T32CTL_PROFILE, variant acme_evb/a53/up");
     let defaults = ConfigView { file: None, host: "10.0.0.2".into(), attached: Some("10.0.0.2".into()), port: 20001 };
     assert_eq!(defaults.to_string(), "none (defaults): host=10.0.0.2 port=20001");
 }

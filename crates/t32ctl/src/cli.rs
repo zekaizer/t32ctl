@@ -52,7 +52,8 @@ pub struct ReadCmd {
 
 #[derive(Debug, Subcommand)]
 pub enum ReadLeaf {
-    /// Header and PowerView; `--full` adds the binding, the config, and the state directory
+    /// Header, target and CPU check, profile, PowerView; `--full` adds `profile=<hash>`, the binding, the config,
+    /// and the state directory
     Status(ReadStatus),
     /// Static command schema
     Describe(ReadDescribe),
@@ -60,7 +61,7 @@ pub enum ReadLeaf {
 
 #[derive(Debug, Args)]
 pub struct ReadStatus {
-    /// Add the binding, the config, and the state directory
+    /// Add the profile hash, the binding, the config, and the state directory
     #[arg(long)]
     pub full: bool,
 }

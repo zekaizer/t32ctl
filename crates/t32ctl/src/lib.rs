@@ -25,7 +25,7 @@ use t32rcl::{CallBudget, Cancel, CancelReason, Clock, ConnectOpts, Connector, Sy
 use crate::{
     cli::{Globals, GradeCmd, Leaf, Parsed, ReadLeaf},
     config::{Binding, Config, Env, Paths},
-    ctx::{Conn, Ctx},
+    ctx::{Conn, CpuCheck, Ctx},
     error::{CtlError, ErrorKind},
     grade::{Grade, Read},
     profile::Profile,
@@ -73,7 +73,7 @@ pub fn run(argv: &[OsString], deps: &Deps) -> Output {
     };
     match cli.grade {
         GradeCmd::Read(g) => match &g.leaf {
-            ReadLeaf::Status(a) => connected::<Read, _>(a, &g.globals, deps, read::status),
+            ReadLeaf::Status(a) => connected::<Read, _>(a, &g.globals, deps, CpuCheck::Report, read::status),
             ReadLeaf::Describe(a) => document::<Read, _>(a, |a| describe::render(a.format)),
         },
     }
@@ -122,10 +122,16 @@ impl<'e> Setup<'e> {
 type LeafBody<L, G> = fn(&L, &mut Ctx<'_, G>, &Setup<'_>) -> Result<Body, CtlError>;
 
 /// A leaf that connects: the pipeline around its body, and one report whatever happens.
-fn connected<G: Grade, L: Leaf<G>>(args: &L, globals: &Globals, deps: &Deps, body: LeafBody<L, G>) -> Output {
+fn connected<G: Grade, L: Leaf<G>>(
+    args: &L,
+    globals: &Globals,
+    deps: &Deps,
+    check: CpuCheck,
+    body: LeafBody<L, G>,
+) -> Output {
     let mut report = Report::new(L::SPEC.path.join(" "));
     let mut conn = None;
-    match call(args, globals, deps, body, &mut conn) {
+    match call(args, globals, deps, check, body, &mut conn) {
         Ok(b) => report.body = Some(b),
         Err(e) => report.error = Some(e),
     }
@@ -140,6 +146,7 @@ fn call<G: Grade, L: Leaf<G>>(
     args: &L,
     globals: &Globals,
     deps: &Deps,
+    check: CpuCheck,
     body: LeafBody<L, G>,
     conn: &mut Option<Conn>,
 ) -> Result<Body, CtlError> {
@@ -159,8 +166,8 @@ fn call<G: Grade, L: Leaf<G>>(
         ..ConnectOpts::default()
     };
     let c = conn.insert(Conn::connect(&setup.config.hosts(&deps.env), setup.config.port, &opts)?);
-    let run = c.prelude(&setup.pv_dir)?;
-    body(args, &mut Ctx::new(c, run), &setup)
+    let run = c.prelude(&setup.pv_dir, &setup.profile, check)?;
+    body(args, &mut Ctx::new(c, run, &setup.profile), &setup)
 }
 
 #[cfg(test)]

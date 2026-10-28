@@ -133,6 +133,7 @@ fn every_tag_maps_to_its_exit_and_every_exit_has_a_code_and_a_next_step() {
             ("rcl-locked", 4),
             ("unreachable", 5),
             ("no-answer", 5),
+            ("cpu-mismatch", 5),
             ("profile-invalid", 5),
             ("no-profile", 5),
             ("target-power", 5),

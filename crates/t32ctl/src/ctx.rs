@@ -6,8 +6,9 @@
 //! A leaf cannot build its own context:
 //!
 //! ```compile_fail,E0624
-//! fn forge(conn: &mut t32ctl::ctx::Conn) -> t32ctl::ctx::Ctx<'_, t32ctl::grade::Raw> {
-//!     t32ctl::ctx::Ctx::new(conn, t32rcl::TargetState::Stopped)
+//! use t32ctl::{ctx::{Conn, Ctx}, grade::Raw, profile::Profile};
+//! fn forge<'c>(conn: &'c mut Conn, p: &'c Profile) -> Ctx<'c, Raw> {
+//!     Ctx::new(conn, t32rcl::TargetState::Stopped, p)
 //! }
 //! ```
 
@@ -19,8 +20,18 @@ use t32stage::{CleanupReport, ExistsFn, practice::fnc, replay_leftovers};
 use crate::{
     error::{Context, CtlError, ErrorKind, from_connect, from_rcl},
     grade::Grade,
-    report::{At, Header, Hex, Notice, Practice, PvStatus},
+    profile::Profile,
+    report::{At, CpuMatch, Header, Hex, Notice, Practice, PvStatus, TargetView},
 };
+
+/// What a call does when the connected CPU is not the profile's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CpuCheck {
+    /// `cpu-mismatch`: wrong board or wrong profile.
+    Refuse,
+    /// A notice; only `read status`, which shows both CPUs.
+    Report,
+}
 
 /// One PowerView connection for the length of a call.
 #[derive(Debug)]
@@ -28,6 +39,8 @@ pub struct Conn {
     session: Session,
     /// The candidate host that attached.
     host: String,
+    /// `SYStem.CPU()` as the prelude read it; `None` while the target is down.
+    cpu: Option<String>,
     notices: Vec<Notice>,
 }
 
@@ -37,7 +50,7 @@ impl Conn {
         let mut failed: Vec<ConnectError> = Vec::new();
         for host in hosts {
             match Session::connect(Endpoint::new(host, port), opts.clone()) {
-                Ok(session) => return Ok(Self { session, host: host.clone(), notices: Vec::new() }),
+                Ok(session) => return Ok(Self { session, host: host.clone(), cpu: None, notices: Vec::new() }),
                 Err(e @ ConnectError::Cancelled { .. }) => return Err(from_connect(&e)),
                 Err(e) => failed.push(e),
             }
@@ -55,11 +68,31 @@ impl Conn {
         Err(err)
     }
 
-    /// Replay the journals dead calls left in `pv_dir`, then read the run state.
-    pub(crate) fn prelude(&mut self, pv_dir: &Path) -> Result<TargetState, CtlError> {
+    /// Replay the journals dead calls left in `pv_dir`, read the run state, and unless the target
+    /// is down compare `SYStem.CPU()` with the profile's CPU.
+    pub(crate) fn prelude(
+        &mut self,
+        pv_dir: &Path,
+        profile: &Profile,
+        check: CpuCheck,
+    ) -> Result<TargetState, CtlError> {
         let replayed = replay_leftovers(&mut self.session, pv_dir, ExistsFn::OsFileReadable);
         self.notices.extend(replay_notices(&replayed));
-        self.session.target_state().map_err(|e| from_rcl(&e, Context::Read, "T32_GetState"))
+        let run = self.session.target_state().map_err(|e| from_rcl(&e, Context::Read, "T32_GetState"))?;
+        if run == TargetState::Down {
+            return Ok(run);
+        }
+        let cpu = system_cpu(&mut self.session, Context::Stage)?;
+        let want = &profile.target.cpu;
+        if !cpu.eq_ignore_ascii_case(want) {
+            let text = format!("connected CPU {cpu} is not the profile's {want}");
+            match check {
+                CpuCheck::Refuse => return Err(CtlError::new(ErrorKind::CpuMismatch, text)),
+                CpuCheck::Report => self.notices.push(Notice::new(format!("{text}: every other command refuses"))),
+            }
+        }
+        self.cpu = Some(cpu);
+        Ok(run)
     }
 
     /// Where the target is now, best effort: a refused or failed read shortens or drops it.
@@ -113,6 +146,12 @@ fn replay_notices(report: &CleanupReport) -> Vec<Notice> {
     v
 }
 
+fn system_cpu(s: &mut Session, context: Context) -> Result<String, CtlError> {
+    s.eval(fnc::SYSTEM_CPU)
+        .and_then(|v| v.into_text(fnc::SYSTEM_CPU))
+        .map_err(|e| from_rcl(&e, context, fnc::SYSTEM_CPU))
+}
+
 /// An address in any of the integer forms PowerView answers with.
 fn as_u64(v: FuncValue) -> Option<u64> {
     match v {
@@ -127,12 +166,13 @@ fn as_u64(v: FuncValue) -> Option<u64> {
 pub struct Ctx<'c, G: Grade> {
     conn: &'c mut Conn,
     run: TargetState,
+    profile: &'c Profile,
     _grade: PhantomData<G>,
 }
 
 impl<'c, G: Grade> Ctx<'c, G> {
-    pub(crate) fn new(conn: &'c mut Conn, run: TargetState) -> Self {
-        Self { conn, run, _grade: PhantomData }
+    pub(crate) fn new(conn: &'c mut Conn, run: TargetState, profile: &'c Profile) -> Self {
+        Self { conn, run, profile, _grade: PhantomData }
     }
 
     /// The run state the call found when it connected.
@@ -145,9 +185,28 @@ impl<'c, G: Grade> Ctx<'c, G> {
         &self.conn.host
     }
 
-    /// PowerView's build, RCL clients and PRACTICE state.
-    pub fn status(&mut self) -> Result<PvStatus, CtlError> {
+    /// The target against the profile, and PowerView's build, RCL clients and PRACTICE state.
+    /// While the target is down the prelude did not read the CPU, so this reads it for display.
+    pub fn status(&mut self) -> Result<(TargetView, PvStatus), CtlError> {
+        let t = &self.profile.target;
         let s = &mut self.conn.session;
+        let (cpu, cpu_check) = match &self.conn.cpu {
+            None => (system_cpu(s, Context::Read)?, CpuMatch::Skipped),
+            Some(c) if c.eq_ignore_ascii_case(&t.cpu) => (c.clone(), CpuMatch::Match),
+            Some(c) => (c.clone(), CpuMatch::Mismatch),
+        };
+        let cores = s
+            .eval(fnc::CORE_NUMBER)
+            .and_then(|v| v.into_int(fnc::CORE_NUMBER))
+            .map_err(|e| from_rcl(&e, Context::Read, fnc::CORE_NUMBER))?;
+        let target = TargetView {
+            name: t.name.clone(),
+            cpu,
+            profile_cpu: t.cpu.clone(),
+            cpu_check,
+            cores,
+            profile_cores: t.cores,
+        };
         let build = s.build().map_err(|e| from_rcl(&e, Context::Read, "SOFTWARE.BUILD()"))?;
         let clients = nr_used_cons(s)?;
         let state = s.practice_state().map_err(|e| from_rcl(&e, Context::Read, "T32_GetPracticeState"))?;
@@ -162,7 +221,7 @@ impl<'c, G: Grade> Ctx<'c, G> {
             PracticeState::Dialog => Practice::Dialog,
             PracticeState::Other(n) => Practice::Other(n),
         };
-        Ok(PvStatus { build: build.build, base: build.base, clients, practice, depth })
+        Ok((target, PvStatus { build: build.build, base: build.base, clients, practice, depth }))
     }
 }
 
