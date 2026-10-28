@@ -93,8 +93,8 @@ fn ms(d: Duration) -> String {
     format_value(&Value::Seconds(d.as_secs_f64()))
 }
 
-pub fn render_line(o: &Outcome, width: usize) -> String {
-    let prefix = format!("{:<12} {:<5} ", o.probe.name(), o.verdict.tag());
+/// Headline measurements, the reconnect, VM restores and the residue count, in line order.
+fn tokens(o: &Outcome) -> Vec<String> {
     let mut tokens: Vec<String> =
         o.measurements.iter().filter(|m| m.headline).map(|m| format!("{}={}", m.key, format_value(&m.value))).collect();
     if let Some(r) = &o.revive {
@@ -110,6 +110,14 @@ pub fn render_line(o: &Outcome, width: usize) -> String {
     if residue > 0 {
         tokens.push(format!("residue={residue}"));
     }
+    tokens
+}
+
+/// A line without tokens carries the error or skip reason itself; otherwise `render_extra` adds
+/// it below.
+pub fn render_line(o: &Outcome, width: usize) -> String {
+    let prefix = format!("{:<12} {:<5} ", o.probe.name(), o.verdict.tag());
+    let mut tokens = tokens(o);
     if tokens.is_empty() {
         if let Some(e) = &o.error {
             tokens = words(&e.message);
@@ -123,11 +131,10 @@ pub fn render_line(o: &Outcome, width: usize) -> String {
 /// `why:` and `hint:` for a failure; at most two lines.
 pub fn render_extra(o: &Outcome, width: usize) -> Vec<String> {
     let mut out = Vec::new();
-    let has_tokens = o.measurements.iter().any(|m| m.headline) || o.revive.is_some();
     if let Some(e) = &o.error
         && matches!(o.verdict, Verdict::Fail | Verdict::Unsupported | Verdict::Interrupted)
     {
-        if has_tokens {
+        if !tokens(o).is_empty() {
             out.push(fit("  why:".into(), words(&e.message), width));
         }
         if let Some(h) = &e.hint {
@@ -147,6 +154,7 @@ pub struct Config {
     pub keepalive: Option<String>,
     pub exists_fn: Option<String>,
     pub stage_root: Option<String>,
+    pub script_out: Option<String>,
 }
 
 fn find<'a>(outcomes: &'a [Outcome], probe: ProbeId, key: &str) -> Option<&'a Value> {
@@ -169,6 +177,7 @@ pub fn config(outcomes: &[Outcome]) -> Config {
         keepalive: find(outcomes, ProbeId::Keepalive, key::KEEPALIVE_INTERVAL).map(format_value),
         exists_fn: text(ProbeId::Tempdir, key::EXISTS),
         stage_root: text(ProbeId::Tempdir, key::ROOT),
+        script_out: text(ProbeId::ScriptLab, key::SCRIPT_OUT),
     }
 }
 
@@ -181,6 +190,7 @@ fn config_line(c: &Config) -> String {
         format!("keepalive={}", q(c.keepalive.clone())),
         format!("exists={}", q(c.exists_fn.clone())),
         format!("stage_root={}", q(c.stage_root.clone())),
+        format!("script_out={}", q(c.script_out.clone())),
     ];
     fit("config      ".into(), tokens, WIDTH)
 }
@@ -402,6 +412,20 @@ mod tests {
         });
         assert_eq!(line(&o), "connect      FAIL  pv:20000: connection refused");
         assert_eq!(render_extra(&o, WIDTH), ["  hint: PowerView not running"]);
+    }
+
+    #[test]
+    fn a_failure_with_only_restore_tokens_still_shows_its_message() {
+        let mut o = Outcome::new(ProbeId::Bundle, Verdict::Fail);
+        o.error = Some(ErrorRecord::new("remote", "command: PowerView refused: DO failed"));
+        o.cleanup.push(CleanupRecord {
+            what: format!("{} 0x01000000++0xFFF", t32stage::RESTORE_VM),
+            result: "clean".into(),
+            clean: true,
+            manual: None,
+        });
+        assert_eq!(line(&o), "bundle       FAIL  restore=ok");
+        assert_eq!(render_extra(&o, WIDTH), ["  why: command: PowerView refused: DO failed"]);
     }
 
     #[test]

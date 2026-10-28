@@ -263,6 +263,24 @@ fn remote_refusals_keep_the_session_live() {
 }
 
 #[test]
+fn stop_practice_returns_status_1_as_ok() {
+    let mut s = session(
+        Script::new()
+            .attach()
+            .expect_req(Request::Stop)
+            .reply_error(1, "")
+            .expect_req(Request::Stop)
+            .reply_ok()
+            .expect_req(Request::Stop)
+            .reply_error(2, ""),
+    );
+    assert_eq!(s.stop_practice().unwrap(), 1);
+    assert_eq!(s.stop_practice().unwrap(), 0);
+    assert_eq!(s.stop_practice().unwrap_err().remote().map(|e| e.code), Some(2));
+    assert_eq!(s.health(), Health::Live);
+}
+
+#[test]
 fn std_failed_on_a_memory_access_is_a_memory_access_refusal() {
     let mut s = session(
         Script::new()
@@ -342,6 +360,18 @@ fn eval_string_and_the_device_prompt() {
         |o| o.prompt = Some(DevicePrompt::parse("B::").unwrap()),
     );
     assert_eq!(s.eval_string("ERROR.MESSAGE()").unwrap(), "boom");
+}
+
+#[test]
+fn eval_last_string_reads_the_slot_without_eval() {
+    let mut s = session(Script::new().attach().expect_req(Request::EvalString).reply_string("t32q-ok"));
+    assert_eq!(s.eval_last_string().unwrap(), "t32q-ok");
+}
+
+#[test]
+fn macro_get_payload_returns_the_raw_pl_bytes() {
+    let mut s = session(Script::new().attach().expect_req(Request::MacroGet { name: "m".into() }).reply_macro("\"0\""));
+    assert_eq!(s.macro_get_payload(&MacroName::new("m").unwrap()).unwrap(), b"\0\0\"0\"");
 }
 
 #[test]

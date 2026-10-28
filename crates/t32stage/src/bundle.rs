@@ -254,13 +254,21 @@ fn snap(path: &str) -> String {
 
 /// PRACTICE text of the self-extracting script.
 ///
-/// ASSUMED(bundle): `IF` with a one-line body on the next line, `GOTO` to a label in the same
-/// file, `OPEN /Create /Binary` + `CLOSE` create an empty file, and macros set over EXP 2 are
-/// visible to a script. ASSUMED(script-error): `ON ERROR JUMPTO` catches a failing
-/// `Data.SAVE.Binary`. The syntax itself follows practice_ref (`IF`, `GOTO`, `ON`, `ENDDO`).
+/// ASSUMED(unpack-literal): `IF` with a one-line body on the next line, `GOTO` to a label in the
+/// same file, `OPEN /Create /Binary` + `CLOSE` create an empty file. ASSUMED(macro-visibility):
+/// macros set over EXP 2 are visible to a script. ASSUMED(script-error): `ON ERROR JUMPTO`
+/// catches a failing `Data.SAVE.Binary`. The syntax itself follows practice_ref (`IF`, `GOTO`,
+/// `ON`, `ENDDO`).
+///
+/// Nothing is written unless `&t32ctl_snap` is a non-empty absolute path: an empty or relative
+/// one would put every file in PowerView's working directory.
+/// ASSUMED(unpack-literal): `OS.FILE.ABSPATH` returns an absolute path unchanged.
 fn render_unpack(key: &SnapshotKey, layout: &Layout, b_start: u32) -> String {
     let (rc, msg, done, token) = (Macro::Rc.amp(), Macro::Msg.amp(), Macro::Done.amp(), Macro::Token.amp());
+    let snap_dir = Macro::Snap.amp();
     let mut s = format!("; t32ctl unpack v{FORMAT_VERSION} key={key}\nON ERROR JUMPTO t32ctl_unpack_failed\n");
+    s += &format!("IF \"{snap_dir}\"==\"\"\n  GOTO t32ctl_unpack_nosnap\n");
+    s += &format!("IF OS.FILE.ABSPATH(\"{snap_dir}\")!=\"{snap_dir}\"\n  GOTO t32ctl_unpack_nosnap\n");
     for d in &layout.dirs {
         s += &format!("IF OS.DIR({p})==FALSE()\n  MKDIR {p}\n", p = snap(d));
     }
@@ -274,6 +282,9 @@ fn render_unpack(key: &SnapshotKey, layout: &Layout, b_start: u32) -> String {
         s += &format!("IF OS.FILE.SIZE({p})!=0x{:08X}\n  GOTO t32ctl_unpack_badsize\n", e.len);
     }
     s += &format!("ON ERROR inherit\n{rc}=\"0\"\n{done}=\"{token}\"\nENDDO\n");
+    s += &format!(
+        "t32ctl_unpack_nosnap:\n{msg}=\"unpack: snapshot directory is empty or not absolute\"\nGOTO t32ctl_unpack_end\n"
+    );
     s += &format!("t32ctl_unpack_badsize:\n{msg}=\"unpack: size check failed\"\nGOTO t32ctl_unpack_end\n");
     s += &format!("t32ctl_unpack_failed:\n{msg}=\"unpack: PRACTICE error\"\n");
     s += &format!("t32ctl_unpack_end:\nON ERROR inherit\n{rc}=\"1\"\n{done}=\"{token}\"\nENDDO\n");
@@ -346,6 +357,32 @@ mod tests {
         for goto in text.lines().filter_map(|l| l.trim().strip_prefix("GOTO ")) {
             path_from(&text, goto);
         }
+    }
+
+    #[test]
+    fn unpack_writes_nothing_before_the_snapshot_guard() {
+        let text = sample(&FILES).pack(0x0200_0000).unpack_text;
+        let lines: Vec<&str> = text.lines().collect();
+        let guard = [
+            "IF \"&t32ctl_snap\"==\"\"",
+            "  GOTO t32ctl_unpack_nosnap",
+            "IF OS.FILE.ABSPATH(\"&t32ctl_snap\")!=\"&t32ctl_snap\"",
+            "  GOTO t32ctl_unpack_nosnap",
+        ];
+        let at = lines.windows(guard.len()).position(|w| w == guard).expect("the guard");
+        assert!(lines[..at].iter().any(|l| l.starts_with("ON ERROR JUMPTO ")), "the handler comes first");
+        let writes = |l: &&str| ["MKDIR", "Data.SAVE", "OPEN"].iter().any(|w| l.trim_start().starts_with(w));
+        let first_write = lines.iter().position(writes).expect("a write");
+        assert!(at < first_write, "guard at {at}, first write at {first_write}");
+    }
+
+    #[test]
+    fn the_nosnap_path_ends_with_rc_1_and_the_token() {
+        let text = sample(&FILES).pack(0x0200_0000).unpack_text;
+        let path = path_from(&text, "t32ctl_unpack_nosnap");
+        assert!(path.iter().any(|l| l.starts_with("&t32ctl_msg=\"unpack: snapshot directory")), "{path:?}");
+        assert!(path.contains(&"&t32ctl_rc=\"1\""), "{path:?}");
+        assert_eq!(path.last(), Some(&"&t32ctl_done=\"&t32ctl_token\""), "{path:?}");
     }
 
     fn gunzip(gz: &[u8]) -> Vec<u8> {

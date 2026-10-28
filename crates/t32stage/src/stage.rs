@@ -199,15 +199,26 @@ impl Stage {
 
         let transient = self.cfg.retention == Retention::Transient;
         let ledger = &mut self.ledger;
+        let mut fresh = false;
         transfer::ensure_dir(session, &dir.join(RESERVED_DIR)?, |p| {
+            fresh |= *p == dir;
             if transient { ledger.push(Undo::RemoveDir(p.clone())) } else { Ok(()) }
         })?;
         if transient {
             for d in packed.dirs.iter().filter(|d| d.as_str() != RESERVED_DIR) {
                 self.ledger.push(Undo::RemoveDir(dir.join(d)?))?;
             }
-            for f in packed.files.iter().map(RelPath::as_str).chain([UNPACK_PATH, MARKER_PATH]) {
-                self.ledger.push(Undo::RemoveFile(dir.join(f)?))?;
+            let generated = [UNPACK_PATH, MARKER_PATH].map(|p| RelPath::new(p).expect("constant path"));
+            for f in packed.files.iter().chain(&generated) {
+                self.ledger.push(Undo::RemoveFile(dir.join(f.as_str())?))?;
+                // A SAVE over an existing file leaves a `.bak` sibling while SETUP.BAKfile is on;
+                // only a directory that existed before holds files to overwrite.
+                // ASSUMED(fs-semantics): the sibling is named as `bak_candidates` predicts.
+                if !fresh {
+                    for bak in f.bak_candidates() {
+                        self.ledger.push(Undo::RemoveFile(dir.join(bak.as_str())?))?;
+                    }
+                }
             }
         }
 
@@ -215,10 +226,10 @@ impl Stage {
         let tmp = self.path(&format!("{key}.gz"))?;
         self.ledger.push(Undo::RemoveFile(tmp.clone()))?;
         transfer::put_file(session, &a, &packed.gz, &tmp)?;
-        session.cmd(&cmd::data_load_binary(&tmp, b.start(), true))?;
+        transfer::load_region(session, &tmp, b.start(), packed.raw_len, true)?;
         let unpack = dir.join(UNPACK_PATH)?;
         let script = b.slice(0, packed.unpack_len).ok_or(VmError::ZeroLength)?;
-        session.cmd(&cmd::data_save_binary(&unpack, &script, false))?;
+        transfer::save_region(session, &unpack, &script)?;
         session.cmd(&cmd::rm(&tmp))?;
 
         session.macro_set(&Macro::Snap.name(), &dir.text())?;
@@ -316,9 +327,9 @@ impl Stage {
                 self.ledger.push(Undo::RemoveFile(tmp.clone()))?;
                 let r = self.claim(session, &[gz.len() as u32, bytes.len() as u32])?;
                 transfer::put_file(session, &r[0], &gz, &tmp)?;
-                session.cmd(&cmd::data_load_binary(&tmp, r[1].start(), true))?;
+                transfer::load_region(session, &tmp, r[1].start(), bytes.len() as u32, true)?;
                 let plain = r[1].slice(0, bytes.len() as u32).ok_or(VmError::ZeroLength)?;
-                session.cmd(&cmd::data_save_binary(&dest, &plain, false))?;
+                transfer::save_region(session, &dest, &plain)?;
                 session.cmd(&cmd::rm(&tmp))?;
             }
         }
@@ -331,7 +342,9 @@ impl Stage {
     pub fn download(&mut self, session: &mut Session, src: &StagePath) -> Result<Vec<u8>, StageError> {
         let gz = src.root().path(RelPath::new(&format!("{}.gz", src.rel()))?);
         self.ledger.push(Undo::RemoveFile(gz.clone()))?;
-        session.cmd(&cmd::zip(src, &gz))?;
+        let src_len = transfer::file_size(session, src)?;
+        let budget = transfer::data_budget(session, src_len);
+        session.with_budget(budget).cmd(&cmd::zip(src, &gz))?;
         let len = transfer::file_size(session, &gz)?;
         let len = u32::try_from(len)
             .map_err(|_| VmError::WindowTooSmall { need: len, have: self.cfg.window.len().into() })?;
@@ -421,7 +434,7 @@ impl Stage {
         session.macro_set(&Macro::Done.name(), "")?;
         session.cmd(cmd::ERROR_RESET)?;
         self.ledger.push(Undo::UnwindPractice)?;
-        // ASSUMED(bundle): `DO` over ExecuteCommand returns while the script runs; if it returns
+        // ASSUMED(script-lab): `DO` over ExecuteCommand returns while the script runs; if it returns
         // at the end instead, the first poll sees the token and the outcome is the same.
         session.cmd(&cmd::do_script(script))?;
         let mut watch = ScriptWatch::new(timeout, self.cfg.poll, Instant::now());
@@ -494,7 +507,7 @@ fn finished(session: &mut Session) -> Result<RunOutcome, StageError> {
 }
 
 /// Best effort: a halt is reported even when the error text cannot be read.
-/// ASSUMED(script-error): `EVAL ERROR.MESSAGE()` + EvalGetString reads the halting error, the
+/// ASSUMED(script-halt): `EVAL ERROR.MESSAGE()` + EvalGetString reads the halting error, the
 /// way pyrcl reads `ERROR.*`.
 fn halt_error(session: &mut Session) -> Option<PracticeErrorInfo> {
     let message = session.eval_string(fnc::ERROR_MESSAGE).ok()?;

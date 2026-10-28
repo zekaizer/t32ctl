@@ -183,6 +183,11 @@ impl Session {
         self.link.as_mut().map(Link::take_trace).unwrap_or_default()
     }
 
+    /// The budget calls are made under now, a `with_budget` scope included.
+    pub fn budget(&self) -> CallBudget {
+        self.opts.budget
+    }
+
     /// Replace the call budget until the guard drops.
     pub fn with_budget(&mut self, budget: CallBudget) -> BudgetScope<'_> {
         let saved = std::mem::replace(&mut self.opts.budget, budget);
@@ -219,6 +224,12 @@ impl Session {
     /// functions (`_functions.py` `error_message`).
     pub fn eval_string(&mut self, expr: &str) -> Result<String> {
         self.cmd(&format!("EVAL {expr}"))?;
+        self.eval_last_string()
+    }
+
+    /// `T32_EvalGetString` alone: the string slot as the last evaluation left it, with no `EVAL`
+    /// sent first.
+    pub fn eval_last_string(&mut self) -> Result<String> {
         let reply = self.exchange(Op::EvalString, &req::eval_get_string())?;
         let result = resp::status(Op::EvalString, &reply)?;
         let (text, lossy) = wire::text(result);
@@ -233,11 +244,11 @@ impl Session {
     }
 
     /// `T32_Stop`: halt the running PRACTICE script, also out of a dialog wait. The script stays
-    /// on the PRACTICE stack; unwinding it is the caller's decision.
-    pub fn stop_practice(&mut self) -> Result<()> {
+    /// on the PRACTICE stack; unwinding it is the caller's decision. Returns the success status,
+    /// 0 or 1 (api_remote_c). ASSUMED(script-halt): this build answers within that range.
+    pub fn stop_practice(&mut self) -> Result<u8> {
         let reply = self.exchange(Op::Stop, &req::stop())?;
-        resp::status(Op::Stop, &reply)?;
-        Ok(())
+        Ok(resp::stop(&reply)?)
     }
 
     pub fn target_state(&mut self) -> Result<TargetState> {
@@ -277,7 +288,7 @@ impl Session {
     }
 
     pub fn macro_get(&mut self, name: &MacroName) -> Result<String> {
-        let payload = self.exp(Op::MacroGet, req::macro_get(name, self.opts.tuning.macro_spelling()))?;
+        let payload = self.macro_get_payload(name)?;
         match resp::macro_value(&payload) {
             Ok((value, lossy)) => {
                 self.note_lossy(lossy);
@@ -285,6 +296,11 @@ impl Session {
             }
             Err(v) => Err(self.violation(Op::MacroGet, v)),
         }
+    }
+
+    /// The `PL` bytes of an EXP 2 get as PowerView sent them, filler bytes and NULs included.
+    pub fn macro_get_payload(&mut self, name: &MacroName) -> Result<Vec<u8>> {
+        self.exp(Op::MacroGet, req::macro_get(name, self.opts.tuning.macro_spelling()))
     }
 
     pub fn macro_set(&mut self, name: &MacroName, value: &str) -> Result<()> {

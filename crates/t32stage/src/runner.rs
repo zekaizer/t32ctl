@@ -32,8 +32,8 @@ pub const RUNNER_VERSION: u32 = 1;
 /// PRACTICE text of `.t32ctl/runner.cmm`.
 ///
 /// ASSUMED(script-error): `ON ERROR JUMPTO` in the runner catches errors raised inside nested
-/// `DO` files and unwinds them; `ERROR.MESSAGE()` is assignable. ASSUMED(bundle): `ENTRY %LINE`
-/// after `DO` yields the callee's `ENDDO` value. Syntax per practice_ref (`DO`, `ENTRY`, `ON`).
+/// `DO` files and unwinds them; `ERROR.MESSAGE()` is assignable. ASSUMED(channel-out):
+/// `ENTRY %LINE` after `DO` yields the callee's `ENDDO` value. Syntax per practice_ref (`DO`, `ENTRY`, `ON`).
 pub fn runner_cmm() -> String {
     let m = |x: Macro| x.amp();
     format!(
@@ -165,6 +165,7 @@ pub(crate) enum IdleVerdict {
 
 /// Pure state machine over `GetPracticeState` samples; every method takes `now`.
 /// ASSUMED(dialog): a modal dialog reads as state 2 and `T32_Stop` ends the wait.
+/// ASSUMED(script-lab): a script in `WAIT` reads as running, not as idle with a non-empty stack.
 #[derive(Debug)]
 pub(crate) struct ScriptWatch {
     timeout: Duration,

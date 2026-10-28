@@ -11,17 +11,27 @@
 //! PRACTICE text written here, outside `t32stage::practice`, is probe-only: it measures how
 //! PowerView behaves and never becomes a Phase 1 code path.
 
+pub mod channels;
+pub mod files;
+pub mod functions;
+pub mod lab;
+pub mod macros;
 pub mod optin;
+pub mod scriptlab;
 pub mod scripts;
 pub mod storage;
+pub mod target;
 pub mod transport;
+pub mod unpack;
 
 use std::time::Duration;
 
-use t32rcl::{ErrorClass, Session};
+use t32rcl::{CallBudget, ErrorClass, MacroSpelling, RemoteError, Session};
 use t32stage::{
-    Bundle, BundleLimits, RelPath, RunReport, RunRequest, Snapshot, Stage, StageError, Undo, VmRegion, VmSnapshot,
-    practice::fnc,
+    Bundle, BundleLimits, RelPath, RunReport, RunRequest, Snapshot, Stage, StageError, StagePath, StageRoot, Undo,
+    VmRegion, VmSnapshot,
+    practice::{cmd, fnc},
+    transfer,
 };
 
 use crate::ctx::{ProbeCtx, ProbeFail};
@@ -85,6 +95,64 @@ pub(crate) fn nr_used_cons(session: &mut Session) -> Result<i64, t32rcl::Error> 
     Err(refused.expect("NR_USED_CONS is not empty"))
 }
 
+/// The tempdir rule: `--stage-root`, else `OS.PTD()\t32ctl`.
+pub(crate) fn stage_root(ctx: &mut ProbeCtx<'_>) -> Result<StageRoot, ProbeFail> {
+    if let Some(p) = &ctx.env.cfg.stage_root {
+        return Ok(StageRoot::new(p.clone()));
+    }
+    let ptd = ctx.session.eval(fnc::PTD)?.into_text(fnc::PTD)?;
+    StageRoot::from_ptd(&ptd).map_err(|e| ProbeFail::Check(format!("OS.PTD() gives no stage root: {e}")))
+}
+
+/// `<root>\probe-<run>-<tag>`, its removal registered before `MKDIR`. The root is created if
+/// missing and never removed. An existing directory is refused: it holds an earlier run's files.
+pub(crate) fn workdir(ctx: &mut ProbeCtx<'_>, root: &StageRoot, tag: &str) -> Result<StagePath, ProbeFail> {
+    transfer::ensure_root(ctx.session, root)?;
+    let dir = root.path(RelPath::new(&format!("probe-{}-{tag}", ctx.env.cfg.run_id))?);
+    let expr = fnc::dir_exists(&dir);
+    if ctx.session.eval(&expr)?.into_bool(&expr)? {
+        return Err(ProbeFail::Check(format!("work directory already exists: {dir}")));
+    }
+    ctx.push(Undo::RemoveDir(dir.clone()))?;
+    ctx.session.cmd(&cmd::mkdir(&dir))?;
+    if !ctx.session.eval(&expr)?.into_bool(&expr)? {
+        return Err(ProbeFail::Check(format!("MKDIR did not create {dir}")));
+    }
+    Ok(dir)
+}
+
+/// File names in a directory, not recursive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Listing {
+    /// Names after the last `\` or `/`; `first_raw` is the first answer as PowerView gave it.
+    Names {
+        names: Vec<String>,
+        first_raw: String,
+    },
+    Unavailable(String),
+}
+
+const LIST_MAX: usize = 1000;
+
+/// `OS.FIRSTFILE("<dir>\*")`, then `OS.NEXTFILE()` until the empty string (ide_func), at most
+/// `LIST_MAX` names, each call under a 3 s budget.
+pub(crate) fn list_dir(session: &mut Session, dir: &StagePath) -> Result<Listing, ProbeFail> {
+    let mut s = session.with_budget(CallBudget::idle(Duration::from_secs(3)).with_total(Duration::from_secs(3)));
+    let first = format!("OS.FIRSTFILE(\"{}\\*\")", dir.text());
+    let mut ask = |expr: &str| soft(s.eval(expr).and_then(|v| v.into_text(expr)));
+    let Some(mut name) = ask(&first)? else { return Ok(Listing::Unavailable(format!("{first} refused"))) };
+    let first_raw = name.clone();
+    let mut names = Vec::new();
+    while !name.is_empty() && names.len() < LIST_MAX {
+        names.push(name.rsplit(['\\', '/']).next().unwrap_or_default().to_string());
+        let Some(next) = ask("OS.NEXTFILE()")? else {
+            return Ok(Listing::Unavailable("OS.NEXTFILE() refused".into()));
+        };
+        name = next;
+    }
+    Ok(Listing::Names { names, first_raw })
+}
+
 pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -100,6 +168,43 @@ pub(crate) fn soft<T, E: Into<StageError>>(r: Result<T, E>) -> Result<Option<T>,
         Err(StageError::Journal { path, source }) => Err(ProbeFail::Stage(StageError::Journal { path, source })),
         Err(_) => Ok(None),
     }
+}
+
+/// Prefix of the macros a probe creates: `t32ctl_q<run>`. Their values carry the run id too, so
+/// an earlier run's leftovers never answer for this one.
+pub(crate) fn macro_prefix(run: &str) -> String {
+    format!("t32ctl_q{}", run.to_ascii_lowercase())
+}
+
+/// The `EC` code of a refused EXP call, else the status byte.
+fn exp_code(r: &RemoteError) -> String {
+    let ec = r.message.as_deref().and_then(|m| m.rsplit_once("EXP code ")).map(|(_, c)| c.trim_end_matches(')'));
+    ec.map_or_else(|| r.code.to_string(), str::to_string)
+}
+
+/// An EXP call under `spelling`, the tuning restored after it. A refusal is `Err("err<code>")`;
+/// a connection-fatal error aborts the probe.
+pub(crate) fn exp_as<T>(
+    ctx: &mut ProbeCtx<'_>,
+    spelling: MacroSpelling,
+    call: impl FnOnce(&mut Session) -> Result<T, t32rcl::Error>,
+) -> Result<Result<T, String>, ProbeFail> {
+    let base = ctx.session.tuning();
+    ctx.session.set_tuning(base.with_macro_spelling(spelling));
+    let r = call(ctx.session);
+    ctx.session.set_tuning(base);
+    match r {
+        Ok(v) => Ok(Ok(v)),
+        Err(e) => match e.remote() {
+            Some(remote) => Ok(Err(format!("err{}", exp_code(remote)))),
+            None => soft(Err::<T, _>(e)).map(|_| Err("err?".into())),
+        },
+    }
+}
+
+/// At most 16 characters of a value, for a headline token.
+pub(crate) fn short(v: &str) -> String {
+    v.chars().take(16).collect()
 }
 
 /// `ok` or `FAIL`, the two-valued result token of most checks.

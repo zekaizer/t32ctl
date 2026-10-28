@@ -74,6 +74,21 @@ impl RelPath {
         self.0.match_indices('/').map(|(i, _)| &self.0[..i])
     }
 
+    /// Where PowerView may keep the old content when a SAVE overwrites this file: the last
+    /// extension replaced by `.bak`, and the whole name plus `.bak`. Never the file itself.
+    pub fn bak_candidates(&self) -> Vec<RelPath> {
+        let name_at = self.0.rfind('/').map_or(0, |i| i + 1);
+        let stem = match self.0[name_at..].rfind('.') {
+            Some(dot) if dot > 0 => Some(&self.0[..name_at + dot]),
+            _ => None,
+        };
+        stem.into_iter()
+            .chain([self.0.as_str()])
+            .filter_map(|base| RelPath::new(&format!("{base}.bak")).ok())
+            .filter(|c| c != self)
+            .collect()
+    }
+
     /// ASCII case-folded form: two paths with the same fold collide on Windows.
     pub fn fold(&self) -> String {
         self.0.to_ascii_lowercase()
@@ -252,7 +267,7 @@ impl Symbol {
 
 /// Characters a script argument may contain besides ASCII letters and digits. Arguments travel
 /// unquoted in a macro value, are spliced into the runner's `DO` line and split by `ENTRY` at
-/// blanks. ASSUMED(script-error): none of them splits or changes an argument there (`,`
+/// blanks. ASSUMED(channel-in): none of them splits or changes an argument there (`,`
 /// separates parameters in some command formats, `/` starts an option); the probe passes each
 /// through `ENTRY` and compares. Widen only with that evidence.
 const ARG_SAFE: &[char] = &['_', '-', '.', '/', ':', '+', '=', ',', '@'];
@@ -395,6 +410,17 @@ mod tests {
 
     fn rel(s: &str) -> RelPath {
         RelPath::new(s).unwrap()
+    }
+
+    #[test]
+    fn bak_candidates_cover_both_naming_rules() {
+        let names = |p: &str| rel(p).bak_candidates().iter().map(|c| c.as_str().to_string()).collect::<Vec<_>>();
+        assert_eq!(names("main.cmm"), ["main.bak", "main.cmm.bak"]);
+        assert_eq!(names(".t32ctl/runner.cmm"), [".t32ctl/runner.bak", ".t32ctl/runner.cmm.bak"]);
+        assert_eq!(names("a.tar.gz"), ["a.tar.bak", "a.tar.gz.bak"]);
+        assert_eq!(names(".t32ctl/complete"), [".t32ctl/complete.bak"]);
+        assert_eq!(names("d.x/.hidden"), ["d.x/.hidden.bak"]);
+        assert_eq!(names("old.bak"), ["old.bak.bak"]);
     }
 
     #[test]
