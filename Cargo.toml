@@ -31,6 +31,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # SIGINT/SIGTERM into an AtomicBool without unsafe; a second Ctrl-C exits at once.
 signal-hook = "0.3"
+# t32ctl's connection config, binding file and board profiles (ADR 0002).
+toml = "1.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
