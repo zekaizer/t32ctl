@@ -295,6 +295,10 @@ fn remote_kind(op: Op, code: u8) -> RemoteKind {
             _ => RemoteKind::Other,
         };
     }
+    // Build 168999 refuses reads of the probe's untouched `VM:` window with STD_FAILED (issue #2).
+    if code == 113 && matches!(op, Op::MemRead | Op::MemWrite) {
+        return RemoteKind::MemoryAccess;
+    }
     STATUS_CODES.iter().find(|(c, ..)| *c == code).map_or(RemoteKind::Other, |(.., k)| *k)
 }
 

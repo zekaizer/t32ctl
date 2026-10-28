@@ -13,7 +13,7 @@ use t32stage::{
     practice::{cmd, fnc},
 };
 
-use super::{bundle_of, ok, run_entry, soft};
+use super::{bundle_of, nr_used_cons, ok, run_entry, soft};
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
     outcome::{SkipReason, Value},
@@ -54,7 +54,7 @@ fn latency_series(b: &mut Session, until: Instant) -> Result<Vec<Duration>, Prob
 pub fn multi_client(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let endpoint = ctx.env.endpoint.clone().unwrap_or_else(|| Endpoint::new(&ctx.env.cfg.hosts[0], ctx.env.cfg.port));
     let mut b = Session::connect(endpoint, ctx.env.connect_opts()).map_err(|e| ProbeFail::Rcl(e.into()))?;
-    let cons = soft(b.eval(fnc::NR_USED_CONS).and_then(|v| v.into_int(fnc::NR_USED_CONS)))?;
+    let cons = soft(nr_used_cons(&mut b))?;
     ctx.headline("cons", cons.map_or(Value::Text("?".into()), |n| Value::Count(n.max(0) as u64)));
     let mut idle = latency_series(&mut b, Instant::now() + Duration::from_secs(1))?;
     let idle = Stats::from_samples(&mut idle).expect("at least one sample");

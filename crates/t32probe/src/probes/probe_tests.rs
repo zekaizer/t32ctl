@@ -43,9 +43,33 @@ fn keepalive_reports_the_interval_from_frame_times() {
 }
 
 #[test]
+fn clients_counts_under_whichever_spelling_the_build_knows() {
+    let s = Script::new().attach().expect_fn("RCL.TCP.NrUsedCons()").reply_decimal(1);
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("probe-clients-bare");
+    let r = run(&mut env, &mut session, &[ProbeId::Clients.def()]);
+    assert_eq!(r.outcomes[0].verdict, Verdict::Pass, "{:?}", r.outcomes[0]);
+    assert_eq!(r.outcomes[0].lookup("NrUsedCons"), Some(&Value::Count(1)));
+
+    let s = Script::new()
+        .attach()
+        .expect_fn("RCL.TCP.NrUsedCons()")
+        .reply_function(0, "no function 'RCL.TCP.NRUSEDCONS' exists")
+        .expect_fn("api.RCL.TCP.NrUsedCons()")
+        .reply_decimal(2);
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("probe-clients-api");
+    let r = run(&mut env, &mut session, &[ProbeId::Clients.def()]);
+    assert_eq!(r.outcomes[0].verdict, Verdict::Pass, "{:?}", r.outcomes[0]);
+    assert_eq!(r.outcomes[0].lookup("NrUsedCons"), Some(&Value::Count(2)));
+}
+
+#[test]
 fn a_function_refused_on_an_old_build_is_unsupported_not_failed() {
     let s = Script::new()
         .attach()
+        .expect_fn("RCL.TCP.NrUsedCons()")
+        .reply_function(0, "unknown function")
         .expect_fn("api.RCL.TCP.NrUsedCons()")
         .reply_function(0, "unknown function")
         .expect_fn("SOFTWARE.BUILD()")
@@ -59,6 +83,8 @@ fn a_function_refused_on_an_old_build_is_unsupported_not_failed() {
 
     let s = Script::new()
         .attach()
+        .expect_fn("RCL.TCP.NrUsedCons()")
+        .reply_function(0, "unknown function")
         .expect_fn("api.RCL.TCP.NrUsedCons()")
         .reply_function(0, "unknown function")
         .expect_fn("SOFTWARE.BUILD()")

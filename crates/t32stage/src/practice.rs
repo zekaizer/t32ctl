@@ -399,7 +399,9 @@ pub mod fnc {
     pub const STACK_DEPTH: &str = "PRACTICE.StackDepth()";
     pub const ERROR_MESSAGE: &str = "ERROR.MESSAGE()";
     pub const ERROR_CMDLINE: &str = "ERROR.CMDLINE()";
-    pub const NR_USED_CONS: &str = "api.RCL.TCP.NrUsedCons()";
+    /// Spellings tried in order (ide_func). The bare one is deprecated but answers from DVD
+    /// 09/2022; the `api.` group starts at build 171257, so build 168999 refuses it.
+    pub const NR_USED_CONS: [&str; 2] = ["RCL.TCP.NrUsedCons()", "api.RCL.TCP.NrUsedCons()"];
 
     pub fn file_size(p: &StagePath) -> String {
         format!("OS.FILE.SIZE({})", p.quoted())

@@ -352,6 +352,16 @@ mod tests {
     }
 
     #[test]
+    fn a_unit_refused_with_std_failed_counts_as_uninitialized() {
+        // Build 168999 refuses reads of the probe's untouched `VM:` window with 113 (issue #2).
+        let mut s = read(Script::new().attach(), 0x1000_0000).reply_error(113, "");
+        s = read(s, 0x1000_1000).reply_mem(&[3; 4096]);
+        let mut session = connect(s);
+        let snap = VmSnapshot::capture(&mut session, region()).unwrap();
+        assert_eq!(snap.uninitialized(), 1);
+    }
+
+    #[test]
     fn the_manual_clear_is_one_command_per_run_of_uninitialized_units() {
         let mut s = read(Script::new().attach(), 0x1000_0000).reply_error(16, "");
         s = read(s, 0x1000_1000).reply_mem(&[1; 4096]);

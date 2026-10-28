@@ -263,6 +263,24 @@ fn remote_refusals_keep_the_session_live() {
 }
 
 #[test]
+fn std_failed_on_a_memory_access_is_a_memory_access_refusal() {
+    let mut s = session(
+        Script::new()
+            .attach()
+            .expect(Expect::Any)
+            .reply_error(113, "")
+            .expect(Expect::Any)
+            .reply_error(113, "")
+            .expect_cmd("NOPE")
+            .reply_error(113, ""),
+    );
+    let kind = |r: Result<()>| r.unwrap_err().remote().map(|e| e.kind);
+    assert_eq!(kind(s.mem_read(&MemAddr::vm(0), 4).map(drop)), Some(RemoteKind::MemoryAccess));
+    assert_eq!(kind(s.mem_write(&MemAddr::vm(0), &[1])), Some(RemoteKind::MemoryAccess));
+    assert_eq!(kind(s.cmd("NOPE")), Some(RemoteKind::Other));
+}
+
+#[test]
 fn a_failed_exp_call_with_a_status_byte_keeps_its_exp_code_and_message() {
     let mut s = session(
         Script::new()

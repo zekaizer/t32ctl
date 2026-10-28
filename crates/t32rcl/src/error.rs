@@ -116,7 +116,7 @@ pub enum RemoteKind {
     CommandFailed,
     /// Status 90 on ExecuteFunction, or result type 0.
     FunctionFailed,
-    /// Status 90 on a memory object access, or 6/15/16/22.
+    /// Status 90 or 113 on a memory object access, or 6/15/16/22.
     MemoryAccess,
     /// Running, not running, reset, core not active, debug port failures.
     TargetState,
