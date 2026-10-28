@@ -245,7 +245,7 @@ impl Session {
 
     /// `T32_Stop`: halt the running PRACTICE script, also out of a dialog wait. The script stays
     /// on the PRACTICE stack; unwinding it is the caller's decision. Returns the success status,
-    /// 0 or 1.
+    /// 0 or 1 (api_remote_c). ASSUMED(script-halt): this build answers within that range.
     pub fn stop_practice(&mut self) -> Result<u8> {
         let reply = self.exchange(Op::Stop, &req::stop())?;
         Ok(resp::stop(&reply)?)

@@ -434,7 +434,7 @@ impl Stage {
         session.macro_set(&Macro::Done.name(), "")?;
         session.cmd(cmd::ERROR_RESET)?;
         self.ledger.push(Undo::UnwindPractice)?;
-        // ASSUMED(bundle): `DO` over ExecuteCommand returns while the script runs; if it returns
+        // ASSUMED(script-lab): `DO` over ExecuteCommand returns while the script runs; if it returns
         // at the end instead, the first poll sees the token and the outcome is the same.
         session.cmd(&cmd::do_script(script))?;
         let mut watch = ScriptWatch::new(timeout, self.cfg.poll, Instant::now());
@@ -507,7 +507,7 @@ fn finished(session: &mut Session) -> Result<RunOutcome, StageError> {
 }
 
 /// Best effort: a halt is reported even when the error text cannot be read.
-/// ASSUMED(script-error): `EVAL ERROR.MESSAGE()` + EvalGetString reads the halting error, the
+/// ASSUMED(script-halt): `EVAL ERROR.MESSAGE()` + EvalGetString reads the halting error, the
 /// way pyrcl reads `ERROR.*`.
 fn halt_error(session: &mut Session) -> Option<PracticeErrorInfo> {
     let message = session.eval_string(fnc::ERROR_MESSAGE).ok()?;

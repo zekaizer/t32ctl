@@ -254,10 +254,11 @@ fn snap(path: &str) -> String {
 
 /// PRACTICE text of the self-extracting script.
 ///
-/// ASSUMED(bundle): `IF` with a one-line body on the next line, `GOTO` to a label in the same
-/// file, `OPEN /Create /Binary` + `CLOSE` create an empty file, and macros set over EXP 2 are
-/// visible to a script. ASSUMED(script-error): `ON ERROR JUMPTO` catches a failing
-/// `Data.SAVE.Binary`. The syntax itself follows practice_ref (`IF`, `GOTO`, `ON`, `ENDDO`).
+/// ASSUMED(unpack-literal): `IF` with a one-line body on the next line, `GOTO` to a label in the
+/// same file, `OPEN /Create /Binary` + `CLOSE` create an empty file. ASSUMED(macro-visibility):
+/// macros set over EXP 2 are visible to a script. ASSUMED(script-error): `ON ERROR JUMPTO`
+/// catches a failing `Data.SAVE.Binary`. The syntax itself follows practice_ref (`IF`, `GOTO`,
+/// `ON`, `ENDDO`).
 ///
 /// Nothing is written unless `&t32ctl_snap` is a non-empty absolute path: an empty or relative
 /// one would put every file in PowerView's working directory.

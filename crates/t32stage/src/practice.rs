@@ -267,7 +267,7 @@ impl Symbol {
 
 /// Characters a script argument may contain besides ASCII letters and digits. Arguments travel
 /// unquoted in a macro value, are spliced into the runner's `DO` line and split by `ENTRY` at
-/// blanks. ASSUMED(script-error): none of them splits or changes an argument there (`,`
+/// blanks. ASSUMED(channel-in): none of them splits or changes an argument there (`,`
 /// separates parameters in some command formats, `/` starts an option); the probe passes each
 /// through `ENTRY` and compares. Widen only with that evidence.
 const ARG_SAFE: &[char] = &['_', '-', '.', '/', ':', '+', '=', ',', '@'];
