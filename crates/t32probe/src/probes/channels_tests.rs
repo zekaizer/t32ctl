@@ -29,7 +29,8 @@ pub(crate) fn s3_cases() -> Vec<(&'static str, Vec<Case>, Vec<Sub>)> {
     let (cases, subs) = in_cases(&dir("in"));
     let (out, out_subs) = out_cases();
     let (vis, vis_subs) = crate::probes::macros::vis_cases();
-    vec![("in", cases, subs), ("out", out, out_subs), ("vis", vis, vis_subs)]
+    let (ret, ret_subs) = crate::probes::macros::ret_cases();
+    vec![("in", cases, subs), ("out", out, out_subs), ("vis", vis, vis_subs), ("ret", ret, ret_subs)]
 }
 
 fn fill_with_large(tag: &str) -> Fill {

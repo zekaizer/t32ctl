@@ -541,6 +541,11 @@ impl LabWatch {
         self.hold_run = None;
     }
 
+    /// The script was continued: a halt has to hold again from the next sample.
+    pub fn resumed(&mut self) {
+        self.hold_run = None;
+    }
+
     fn close_dip(&mut self, now: Instant) {
         if let Some(t) = self.dip.take() {
             self.dips += 1;
@@ -1149,6 +1154,12 @@ impl Lab {
         let r = ctx.session.stop_practice();
         let took = ctx.session.now().saturating_duration_since(t);
         Ok((stop_token(r)?, took))
+    }
+
+    /// `CONTinue` (practice_ref) a halted script; `false` when PowerView refused it.
+    pub fn cont(&mut self, ctx: &mut ProbeCtx<'_>, run: &mut Run) -> Result<bool, ProbeFail> {
+        run.watch.resumed();
+        Ok(soft(ctx.session.cmd("CONTinue"))?.is_some())
     }
 
     /// `END` while the stack is not empty, at most `max` times; the depth left.

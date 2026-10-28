@@ -505,4 +505,4 @@ fn rcl_tokens(ctx: &mut ProbeCtx<'_>, key: &str, d: Option<&During>) {
 
 #[cfg(test)]
 #[path = "scriptlab_tests.rs"]
-mod scriptlab_tests;
+pub(crate) mod scriptlab_tests;
