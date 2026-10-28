@@ -86,6 +86,55 @@ fn a_closed_port_is_unreachable_exit_5() {
     assert!(t.0.join(format!("home/.local/state/t32ctl/pv/127.0.0.1-{port}")).is_dir());
 }
 
+/// Started with SIGHUP ignored (`nohup`), a closed terminal does not cancel the call; SIGTERM still
+/// does.
+#[test]
+fn an_ignored_sighup_stays_ignored() {
+    let t = Temp::new("nohup");
+    let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+    connect_to(&t, l.local_addr().expect("addr").port());
+    let inner = command(&t, &["read", "status"]);
+    let mut nohup = Command::new("nohup");
+    nohup.arg(inner.get_program()).args(inner.get_args()).env_clear();
+    for (k, v) in inner.get_envs() {
+        if let Some(v) = v {
+            nohup.env(k, v);
+        }
+    }
+    nohup.current_dir(inner.get_current_dir().expect("a workspace"));
+    let mut child = nohup.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("nohup t32ctl starts");
+    let (mut peer, _) = l.accept().expect("t32ctl connects");
+    let mut attach = [0u8; 64];
+    let _ = peer.read(&mut attach);
+    let pid = child.id().to_string();
+    let kill = |sig: &str| {
+        let sent = Command::new("kill").args([&format!("-{sig}"), &pid]).status();
+        assert!(sent.expect("kill runs").success());
+    };
+    kill("HUP");
+    thread::sleep(Duration::from_millis(500));
+    let alive = child.try_wait().expect("wait").is_none();
+    if alive {
+        kill("TERM");
+    }
+    let give_up = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait") {
+            break status;
+        }
+        if Instant::now() > give_up {
+            let _ = child.kill();
+            panic!("t32ctl still runs 10 s after SIGTERM");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let mut text = String::new();
+    child.stdout.take().expect("piped").read_to_string(&mut text).expect("utf-8 report");
+    assert!(alive, "SIGHUP ended the call: {text}");
+    assert!(text.starts_with("error[interrupted]: "), "{text}");
+    assert_eq!(status.code(), Some(130), "{text}");
+}
+
 /// SIGINT, SIGTERM and SIGHUP (a closed terminal) cancel the call the same way: the report, exit 130.
 #[test]
 fn a_signal_during_attach_is_interrupted_exit_130() {

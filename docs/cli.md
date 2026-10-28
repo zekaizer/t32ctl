@@ -874,7 +874,7 @@ mismatch instead of refusing.
 SIGINT, SIGTERM and SIGHUP (a closed terminal) set a flag that reaches the session through
 `t32rcl`'s `Cancel`. The first one cancels the call in flight, runs cleanup under a fresh 30 s
 deadline that the flag does not cancel, reports `error[interrupted]` with what was cleaned up, and
-exits 130. A second one exits at once.
+exits 130. A second one exits at once. A SIGHUP the caller ignored (`nohup`) stays ignored.
 
 Planned between these steps: `inflight/<pid>.lock` and `call.lock` after the profile; the lease
 check under `state.lock`; the dead calls' intents and the fingerprint after connecting; the
