@@ -542,7 +542,7 @@ as the purpose of a lease, the hint is omitted and the message says it in prose.
 | After | Hints |
 |---|---|
 | `grade-mismatch` | the same procedure call under its declared grade, with the caller's parameters and `--build` |
-| `target-down` | `t32ctl <grade> proc attach`, when the profile declares `attach` without a required parameter |
+| `target-down` | `t32ctl <grade> proc attach` with the caller's `--build`, when the profile declares `attach` without a required parameter |
 
 Planned hints, with the commands they name; when the caller passed a valid `--lease` token, every
 hint will carry it, so the holder can paste a hint as is:

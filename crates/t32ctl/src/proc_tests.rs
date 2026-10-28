@@ -255,6 +255,24 @@ fn the_grade_word_must_be_the_declared_grade_and_the_hint_keeps_the_parameters()
 }
 
 #[test]
+fn the_grade_mismatch_hint_keeps_a_build_clap_took_before_the_parameters() {
+    let w = with_procs("proc-grade-build");
+    for (line, next) in [
+        ("t32ctl read proc flash --build bld --part user", "t32ctl burn proc flash --part user --build bld"),
+        ("t32ctl read --build bld proc flash", "t32ctl burn proc flash --build bld"),
+        ("t32ctl read --build bld proc flash --part user", "t32ctl burn proc flash --part user --build bld"),
+    ] {
+        let out = call(line, &deps(w.env(), vec![]));
+        assert_eq!(
+            (out.text.lines().last(), out.code),
+            (Some(format!("next: {next}").as_str()), 2),
+            "{line}\n{}",
+            out.text
+        );
+    }
+}
+
+#[test]
 fn parameters_that_do_not_match_the_declaration_are_proc_params_before_connecting() {
     let w = with_procs("proc-params");
     w.write("ws/empty.bin", "");
@@ -519,6 +537,10 @@ fn a_target_down_error_hints_the_boards_attach_procedure() {
         out.text,
         "down\nerror[target-down]: the target is down: registers need an attached target\nnext: t32ctl run proc attach\n"
     );
+    let down = Script::new().attach().expect_req(Request::TargetState).reply_state(0);
+    let down = down.expect_req(Request::TargetState).reply_state(0);
+    let out = call("t32ctl read reg pc --build bld", &deps(w.env(), vec![Ok(down)]));
+    assert_eq!(out.text.lines().last(), Some("next: t32ctl run proc attach --build bld"));
 }
 
 #[test]

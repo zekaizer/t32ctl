@@ -91,6 +91,8 @@ pub fn list(args: &ReadProcs, setup: &Setup<'_>) -> Result<Body, CtlError> {
 pub struct ProcCall {
     pub params: Vec<(String, String)>,
     pub json: bool,
+    /// The caller's `--build`: `split` takes it after the name, `procedure` adds the one clap took
+    /// before it. Hints repeat it.
     pub build: Option<PathBuf>,
     pub help: bool,
     /// Tokens that are not a pair, each as a message.

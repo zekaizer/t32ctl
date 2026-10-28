@@ -22,7 +22,13 @@ pub mod read;
 pub mod report;
 pub mod script;
 
-use std::{ffi::OsString, fs, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use t32rcl::{CallBudget, Cancel, CancelReason, Clock, ConnectOpts, Connector, SystemClock, TcpConnector};
 use t32stage::{ExistsFn, PollSchedule, Retention, StageConfig, VmGuard};
@@ -144,9 +150,9 @@ fn procedure<G: Grade>(args: &ProcArgs, globals: &Globals, deps: &Deps) -> Outpu
 where
     ProcArgs: Leaf<G>,
 {
-    let call = procs::split(&args.tokens);
-    let globals =
-        Globals { json: globals.json || call.json, build: call.build.clone().or_else(|| globals.build.clone()) };
+    let mut call = procs::split(&args.tokens);
+    call.build = call.build.or_else(|| globals.build.clone());
+    let globals = Globals { json: globals.json || call.json, build: call.build.clone() };
     if call.help {
         return offline::<G, _>(args, &globals, deps, |a, setup| procs::help(&a.name, setup));
     }
@@ -269,14 +275,19 @@ fn stage_config(setup: &Setup<'_>, deps: &Deps, path: &[&str]) -> StageConfig {
     }
 }
 
-/// After `target-down`, the board's `attach` procedure when it takes no required parameter.
-fn attach_hint(e: CtlError, profile: &Profile) -> CtlError {
+/// After `target-down`, the board's `attach` procedure when it takes no required parameter, with
+/// the caller's `--build`: the build may select the profile.
+fn attach_hint(e: CtlError, profile: &Profile, build: Option<&Path>) -> CtlError {
     if e.kind != ErrorKind::TargetDown || !e.next.is_empty() {
         return e;
     }
     match (profile.proc("attach"), effective_grade(profile, "attach")) {
         (Some(attach), Some(grade)) if attach.params.iter().all(|p| !p.required()) => {
-            e.with_next(vec![Hint(vec![grade.name().into(), "proc".into(), "attach".into()])])
+            let mut words = vec![grade.name().to_string(), "proc".into(), "attach".into()];
+            if let Some(b) = build {
+                words.extend(["--build".to_string(), b.to_string_lossy().into_owned()]);
+            }
+            e.with_next(vec![Hint(words)])
         }
         _ => e,
     }
@@ -312,7 +323,8 @@ fn call<G: Grade, L: Leaf<G>, P>(
     #[cfg(test)]
     c.set_stage_token(deps.stage_token.clone());
     let run = c.prelude(&setup.pv_dir, &setup.profile, check(&prepared))?;
-    body(args, prepared, &mut Ctx::new(c, run, &setup.profile), &setup).map_err(|e| attach_hint(e, &setup.profile))
+    body(args, prepared, &mut Ctx::new(c, run, &setup.profile), &setup)
+        .map_err(|e| attach_hint(e, &setup.profile, globals.build.as_deref()))
 }
 
 #[cfg(test)]
