@@ -211,12 +211,15 @@ fn macro_names(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
 /// ASSUMED(bundle): `ENTRY %LINE` after `DO` yields the callee's `ENDDO` value, as in the runner.
 const MAIN: &str = "GLOBAL &t32ctl_probe_main\n&t32ctl_probe_main=\"main-ran\"\nLOCAL &r\n\
                     DO \"~~~~/sub/b.cmm\"\nENTRY %LINE &r\nENDDO &r\n";
-/// `OS.PresentPracticeDirectory()` is the function form ide_ref documents (`Eval.GOSUB`); `~~~~` is
-/// documented only in `DO`/`GOSUB` parameters. The values go through macros because `ENDDO` hands
-/// its caller the unevaluated text (alpha.6), and a mismatch returns them.
-const SUB_B: &str = "&ppd=OS.PresentPracticeDirectory()\n\
-                     &size=OS.FILE.SIZE(OS.PresentPracticeDirectory()+\"\\deep\\data.bin\")\n\
-                     IF &size!=4097.\n  ENDDO \"size-mismatch ppd=&ppd size=&size\"\n\
+/// The file is named through a macro: in alpha.7 `OS.FILE.SIZE(OS.PresentPracticeDirectory()+...)`
+/// answered 0 for a file the client read at 4097 bytes. On a mismatch the script also returns the
+/// `~~~~` and the expression forms, computed into macros because `ENDDO` hands back text.
+const SUB_B: &str = "&p=OS.PresentPracticeDirectory()+\"\\deep\\data.bin\"\n\
+                     &size=OS.FILE.SIZE(\"&p\")\n\
+                     IF &size!=4097.\n(\n\
+                     \x20 &tilde=OS.FILE.SIZE(\"~~~~\\deep\\data.bin\")\n\
+                     \x20 &expr=OS.FILE.SIZE(OS.PresentPracticeDirectory()+\"\\deep\\data.bin\")\n\
+                     \x20 ENDDO \"size-mismatch p=&p size=&size tilde=&tilde expr=&expr\"\n)\n\
                      WAIT 1.s\nDO \"~~~~/deep/c.cmm\"\nENDDO \"chain-ok\"\n";
 /// Proves the end of the chain ran in this run: the client compares the global with the token.
 const SUB_C: &str = "GLOBAL &t32ctl_probe_deep\n&t32ctl_probe_deep=\"&t32ctl_token\"\nWAIT 1.s\nENDDO\n";
