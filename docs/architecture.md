@@ -182,6 +182,10 @@ socket smoke tests against the static musl binary.
 `t32ctl` runs whole calls in-process through its library entry point against the same scripted
 transport, with `t32stage::testkit` for scripted stage conversations (snapshot, runner, outputs),
 so every exit code and report line of the MVP commands is tested without PowerView.
+`crates/t32ctl/tests/docs.rs` keeps the documentation honest: the generated blocks equal the
+binary's output, every documented command line parses or names a planned command, the planned
+table is disjoint from the binary, the example config, binding file, and profile load, and the
+`transcript: mvp` blocks equal rendered reports.
 
 Probe bodies are tested where a script of reasonable size can drive their decisions: `connect`
 (smoke tests), `version`, `clients`, `keepalive`, `reconnect`, `tempdir`, `macro`, the `vm-rw`

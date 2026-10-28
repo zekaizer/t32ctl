@@ -287,9 +287,10 @@ repository script is text an agent can write. Before the approval, the agent say
 sentence what the script does and what it changes: it writes test patterns into the `0x100000`
 bytes of DDR at `0x40000000` and logs the result into `stress.log`.
 
+<!-- transcript: mvp -->
 ```console
 $ t32ctl raw script tools/t32/ddr_stress.cmm -- 0x40000000 0x100000
-e23 stopped core=0 pc=0x40085c40 sym=scan_step+0x2c src=src/scan.c:118
+stopped core=0 pc=0x40085c40
 script tools/t32/ddr_stress.cmm (bundle tools/t32, 6 files, cached)
 result: halted by a PRACTICE error after 3.2s
   message: memory access failed at A:0x40000400
@@ -301,10 +302,9 @@ outputs: ~/.local/state/t32ctl/out/s-0b91/ (1 file)
 ```
 
 The script ran and failed, so the class is outcome (1), not fix (2): the agent reads
-`stress.log`, not the command line. The epoch moved (e22 to e23) although the PC did not: a
-`write`, `sys`, `burn` or `raw` command always bumps it, because it may have changed memory. A
-script that opens a dialog ends with exit 5 (`error[dialog]`) instead, because only the operator
-can close a PowerView window.
+`stress.log`, not the command line. The output file came back although the script halted: t32ctl
+fetches the outputs after every result. A script that opens a dialog ends with exit 5
+(`error[dialog]`) instead, because only the operator can close a PowerView window.
 
 ## 5. A procedure under the wrong grade
 
@@ -313,20 +313,23 @@ Status: MVP.
 The agent wants to reset the board. It copies the shape of `t32ctl run proc attach` from earlier
 in its context.
 
+<!-- transcript: mvp -->
 ```console
 $ t32ctl run proc reset
-e23 stopped core=0 pc=0x40085c40 sym=scan_step+0x2c src=src/scan.c:118
-error[grade-mismatch]: procedure reset is declared write in the board profile; the grade word
-  must be write
+error[grade-mismatch]: proc reset runs at grade write, not run
 next: t32ctl write proc reset
 [exit 2]
 ```
 
+The grade check needs only the profile, so the call never connected and printed no header.
+
+<!-- transcript: mvp -->
 ```console
 $ t32ctl write proc reset
-e24 stopped core=0 pc=0x00000000
+stopped core=0 pc=0x0
 proc reset (profile=1c07e9b2, 6 files, cached)
 result: finished rc=0 after 1.9s
+outputs: none
 [exit 0]
 ```
 
@@ -438,57 +441,49 @@ previous lease is exit 2 `unknown-lease`. A token that is dead or missing never 
 
 Status: MVP, without the lease, `run symbols`, and `run go`, which are planned.
 
-The agent rebuilt the application. The board boots from eMMC, and PowerView still holds the
-symbols of the previous build (`elf=stale`). The flash procedure needs the lease, so the agent
-finds that first, then takes the lease for the whole sequence and tells its human that the flash
-and the reset will each ask for an approval.
+The agent rebuilt the application, and the board boots from eMMC. It finds the flash procedure and
+its parameters first, and tells its human that the flash and the reset will each ask for an
+approval.
 
+<!-- transcript: mvp -->
 ```console
 $ t32ctl read procs flash
-proc     flash  grade burn  lease required  timeout 45m
+proc     flash  grade burn  timeout 45m
 about    Write an image into eMMC and verify it by readback
 params   --image FILE      image to write (default: {build}/zephyr/zephyr.bin)
          --part ENUM       eMMC hardware partition: boot0, boot1, user (default: user)
          --offset INTEGER  byte offset inside the partition, at least 0 (default: 0)
 outputs  verify.log
+effects  flash, target-reset, target-memory, target-registers
 profile  boards/acme/acme_evb/support/t32ctl/ profile=1c07e9b2
 usage    t32ctl burn proc flash [--image FILE] [--part boot0|boot1|user] [--offset N]
 [exit 0]
 ```
 
-```console
-$ t32ctl run lease take --purpose "flash user partition and boot it"
-e40 running cores=0-3 lease=L2b9d:you elf=stale
-lease L2b9d taken: idle timeout 10m, ends by 11:32:05 at the latest
-  token tk-5c0e8a17d2f94b60: pass --lease tk-5c0e8a17d2f94b60 on every call while you hold it
-[exit 0]
-```
+Right before the approval-gated flash, the agent checks the state once more: PowerView answers,
+the CPU is the board's, and no PRACTICE script runs that would refuse the flash after the human
+had already approved it.
 
-Right before the approval-gated flash, the agent checks the state once more. A change made in
-the GUI after the lease was taken would otherwise refuse the flash with exit 3 after the human had
-already approved it.
-
+<!-- transcript: mvp -->
 ```console
-$ t32ctl read status --lease tk-5c0e8a17d2f94b60
-e40 running cores=0-3 lease=L2b9d:you elf=stale
-target  acme_evb cpu=CortexA53 (matches profile) cores=4: 0 1 2 3 running
+$ t32ctl read status
+running cores=0-3
+target  acme_evb cpu=CortexA53 (matches profile) cores=4
 profile boards/acme/acme_evb/support/t32ctl/
-elf     build/zephyr/zephyr.elf sha=3f2a91c0 code+symbols, loaded at e3, stale: the build changed
-stop    none since e3
-bp      none
-lease   L2b9d you "flash user partition and boot it", idle timeout 10m, ends by 11:32:05
-pv      build=172803 clients=1 practice=idle
+pv      build=168999 clients=1 practice=idle
 [exit 0]
 ```
 
-The flash may take up to its 45-minute
-timeout, longer than the agent's command timeout, so the agent runs it with the shell tool's
-background mode. The t32ctl process blocks until the flash is done, and its exit code is the
-result. The call keeps the lease while it runs. The human approves the `burn` prompt.
+The flash may take up to its 45-minute timeout, longer than the agent's command timeout, so the
+agent runs it with the shell tool's background mode. The t32ctl process blocks until the flash is
+done, and its exit code is the result. The human approves the `burn` prompt. The image is the
+default, `{build}/zephyr/zephyr.bin`, uploaded in one slice, and the script confirms its own
+readback with `&t32ctl_rc="0"`: a `burn` procedure that finishes without an rc is exit 1.
 
+<!-- transcript: mvp -->
 ```console
-$ t32ctl burn proc flash --part user --lease tk-5c0e8a17d2f94b60
-e41 stopped core=0 pc=0x00100840 lease=L2b9d:you elf=stale
+$ t32ctl burn proc flash --part user
+stopped core=0 pc=0x100840
 proc flash (profile=1c07e9b2, 6 files, cached)
 params: image=build/zephyr/zephyr.bin (2411724, 1 slice) part=user offset=0
 result: finished rc=0 after 38.4s: "wrote 2411724 bytes to user at 0x0, verified"
@@ -499,40 +494,26 @@ outputs: ~/.local/state/t32ctl/out/p-3e07/ (1 file)
 
 The target is halted inside the flash algorithm in SRAM. A reset boots the new image.
 
+<!-- transcript: mvp -->
 ```console
-$ t32ctl write proc reset --lease tk-5c0e8a17d2f94b60
-e42 stopped core=0 pc=0x00000000 lease=L2b9d:you elf=stale
+$ t32ctl write proc reset
+stopped core=0 pc=0x0
 proc reset (profile=1c07e9b2, 6 files, cached)
 result: finished rc=0 after 1.9s
+outputs: none
 [exit 0]
 ```
 
-The header still says `elf=stale`, and the agent loads symbols only: the code in the target is
-the image it just flashed.
+Had the flash been interrupted, its report (exit 130) would say that the storage may hold a
+partial image. No later call repeats that, so the agent tells its human at once and boots nothing
+from that storage.
 
-```console
-$ t32ctl run symbols --lease tk-5c0e8a17d2f94b60
-e42 stopped core=0 pc=0x00000000 lease=L2b9d:you
-symbols build/zephyr/zephyr.elf sha=8d04e6b1 symbols only, uploaded 6081740 in 2.7s
-[exit 0]
-```
-
-```console
-$ t32ctl run go main --lease tk-5c0e8a17d2f94b60
-e43 stopped core=0 pc=0x40083e10 sym=main src=src/main.c:31 lease=L2b9d:you
-stop: reached main on core 0 (known), after 1.5s
-next: t32ctl read stack --lease tk-5c0e8a17d2f94b60
-[exit 0]
-```
-
-```console
-$ t32ctl run lease release --lease tk-5c0e8a17d2f94b60
-e43 stopped core=0 pc=0x40083e10 sym=main src=src/main.c:31
-lease L2b9d released after 2m31s; target left stopped (core 0), breakpoints none
-[exit 0]
-```
-
-Had the flash died halfway, every later call would print this notice until a flash completes:
+Planned: with the lease, the agent takes it before the sequence
+(`run lease take --purpose "flash user partition and boot it"`), passes `--lease` on every call,
+and releases it at the end, so no other agent interleaves. With `run symbols` and `run go main`,
+it loads the symbols of the image it just flashed, because PowerView still holds those of the
+previous build (`elf=stale`), and runs to `main`. With the state file, an incomplete flash is
+reported on every later call until a flash completes:
 
 ```text
 ! burn proc flash --part user did not complete (11:03:12, e41): the storage may hold a partial image

@@ -50,6 +50,7 @@ profile = "boards/acme/acme_evb/support/t32ctl"   # a board's support/t32ctl/ di
 `t32ctl read status --full` prints every resolved value with the rule or file it came from, and
 the profile hash:
 
+<!-- transcript: mvp -->
 ```console
 $ t32ctl read status --full
 stopped core=0 pc=0x40083e10
@@ -417,6 +418,7 @@ PowerView build 168999 showed how PRACTICE treats macros, paths, and files
 The agent finds procedures and their parameters through the tool, not by reading scripts.
 `read procs` reads only the profile directory, so it works while PowerView is down.
 
+<!-- transcript: mvp -->
 ```console
 $ t32ctl read procs
 proc      grade  timeout  about
@@ -428,6 +430,7 @@ boards/acme/acme_evb/support/t32ctl/ profile=1c07e9b2; parameters: t32ctl read p
 [exit 0]
 ```
 
+<!-- transcript: mvp -->
 ```console
 $ t32ctl read procs flash
 proc     flash  grade burn  timeout 45m
@@ -453,6 +456,7 @@ A procedure is invoked under the grade `read procs` prints. Any other grade word
 `grade-mismatch` before anything connects, with the right command as `next:`. A parameter that
 does not match the declaration is exit 2 `proc-params`, whose details show the procedure's usage.
 
+<!-- transcript: mvp -->
 ```console
 $ t32ctl read proc selftest
 stopped core=0 pc=0x40083e10
@@ -543,6 +547,7 @@ fixed, every other error is reported, the first in the message and the rest as d
 
 A broken profile stops every call before it connects; here `timeout` of `proc.reset` is misspelled:
 
+<!-- transcript: mvp -->
 ```console
 $ t32ctl read status
 error[profile-invalid]: boards/acme/acme_evb/support/t32ctl/profile.toml:68:1: unknown field `timout`, expected one of `about`, `script`, `grade`, `timeout`, `effects`, `outputs`, `params`, `lease`
