@@ -93,8 +93,8 @@ fn ms(d: Duration) -> String {
     format_value(&Value::Seconds(d.as_secs_f64()))
 }
 
-pub fn render_line(o: &Outcome, width: usize) -> String {
-    let prefix = format!("{:<12} {:<5} ", o.probe.name(), o.verdict.tag());
+/// Headline measurements, the reconnect, VM restores and the residue count, in line order.
+fn tokens(o: &Outcome) -> Vec<String> {
     let mut tokens: Vec<String> =
         o.measurements.iter().filter(|m| m.headline).map(|m| format!("{}={}", m.key, format_value(&m.value))).collect();
     if let Some(r) = &o.revive {
@@ -110,6 +110,14 @@ pub fn render_line(o: &Outcome, width: usize) -> String {
     if residue > 0 {
         tokens.push(format!("residue={residue}"));
     }
+    tokens
+}
+
+/// A line without tokens carries the error or skip reason itself; otherwise `render_extra` adds
+/// it below.
+pub fn render_line(o: &Outcome, width: usize) -> String {
+    let prefix = format!("{:<12} {:<5} ", o.probe.name(), o.verdict.tag());
+    let mut tokens = tokens(o);
     if tokens.is_empty() {
         if let Some(e) = &o.error {
             tokens = words(&e.message);
@@ -123,11 +131,10 @@ pub fn render_line(o: &Outcome, width: usize) -> String {
 /// `why:` and `hint:` for a failure; at most two lines.
 pub fn render_extra(o: &Outcome, width: usize) -> Vec<String> {
     let mut out = Vec::new();
-    let has_tokens = o.measurements.iter().any(|m| m.headline) || o.revive.is_some();
     if let Some(e) = &o.error
         && matches!(o.verdict, Verdict::Fail | Verdict::Unsupported | Verdict::Interrupted)
     {
-        if has_tokens {
+        if !tokens(o).is_empty() {
             out.push(fit("  why:".into(), words(&e.message), width));
         }
         if let Some(h) = &e.hint {
@@ -402,6 +409,20 @@ mod tests {
         });
         assert_eq!(line(&o), "connect      FAIL  pv:20000: connection refused");
         assert_eq!(render_extra(&o, WIDTH), ["  hint: PowerView not running"]);
+    }
+
+    #[test]
+    fn a_failure_with_only_restore_tokens_still_shows_its_message() {
+        let mut o = Outcome::new(ProbeId::Bundle, Verdict::Fail);
+        o.error = Some(ErrorRecord::new("remote", "command: PowerView refused: DO failed"));
+        o.cleanup.push(CleanupRecord {
+            what: format!("{} 0x01000000++0xFFF", t32stage::RESTORE_VM),
+            result: "clean".into(),
+            clean: true,
+            manual: None,
+        });
+        assert_eq!(line(&o), "bundle       FAIL  restore=ok");
+        assert_eq!(render_extra(&o, WIDTH), ["  why: command: PowerView refused: DO failed"]);
     }
 
     #[test]
