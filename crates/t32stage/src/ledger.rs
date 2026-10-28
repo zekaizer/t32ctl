@@ -173,7 +173,7 @@ impl Undo {
 
 /// `T32_Stop` if a script runs, then `END` until the stack is empty. Only for callers that saw an
 /// empty stack before they started their own script.
-pub(crate) fn unwind_practice(session: &mut Session) -> Result<CleanupOutcome, StageError> {
+pub fn unwind_practice(session: &mut Session) -> Result<CleanupOutcome, StageError> {
     let running = session.practice_state()? != PracticeState::Idle;
     if running {
         session.stop_practice()?;
@@ -345,7 +345,7 @@ impl Ledger {
 
     /// Withdraw the newest `UnwindPractice` once our script is gone from the stack. Journal first;
     /// a failed write leaves the undo pending.
-    pub(crate) fn withdraw_unwind(&mut self) -> Result<(), StageError> {
+    pub fn withdraw_unwind(&mut self) -> Result<(), StageError> {
         let Some(i) = self.pending.iter().rposition(|u| matches!(u, Undo::UnwindPractice)) else { return Ok(()) };
         if let Some(j) = self.journal.as_mut() {
             let lines: Vec<String> =
