@@ -39,16 +39,22 @@
 //! }
 //! ```
 
-use std::{marker::PhantomData, path::Path};
+use std::{collections::HashMap, io::Write, marker::PhantomData, path::Path, time::Duration};
 
-use t32rcl::{ConnectError, ConnectOpts, Endpoint, FuncValue, Health, PracticeState, Session, TargetState};
+use t32rcl::{
+    AccessClass, Cancel, CancelReason, ConnectError, ConnectOpts, Endpoint, Error, FuncValue, Health, MemAddr,
+    PracticeState, Session, TargetState,
+};
 use t32stage::{CleanupReport, ExistsFn, RegName, practice::fnc, replay_leftovers};
 
 use crate::{
     error::{Context, CtlError, ErrorKind, from_connect, from_rcl},
     grade::{Grade, Raw},
-    notation::PracticeText,
-    profile::Profile,
+    notation::{Place, PracticeText, Size},
+    profile::{
+        Profile, RegionKind,
+        policy::{Piece, Segment, effective_memory},
+    },
     report::{At, CmdBody, CpuMatch, Header, Hex, Notice, Practice, PvStatus, Reg64, RegValue, RegsBody, TargetView},
 };
 
@@ -69,6 +75,8 @@ pub struct Conn {
     host: String,
     /// `SYStem.CPU()` as the prelude read it; `None` while the target is down.
     cpu: Option<String>,
+    /// The call's cancel, restored after a bounded transfer.
+    cancel: Cancel,
     notices: Vec<Notice>,
 }
 
@@ -78,7 +86,10 @@ impl Conn {
         let mut failed: Vec<ConnectError> = Vec::new();
         for host in hosts {
             match Session::connect(Endpoint::new(host, port), opts.clone()) {
-                Ok(session) => return Ok(Self { session, host: host.clone(), cpu: None, notices: Vec::new() }),
+                Ok(session) => {
+                    let cancel = opts.cancel.clone();
+                    return Ok(Self { session, host: host.clone(), cpu: None, cancel, notices: Vec::new() });
+                }
                 Err(e @ ConnectError::Cancelled { .. }) => return Err(from_connect(&e)),
                 Err(e) => failed.push(e),
             }
@@ -188,6 +199,92 @@ fn register(s: &mut Session, name: &RegName) -> Result<u64, CtlError> {
     as_u64(v).ok_or_else(|| CtlError::new(ErrorKind::PvError, format!("{expr}: not a register value: {shown}")))
 }
 
+/// The translation granule `read mem` assumes: no page is smaller.
+const PAGE: u64 = 0x1000;
+/// `read mem --to` writes in blocks of this size.
+const BLOCK: u64 = 1 << 20;
+
+impl MemPlan {
+    /// The address object of a segment's read, `from` bytes in. ASSUMED(target-read): PowerView
+    /// honors the access width of an `mmio` segment.
+    fn read_addr(&self, seg: &Segment, mmio: bool, from: u64) -> MemAddr {
+        let at = MemAddr::new(self.read_class.clone(), self.addr + seg.offset + from);
+        if mmio { at.with_width(u16::from(self.width)) } else { at }
+    }
+}
+
+/// Why a stream stopped early.
+enum Halt {
+    /// The bound passed after this many bytes were written.
+    Deadline(u64),
+    Failed(CtlError),
+}
+
+/// Every segment of `plan` into `sink`, `BLOCK` bytes per read; the bytes written.
+fn stream(s: &mut Session, plan: &MemPlan, sink: &mut dyn Write) -> Result<u64, Halt> {
+    let mut written = 0;
+    for (seg, mmio) in &plan.segments {
+        let mut from = 0;
+        while from < seg.len {
+            let n = (seg.len - from).min(BLOCK);
+            let at = plan.read_addr(seg, *mmio, from);
+            let bytes = match s.mem_read(&at, n as usize) {
+                Ok(b) => b,
+                Err(Error::Cancelled { reason: CancelReason::Deadline, .. }) => return Err(Halt::Deadline(written)),
+                Err(e) => return Err(Halt::Failed(read_error(&e, &at))),
+            };
+            sink.write_all(&bytes).map_err(|e| {
+                Halt::Failed(CtlError::new(ErrorKind::StateDir, format!("writing the output file: {e}")))
+            })?;
+            written += n;
+            from += n;
+        }
+    }
+    Ok(written)
+}
+
+fn read_error(e: &Error, at: &MemAddr) -> CtlError {
+    from_rcl(e, Context::Read, &format!("read of {at}"))
+}
+
+/// `E<class>`, the access class for memory while the cores run.
+fn running_class(class: &AccessClass) -> Result<AccessClass, CtlError> {
+    if class.as_str().starts_with('E') {
+        return Ok(class.clone());
+    }
+    AccessClass::parse(&format!("E{}", class.as_str())).map_err(|_| {
+        let message = format!("access class {} has no E form for a running target", class.as_str());
+        CtlError::new(ErrorKind::MemoryPolicy, message)
+    })
+}
+
+/// The physical address of `class:page`. A refusal is `memory-policy`: without a translation the
+/// map cannot be checked.
+fn translate(s: &mut Session, class: &AccessClass, page: u64) -> Result<u64, CtlError> {
+    let expr = fnc::physical(&MemAddr::new(class.clone(), page));
+    let v = s.eval(&expr).map_err(|e| {
+        let err = from_rcl(&e, Context::Read, &expr);
+        if err.kind != ErrorKind::Refused {
+            return err;
+        }
+        let message = format!("no physical address for {}:{page:#x}: {}", class.as_str(), err.message);
+        CtlError::new(ErrorKind::MemoryPolicy, message)
+    })?;
+    let phys = match &v {
+        FuncValue::Uint(n) => Some(*n),
+        FuncValue::Text(t) | FuncValue::Raw { text: t, .. } => physical_text(t),
+        _ => None,
+    };
+    phys.ok_or_else(|| CtlError::new(ErrorKind::PvError, format!("{expr}: {v} names no physical address")))
+}
+
+/// The hex number after the last `:` of an address value (`A:0x40107000`).
+fn physical_text(t: &str) -> Option<u64> {
+    let last = t.rsplit(':').next()?.trim();
+    let digits = last.strip_prefix("0x").or_else(|| last.strip_prefix("0X"))?;
+    u64::from_str_radix(digits, 16).ok()
+}
+
 /// An address in any of the integer forms PowerView answers with.
 fn as_u64(v: FuncValue) -> Option<u64> {
     match v {
@@ -219,6 +316,139 @@ impl<'c, G: Grade> Ctx<'c, G> {
     /// The host that attached.
     pub fn host(&self) -> &str {
         &self.conn.host
+    }
+
+    /// The bytes at `req`, after the memory map allowed every one of them.
+    pub fn read_mem(&mut self, req: &MemRequest) -> Result<(MemPlan, Vec<u8>), CtlError> {
+        let plan = self.plan_mem(req)?;
+        let mut data = Vec::with_capacity(plan.len as usize);
+        for (seg, mmio) in &plan.segments {
+            let at = plan.read_addr(seg, *mmio, 0);
+            let bytes = self.conn.session.mem_read(&at, seg.len as usize).map_err(|e| read_error(&e, &at))?;
+            data.extend_from_slice(&bytes);
+        }
+        Ok((plan, data))
+    }
+
+    /// The bytes at `req` into `sink` in blocks, until done or until `bound` passes. The memory map
+    /// is checked before the bound starts.
+    pub fn read_mem_to(
+        &mut self,
+        req: &MemRequest,
+        bound: Duration,
+        sink: &mut dyn Write,
+    ) -> Result<(MemPlan, Transfer), CtlError> {
+        let plan = self.plan_mem(req)?;
+        let base = self.conn.cancel.clone();
+        let s = &mut self.conn.session;
+        let t0 = s.now();
+        s.set_cancel(base.with_deadline(t0 + bound));
+        let streamed = stream(s, &plan, sink);
+        s.set_cancel(base);
+        let after_ms = u64::try_from((s.now() - t0).as_millis()).unwrap_or(u64::MAX);
+        let transfer = match streamed {
+            Ok(bytes) => Transfer::Done { bytes, after_ms },
+            Err(Halt::Deadline(bytes)) => {
+                Transfer::Stopped { bytes, bound_ms: u64::try_from(bound.as_millis()).unwrap_or(u64::MAX) }
+            }
+            Err(Halt::Failed(e)) => return Err(e),
+        };
+        Ok((plan, transfer))
+    }
+
+    /// Resolve the place, translate it page by page unless its class is `A`, and check every
+    /// physical byte against the memory map before any memory request.
+    fn plan_mem(&mut self, req: &MemRequest) -> Result<MemPlan, CtlError> {
+        if self.run == TargetState::Down {
+            return Err(CtlError::new(ErrorKind::TargetDown, "the target is down: memory needs an attached target"));
+        }
+        let running = self.run == TargetState::Running;
+        let policy = effective_memory(self.profile);
+        let (typed, addr) = match &req.place {
+            Place::Addr { class, addr } => (class.as_ref(), *addr),
+            Place::Reg { reg, offset } => {
+                if running {
+                    return Err(CtlError::new(
+                        ErrorKind::NotHalted,
+                        "the target is running: @reg places need a stopped target",
+                    ));
+                }
+                let base = register(&mut self.conn.session, reg)?;
+                let addr = base.checked_add_signed(*offset).ok_or_else(|| {
+                    let message = format!("{}: the offset takes {reg} = {base:#x} outside 64 bits", req.place);
+                    CtlError::new(ErrorKind::Notation, message)
+                })?;
+                (None, addr)
+            }
+        };
+        let class = policy.class(typed)?;
+        let mut pages = HashMap::new();
+        let len = match req.len {
+            Some(len) => len,
+            None => {
+                let first = self.pieces(&class, addr, 1, &mut pages)?[0].phys;
+                u64::from(req.width.unwrap_or_else(|| policy.cell_width(first)))
+            }
+        };
+        let pieces = self.pieces(&class, addr, len, &mut pages)?;
+        let checked = policy.check(&pieces, running, req.width)?;
+        // ASSUMED(target-read): `E` before the class reads memory while the cores run.
+        let read_class = if running { running_class(&class)? } else { class.clone() };
+        let regions = &policy.regions;
+        Ok(MemPlan {
+            default_class: class == policy.default_class,
+            phys: (class.as_str() != "A").then(|| pieces.first().map(|p| p.phys)).flatten(),
+            regions: checked.regions.iter().map(|&i| (regions[i].name.clone(), regions[i].kind)).collect(),
+            segments: checked.segments.iter().map(|s| (*s, regions[s.region].kind == RegionKind::Mmio)).collect(),
+            class,
+            addr,
+            len,
+            width: checked.width,
+            read_class,
+        })
+    }
+
+    /// `len` bytes from `addr` as physical runs: one for class `A`, else one per translated 4 KiB
+    /// page, merged where pages are physically contiguous. `pages` keeps translations across the
+    /// calls of one plan.
+    fn pieces(
+        &mut self,
+        class: &AccessClass,
+        addr: u64,
+        len: u64,
+        pages: &mut HashMap<u64, u64>,
+    ) -> Result<Vec<Piece>, CtlError> {
+        let Some(end) = addr.checked_add(len) else {
+            let message = format!("{addr:#x} + {}: past the end of the address space", Size(len));
+            return Err(CtlError::new(ErrorKind::Notation, message));
+        };
+        if class.as_str() == "A" {
+            return Ok(vec![Piece { offset: 0, phys: addr, len }]);
+        }
+        let mut out: Vec<Piece> = Vec::new();
+        let mut at = addr;
+        while at < end {
+            let page = at & !(PAGE - 1);
+            let next = page.saturating_add(PAGE).min(end);
+            let phys_page = match pages.get(&page) {
+                Some(p) => *p,
+                None => {
+                    let p = translate(&mut self.conn.session, class, page)?;
+                    pages.insert(page, p);
+                    p
+                }
+            };
+            let phys = phys_page.checked_add(at - page).ok_or_else(|| {
+                CtlError::new(ErrorKind::PvError, format!("{}:{page:#x} translates past 64 bits", class.as_str()))
+            })?;
+            let piece = Piece { offset: at - addr, phys, len: next - at };
+            match out.last_mut() {
+                Some(last) if last.phys + last.len == phys => last.len += piece.len,
+                _ => out.push(piece),
+            }
+            at = next;
+        }
+        Ok(out)
     }
 
     /// Registers of PowerView's selected core, in the order named. A down or running target is
@@ -305,6 +535,48 @@ fn nr_used_cons(s: &mut Session) -> Result<Option<i64>, CtlError> {
         }
     }
     Ok(None)
+}
+
+/// What `read mem` asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemRequest {
+    pub place: Place,
+    /// `None`: one cell at the access width.
+    pub len: Option<u64>,
+    pub width: Option<u8>,
+}
+
+/// A read the memory map allowed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemPlan {
+    pub class: AccessClass,
+    /// The class is the profile's default class.
+    pub default_class: bool,
+    pub addr: u64,
+    pub len: u64,
+    pub width: u8,
+    /// The physical address of the first byte, for a translated class.
+    pub phys: Option<u64>,
+    /// The regions the read touches, in order: name and kind.
+    pub regions: Vec<(String, RegionKind)>,
+    /// The class the reads use: `E` before it while the target runs.
+    read_class: AccessClass,
+    /// Each segment, and whether its region is `mmio`.
+    segments: Vec<(Segment, bool)>,
+}
+
+/// How a bounded transfer ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Transfer {
+    Done {
+        bytes: u64,
+        after_ms: u64,
+    },
+    /// The bound passed; `bytes` were written before it.
+    Stopped {
+        bytes: u64,
+        bound_ms: u64,
+    },
 }
 
 /// PRACTICE text the caller typed: only a `raw` leaf gets these. The text goes out as typed, also

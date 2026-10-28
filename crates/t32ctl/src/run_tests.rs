@@ -607,3 +607,242 @@ fn read_reg_refuses_a_down_or_running_target_before_any_register_read() {
     );
     assert_eq!(out.code, 3);
 }
+
+/// `PROFILE` with a memory map: ddr readable while running, sram, and uart0 with a deny hole.
+const MAP: &str = "schema = 1\n[target]\nname = \"acme_evb\"\ncpu = \"CortexA53\"\ncores = 4\nword = 8\n\
+    [[memory]]\nname = \"ddr\"\nstart = 0x40000000\nsize = 0x40000000\nkind = \"ram\"\nrunning = true\n\
+    [[memory]]\nname = \"sram\"\nstart = 0x00100000\nsize = 0x00040000\nkind = \"ram\"\n\
+    [[memory]]\nname = \"uart0\"\nstart = 0x09000000\nsize = 0x00001000\nkind = \"mmio\"\nwidth = 4\n\
+    [[memory]]\nname = \"uart0-fifo\"\nstart = 0x09000000\nsize = 0x00000004\nkind = \"deny\"\n";
+
+fn mapped(tag: &str) -> World {
+    let w = World::new(tag);
+    w.write("ws/board/support/t32ctl/profile.toml", MAP);
+    w
+}
+
+fn le(cells: &[u64]) -> Vec<u8> {
+    cells.iter().flat_map(|c| c.to_le_bytes()).collect()
+}
+
+fn mem_read(access: &str, addr: u64, len: u16) -> Request {
+    Request::MemRead { access: access.into(), addr, len }
+}
+
+const STACK: [u64; 8] = [0x4010_7e60, 0x4008_1fa4, 0, 0x4008_f2d8, 0x4008_0b1c, 0x6000_0005, 0x4010_4000, 8];
+
+/// `read mem @sp --len 64` as the contract prints it: the stack pointer, one page translated,
+/// one read.
+fn stack_read() -> Script {
+    let s = connected(2).expect_fn("Register(SP)").reply_function(4, "0x40107E40");
+    let s = s.expect_fn("MMU.PHYSICAL(D:0x40107000)").reply_text("A:0x40107000");
+    stopped_header(s.expect_req(mem_read("D", 0x4010_7e40, 64)).reply_mem(&le(&STACK)))
+}
+
+#[test]
+fn read_mem_resolves_a_register_place_translates_it_and_prints_cells_16_bytes_per_line() {
+    let w = mapped("memstack");
+    let out = call("t32ctl read mem @sp --len 64", &deps(w.env(), vec![Ok(stack_read())]));
+    assert_eq!(
+        out.text,
+        "stopped core=0 pc=0x40083e10\n\
+         mem 0x40107e40 len=64 width=8 class=D phys=0x40107e40 (region ram \"ddr\")\n\
+         0x40107e40: 0x0000000040107e60 0x0000000040081fa4\n\
+         0x40107e50: 0x0000000000000000 0x000000004008f2d8\n\
+         0x40107e60: 0x0000000040080b1c 0x0000000060000005\n\
+         0x40107e70: 0x0000000040104000 0x0000000000000008\n"
+    );
+    assert_eq!(out.code, 0);
+    let out = call("t32ctl read mem @sp --len 64 --json", &deps(w.env(), vec![Ok(stack_read())]));
+    let v: Value = serde_json::from_str(&out.text).unwrap();
+    let cells: Vec<String> = STACK.iter().map(|c| format!("{c:#018x}")).collect();
+    assert_eq!(
+        v["body"],
+        serde_json::json!({"kind": "mem", "place": "D:0x40107e40", "phys": "A:0x40107e40", "len": 64, "width": 8,
+            "regions": [{"name": "ddr", "kind": "ram"}], "cells": cells})
+    );
+}
+
+#[test]
+fn an_mmio_read_carries_the_regions_width_and_defaults_to_one_cell() {
+    let w = mapped("memmmio");
+    let s = connected(2).expect_req(Request::MemReadWidth { access: "A".into(), addr: 0x0900_0004, len: 4, width: 4 });
+    let out = call(
+        "t32ctl read mem A:0x09000004",
+        &deps(w.env(), vec![Ok(stopped_header(s.reply_mem(&[0x78, 0x56, 0x34, 0x12])))]),
+    );
+    assert_eq!(
+        out.text,
+        "stopped core=0 pc=0x40083e10\n\
+         mem A:0x9000004 len=4 width=4 class=A (region mmio \"uart0\")\n\
+         A:0x9000004: 0x12345678\n"
+    );
+    let out = call("t32ctl read mem A:0x09000004 --len 6", &deps(w.env(), vec![Ok(stopped_header(connected(2)))]));
+    assert_eq!(
+        (out.text.lines().nth(1), out.code),
+        (Some("error[notation]: --len 6 is not a multiple of the access width 4"), 2)
+    );
+}
+
+#[test]
+fn a_bulk_read_goes_in_read_chunk_pieces() {
+    let w = mapped("membulk");
+    w.write("home/.config/t32ctl/config.toml", "schema = 1\n[tuning]\nread_chunk = 1024\n");
+    let s = (0..4u64).fold(connected(2), |s, i| {
+        s.expect_req(mem_read("A", 0x4000_0000 + i * 1024, 1024)).reply_mem(&[i as u8; 1024])
+    });
+    let out = call("t32ctl read mem A:0x40000000 --len 4K", &deps(w.env(), vec![Ok(stopped_header(s))]));
+    let lines: Vec<&str> = out.text.lines().collect();
+    assert_eq!(lines.len(), 2 + 256);
+    assert_eq!(lines[1], "mem A:0x40000000 len=4K width=8 class=A (region ram \"ddr\")");
+    assert_eq!(lines[2], "A:0x40000000: 0x0000000000000000 0x0000000000000000");
+    assert_eq!(lines[257], "A:0x40000ff0: 0x0303030303030303 0x0303030303030303");
+}
+
+#[test]
+fn a_translated_read_checks_and_reads_each_physical_piece() {
+    let w = mapped("mempages");
+    let s = connected(2)
+        .expect_fn("MMU.PHYSICAL(D:0x40000000)")
+        .reply_text("A:0x40100000")
+        .expect_fn("MMU.PHYSICAL(D:0x40001000)")
+        .reply_text("A:0x40200000")
+        .expect_req(mem_read("D", 0x4000_0ff8, 8))
+        .reply_mem(&[1; 8])
+        .expect_req(mem_read("D", 0x4000_1000, 8))
+        .reply_mem(&[2; 8]);
+    let out = call("t32ctl read mem 0x40000ff8 --len 16 --width 4", &deps(w.env(), vec![Ok(stopped_header(s))]));
+    assert_eq!(
+        out.text,
+        "stopped core=0 pc=0x40083e10\n\
+         mem 0x40000ff8 len=16 width=4 class=D phys=0x40100ff8 (region ram \"ddr\")\n\
+         0x40000ff8: 0x01010101 0x01010101 0x02020202 0x02020202\n"
+    );
+    let s = connected(2).expect_fn("MMU.PHYSICAL(D:0x40000000)").reply_function(0, "no translation");
+    let out = call("t32ctl read mem 0x40000010", &deps(w.env(), vec![Ok(stopped_header(s))]));
+    assert_eq!(
+        out.text.lines().nth(1),
+        Some(
+            "error[memory-policy]: no physical address for D:0x40000000: MMU.PHYSICAL(D:0x40000000): function: \
+             PowerView refused: function failed (code 0): no translation"
+        )
+    );
+}
+
+#[test]
+fn a_refused_byte_is_named_and_nothing_is_read() {
+    let w = mapped("memdeny");
+    let out = call("t32ctl read mem A:0x09000000 --len 16", &deps(w.env(), vec![Ok(stopped_header(connected(2)))]));
+    assert_eq!(out.text, "stopped core=0 pc=0x40083e10\nerror[memory-policy]: 0x09000000 in deny region uart0-fifo\n");
+    assert_eq!(out.code, 2);
+    let out = call("t32ctl read mem A:0x0a000000", &deps(w.env(), vec![Ok(stopped_header(connected(2)))]));
+    assert_eq!(out.text.lines().nth(1), Some("error[memory-policy]: 0x0a000000 in no region"));
+}
+
+#[test]
+fn checks_that_need_no_powerview_refuse_before_connecting() {
+    let w = mapped("memlocal");
+    for (line, want) in [
+        (
+            "t32ctl read mem C15:0x0",
+            "error[memory-policy]: access class C15 is not one of the profile's classes A, D, P; such an access is raw",
+        ),
+        ("t32ctl read mem 0x40000000 --len 8K", "error[notation]: --len 8K is above 4K; above 4K needs --to NAME"),
+        ("t32ctl read mem 0x40000000 --len 6 --width 4", "error[notation]: --len 6 is not a multiple of --width 4"),
+        ("t32ctl read mem 0x40000000 --len 0", "error[notation]: --len 0: a read needs at least one byte"),
+        (
+            "t32ctl read mem 0x40000000 --len 2G --to ddr.bin",
+            "error[notation]: --len 2G is above [calls] transfer_max 1G",
+        ),
+        (
+            "t32ctl read mem worker_loop",
+            "error[notation]: place \"worker_loop\": symbol places are planned, not in this t32ctl; use [CLASS:]0x<hex> or @<reg>[+0x<hex>|-0x<hex>]",
+        ),
+    ] {
+        let out = call(line, &deps(w.env(), vec![]));
+        assert_eq!((out.text.trim_end(), out.code), (want, 2), "{line}");
+    }
+    assert!(!w.0.join("home/.local/state/t32ctl/out").read_dir().is_ok_and(|mut d| d.next().is_some()));
+}
+
+#[test]
+fn a_running_target_reads_regions_that_allow_it_with_the_e_class_and_refuses_the_rest() {
+    let w = mapped("memrunning");
+    let header =
+        |s: Script| s.expect_req(Request::TargetState).reply_state(3).expect_fn("CORE.NUMBER()").reply_decimal(4);
+    let s = connected(3).expect_req(mem_read("EA", 0x4000_0000, 8)).reply_mem(&[0; 8]);
+    let out = call("t32ctl read mem A:0x40000000", &deps(w.env(), vec![Ok(header(s))]));
+    assert_eq!(
+        out.text,
+        "running cores=0-3\nmem A:0x40000000 len=8 width=8 class=A (region ram \"ddr\")\nA:0x40000000: 0x0000000000000000\n"
+    );
+    let out = call("t32ctl read mem A:0x00100000", &deps(w.env(), vec![Ok(header(connected(3)))]));
+    assert_eq!(
+        (out.text.lines().nth(1), out.code),
+        (Some("error[not-halted]: the target is running and region sram does not declare running = true"), 3)
+    );
+    let out = call("t32ctl read mem @sp", &deps(w.env(), vec![Ok(header(connected(3)))]));
+    assert_eq!(
+        (out.text.lines().nth(1), out.code),
+        (Some("error[not-halted]: the target is running: @reg places need a stopped target"), 3)
+    );
+    let down = connected(0).expect_req(Request::TargetState).reply_state(0);
+    let out = call("t32ctl read mem A:0x40000000", &deps(w.env(), vec![Ok(down)]));
+    assert_eq!(
+        (out.text.as_str(), out.code),
+        ("down\nerror[target-down]: the target is down: memory needs an attached target\n", 3)
+    );
+}
+
+/// The one run directory below `out/`, if any.
+fn run_dirs(w: &World) -> Vec<PathBuf> {
+    let out = w.0.join("home/.local/state/t32ctl/out");
+    let Ok(dir) = out.read_dir() else { return Vec::new() };
+    dir.map(|e| e.unwrap().path()).collect()
+}
+
+#[test]
+fn read_mem_to_writes_a_new_file_in_a_fresh_output_directory() {
+    let w = mapped("memto");
+    let data: Vec<u8> = (0..32).collect();
+    let s = connected(2).expect_req(mem_read("A", 0x4000_0000, 32)).reply_mem(&data);
+    let out = call("t32ctl read mem A:0x40000000 --len 32 --to ddr.bin", &deps(w.env(), vec![Ok(stopped_header(s))]));
+    let dirs = run_dirs(&w);
+    assert_eq!(dirs.len(), 1);
+    let id = dirs[0].file_name().unwrap().to_string_lossy().into_owned();
+    assert!(id.len() == 6 && id.starts_with("m-") && id[2..].bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+    assert_eq!(fs::read(dirs[0].join("ddr.bin")).unwrap(), data);
+    assert_eq!(
+        out.text,
+        format!(
+            "stopped core=0 pc=0x40083e10\n\
+             mem A:0x40000000 len=32 width=8 class=A (region ram \"ddr\")\n\
+             file: ~/.local/state/t32ctl/out/{id}/ddr.bin (32 in 0ms)\n"
+        )
+    );
+    assert_eq!(out.code, 0);
+}
+
+#[test]
+fn a_transfer_stopped_by_its_bound_is_exit_1_and_leaves_no_file() {
+    let w = mapped("membound");
+    w.write(
+        "home/.config/t32ctl/config.toml",
+        "schema = 1\n[tuning]\nread_chunk = 16\n[calls]\ntransfer_timeout = \"1s\"\n",
+    );
+    let s = connected(2).expect_req(mem_read("A", 0x4000_0000, 16)).reply_mem(&[0; 16]);
+    let s = s.expect_req(mem_read("A", 0x4000_0010, 16)).silence(std::time::Duration::from_secs(2));
+    let out = call("t32ctl read mem A:0x40000000 --len 64 --to x.bin", &deps(w.env(), vec![Ok(s)]));
+    assert_eq!(
+        out.text,
+        "mem A:0x40000000 len=64 width=8 class=A (region ram \"ddr\")\n\
+         transfer stopped at the 1s bound after 0; the partial file was removed\n"
+    );
+    assert_eq!(out.code, 1);
+    assert_eq!(run_dirs(&w), Vec::<PathBuf>::new(), "the empty run directory is removed");
+    let s = connected(2).expect_req(mem_read("A", 0x4000_0000, 16)).reply_error(16, "");
+    let out = call("t32ctl read mem A:0x40000000 --len 64 --to x.bin", &deps(w.env(), vec![Ok(stopped_header(s))]));
+    assert_eq!(out.code, 2, "{}", out.text);
+    assert!(out.text.contains("error[refused]: read of A:0x40000000:"), "{}", out.text);
+    assert_eq!(run_dirs(&w), Vec::<PathBuf>::new());
+}

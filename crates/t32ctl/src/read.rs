@@ -1,18 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Bodies of the `read` leaves that connect.
 
-use std::path::PathBuf;
+use std::{fs, path::PathBuf, time::Duration};
 
 use t32stage::RegName;
 
 use crate::{
     Setup,
-    cli::{ReadReg, ReadStatus},
+    cli::{ReadMem, ReadReg, ReadStatus},
     config::Sourced,
-    ctx::Ctx,
-    error::CtlError,
+    ctx::{Ctx, MemPlan, MemRequest, Transfer},
+    error::{CtlError, ErrorKind},
     grade::Read,
-    report::{self, BindingView, Body, ConfigView, ProfileView, StatusBody},
+    notation::{OutName, Place, Size},
+    out::OutDir,
+    profile::policy::effective_memory,
+    report::{
+        self, BindingView, Body, ConfigView, FileStats, MemBody, MemData, Phys, ProfileView, RegionRef, StatusBody,
+        StoppedTransfer, cells,
+    },
 };
 
 /// The target, the profile and PowerView; `--full` adds the profile hash, the binding, the config
@@ -61,4 +67,97 @@ pub fn reg(args: &ReadReg, ctx: &mut Ctx<'_, Read>, _setup: &Setup<'_>) -> Resul
         args.names.clone()
     };
     ctx.read_regs(&names).map(Body::Regs)
+}
+
+/// The most `read mem` prints as cells; more needs `--to`.
+const PRINT_MAX: Size = Size(4096);
+
+/// What `read mem` settled before connecting.
+#[derive(Debug)]
+pub struct MemPrep {
+    req: MemRequest,
+    /// `--to`: the fresh run directory and the file name.
+    to: Option<(OutDir, OutName)>,
+    bound: Duration,
+}
+
+fn notation(message: String) -> CtlError {
+    CtlError::new(ErrorKind::Notation, message)
+}
+
+/// The class, `--len` and `--width` checks that need no PowerView, and the run directory for
+/// `--to`.
+pub fn mem_prepare(args: &ReadMem, setup: &Setup<'_>) -> Result<MemPrep, CtlError> {
+    let typed = match &args.loc {
+        Place::Addr { class, .. } => class.as_ref(),
+        Place::Reg { .. } => None,
+    };
+    effective_memory(&setup.profile).class(typed)?;
+    let width = args.width.map(|w| w.bytes());
+    if let Some(len) = args.len {
+        if len.bytes() == 0 {
+            return Err(notation("--len 0: a read needs at least one byte".into()));
+        }
+        match args.to {
+            None if len > PRINT_MAX => {
+                return Err(notation(format!("--len {len} is above {PRINT_MAX}; above {PRINT_MAX} needs --to NAME")));
+            }
+            Some(_) if len > setup.config.transfer_max => {
+                let max = setup.config.transfer_max;
+                return Err(notation(format!("--len {len} is above [calls] transfer_max {max}")));
+            }
+            _ => {}
+        }
+        if let Some(w) = width
+            && !len.bytes().is_multiple_of(u64::from(w))
+        {
+            return Err(notation(format!("--len {len} is not a multiple of --width {w}")));
+        }
+    }
+    let to = match &args.to {
+        Some(name) => Some((OutDir::create(&setup.paths.out_base(), "m")?, name.clone())),
+        None => None,
+    };
+    let req = MemRequest { place: args.loc.clone(), len: args.len.map(Size::bytes), width };
+    Ok(MemPrep { req, to, bound: setup.config.transfer_timeout.as_duration() })
+}
+
+fn mem_body(plan: &MemPlan, data: MemData) -> Body {
+    let class = plan.class.as_str();
+    let shown = if plan.default_class { format!("{:#x}", plan.addr) } else { format!("{class}:{:#x}", plan.addr) };
+    Body::Mem(MemBody {
+        place: format!("{class}:{:#x}", plan.addr),
+        shown,
+        class: class.to_string(),
+        addr: plan.addr,
+        phys: plan.phys.map(Phys),
+        len: plan.len,
+        width: plan.width,
+        regions: plan.regions.iter().map(|(name, kind)| RegionRef { name: name.clone(), kind: kind.name() }).collect(),
+        data,
+    })
+}
+
+/// Memory as cells, or into a new file in the run directory. A transfer that does not finish
+/// leaves no file.
+pub fn mem(_args: &ReadMem, prep: MemPrep, ctx: &mut Ctx<'_, Read>, setup: &Setup<'_>) -> Result<Body, CtlError> {
+    let Some((dir, name)) = prep.to else {
+        let (plan, data) = ctx.read_mem(&prep.req)?;
+        let cells = cells(&data, plan.width);
+        return Ok(mem_body(&plan, MemData::Cells(cells)));
+    };
+    let (path, mut file) = dir.create_file(&name)?;
+    let result = ctx.read_mem_to(&prep.req, prep.bound, &mut file);
+    drop(file);
+    if !matches!(result, Ok((_, Transfer::Done { .. }))) {
+        let _ = fs::remove_file(&path);
+    }
+    let (plan, transfer) = result?;
+    let data = match transfer {
+        Transfer::Done { bytes, after_ms } => {
+            MemData::File(FileStats { path: setup.env.display(&path), bytes, after_ms })
+        }
+        Transfer::Stopped { bytes, bound_ms } => MemData::Stopped(StoppedTransfer { bound_ms, bytes }),
+    };
+    Ok(mem_body(&plan, data))
 }

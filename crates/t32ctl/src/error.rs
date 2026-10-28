@@ -81,6 +81,7 @@ impl Exit {
 pub enum ErrorKind {
     Usage,
     Notation,
+    MemoryPolicy,
     Refused,
     NotHalted,
     TargetDown,
@@ -99,9 +100,10 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// In the order of the error-tag table.
-    pub const ALL: [ErrorKind; 16] = [
+    pub const ALL: [ErrorKind; 17] = [
         ErrorKind::Usage,
         ErrorKind::Notation,
+        ErrorKind::MemoryPolicy,
         ErrorKind::Refused,
         ErrorKind::NotHalted,
         ErrorKind::TargetDown,
@@ -122,6 +124,7 @@ impl ErrorKind {
         match self {
             ErrorKind::Usage => "usage",
             ErrorKind::Notation => "notation",
+            ErrorKind::MemoryPolicy => "memory-policy",
             ErrorKind::Refused => "refused",
             ErrorKind::NotHalted => "not-halted",
             ErrorKind::TargetDown => "target-down",
@@ -141,7 +144,7 @@ impl ErrorKind {
 
     pub fn exit(self) -> Exit {
         match self {
-            ErrorKind::Usage | ErrorKind::Notation | ErrorKind::Refused => Exit::Fix,
+            ErrorKind::Usage | ErrorKind::Notation | ErrorKind::MemoryPolicy | ErrorKind::Refused => Exit::Fix,
             ErrorKind::NotHalted | ErrorKind::TargetDown => Exit::State,
             ErrorKind::RclLocked => Exit::Wait,
             ErrorKind::Unreachable
@@ -163,6 +166,10 @@ impl ErrorKind {
             ErrorKind::Usage => "The command line does not parse; the message is clap's.",
             ErrorKind::Notation => {
                 "An argument is not in t32ctl notation or exceeds its bound; the message names the accepted forms."
+            }
+            ErrorKind::MemoryPolicy => {
+                "A byte of the access is outside the memory map, its region refuses this access or width, or the \
+                 access class is not accepted; the message names the first refused byte."
             }
             ErrorKind::Refused => "PowerView refused the command, function, or memory read; its message is shown.",
             ErrorKind::NotHalted => {

@@ -23,6 +23,8 @@ use crate::{
     error::{CtlError, ErrorKind},
 };
 
+pub mod policy;
+
 pub const PROFILE_FILE: &str = "profile.toml";
 
 /// A loaded profile with the variant applied.

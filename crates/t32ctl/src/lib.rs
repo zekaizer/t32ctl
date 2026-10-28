@@ -14,6 +14,7 @@ pub mod describe;
 pub mod error;
 pub mod grade;
 pub mod notation;
+pub mod out;
 pub mod profile;
 pub mod raw;
 pub mod read;
@@ -75,6 +76,9 @@ pub fn run(argv: &[OsString], deps: &Deps) -> Output {
     match cli.grade {
         GradeCmd::Read(g) => match &g.leaf {
             ReadLeaf::Status(a) => connected::<Read, _>(a, &g.globals, deps, CpuCheck::Report, read::status),
+            ReadLeaf::Mem(a) => {
+                prepared::<Read, _, _>(a, &g.globals, deps, CpuCheck::Refuse, read::mem_prepare, read::mem)
+            }
             ReadLeaf::Reg(a) => connected::<Read, _>(a, &g.globals, deps, CpuCheck::Refuse, read::reg),
             ReadLeaf::Describe(a) => document::<Read, _>(a, |a| describe::render(a.format)),
         },
@@ -127,7 +131,7 @@ impl<'e> Setup<'e> {
 
 type LeafBody<L, G> = fn(&L, &mut Ctx<'_, G>, &Setup<'_>) -> Result<Body, CtlError>;
 
-/// A leaf that connects: the pipeline around its body, and one report whatever happens.
+/// A leaf that connects and checks nothing before it does.
 fn connected<G: Grade, L: Leaf<G>>(
     args: &L,
     globals: &Globals,
@@ -135,9 +139,23 @@ fn connected<G: Grade, L: Leaf<G>>(
     check: CpuCheck,
     body: LeafBody<L, G>,
 ) -> Output {
+    prepared(args, globals, deps, check, |_, _| Ok(()), |a, (), ctx, setup| body(a, ctx, setup))
+}
+
+/// A leaf that connects: the pipeline around its body, and one report whatever happens.
+/// `prepare` runs the leaf's checks that need no PowerView before the state directory and the
+/// connection; what it returns goes to `body`.
+fn prepared<G: Grade, L: Leaf<G>, P>(
+    args: &L,
+    globals: &Globals,
+    deps: &Deps,
+    check: CpuCheck,
+    prepare: impl FnOnce(&L, &Setup<'_>) -> Result<P, CtlError>,
+    body: impl FnOnce(&L, P, &mut Ctx<'_, G>, &Setup<'_>) -> Result<Body, CtlError>,
+) -> Output {
     let mut report = Report::new(L::SPEC.path.join(" "));
     let mut conn = None;
-    match call(args, globals, deps, check, body, &mut conn) {
+    match call(args, globals, deps, check, prepare, body, &mut conn) {
         Ok(b) => report.body = Some(b),
         Err(e) => report.error = Some(e),
     }
@@ -148,15 +166,17 @@ fn connected<G: Grade, L: Leaf<G>>(
     render(&report, globals.json)
 }
 
-fn call<G: Grade, L: Leaf<G>>(
+fn call<G: Grade, L: Leaf<G>, P>(
     args: &L,
     globals: &Globals,
     deps: &Deps,
     check: CpuCheck,
-    body: LeafBody<L, G>,
+    prepare: impl FnOnce(&L, &Setup<'_>) -> Result<P, CtlError>,
+    body: impl FnOnce(&L, P, &mut Ctx<'_, G>, &Setup<'_>) -> Result<Body, CtlError>,
     conn: &mut Option<Conn>,
 ) -> Result<Body, CtlError> {
     let setup = Setup::resolve(&deps.env, globals)?;
+    let prepared = prepare(args, &setup)?;
     if deps.cancel.reason(deps.clock.now()) == Some(CancelReason::Interrupt) {
         return Err(CtlError::new(ErrorKind::Interrupted, "interrupted before connecting; nothing was sent"));
     }
@@ -173,7 +193,7 @@ fn call<G: Grade, L: Leaf<G>>(
     };
     let c = conn.insert(Conn::connect(&setup.config.hosts(&deps.env), setup.config.port, &opts)?);
     let run = c.prelude(&setup.pv_dir, &setup.profile, check)?;
-    body(args, &mut Ctx::new(c, run, &setup.profile), &setup)
+    body(args, prepared, &mut Ctx::new(c, run, &setup.profile), &setup)
 }
 
 #[cfg(test)]

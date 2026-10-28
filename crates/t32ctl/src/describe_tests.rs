@@ -24,9 +24,10 @@ fn the_schema_lists_every_leaf_grade_tag_and_exit() {
     );
     assert_eq!(status["args"][0]["flag"], "--full");
     assert_eq!(status["args"][0]["values"], serde_json::json!([]));
-    let describe = &doc["commands"][2];
-    assert_eq!(doc["commands"][1]["usage"], "t32ctl read reg [NAME...]");
-    assert_eq!(doc["commands"][1]["args"][0]["multiple"], true);
+    let describe = &doc["commands"][3];
+    assert_eq!(doc["commands"][1]["usage"], "t32ctl read mem LOC [--len SIZE] [--width 1|2|4|8] [--to NAME]");
+    assert_eq!(doc["commands"][2]["usage"], "t32ctl read reg [NAME...]");
+    assert_eq!(doc["commands"][2]["args"][0]["multiple"], true);
     assert_eq!(describe["usage"], "t32ctl read describe [--format json|skill|permissions]");
     assert_eq!(strings(&describe["args"][0]["values"]), ["json", "skill", "permissions"]);
     assert_eq!(describe["connects"], false);
@@ -77,6 +78,8 @@ fn the_skill_blocks_are_tables_between_their_markers() {
          | Command | Does | Waits for |\n|---|---|---|\n\
          | `t32ctl read status [--full]` | Header, target and CPU check, profile, PowerView; `--full` adds \
          `profile=<hash>`, the binding, the config, and the state directory | - |\n\
+         | `t32ctl read mem LOC [--len SIZE] [--width 1\\|2\\|4\\|8] [--to NAME]` | Memory as `0x` cells, or into a \
+         file in the output directory | `--to`: the transfer, bounded |\n\
          | `t32ctl read reg [NAME...]` | Registers of PowerView's selected core; no name: the general-purpose set | - \
          |\n\
          | `t32ctl read describe [--format json\\|skill\\|permissions]` | Static command schema | no connection |\n\

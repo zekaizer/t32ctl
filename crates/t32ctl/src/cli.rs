@@ -15,7 +15,7 @@ use t32stage::RegName;
 use crate::{
     error::{CtlError, ErrorKind},
     grade::{Grade, GradeId},
-    notation::{NotationError, PracticeText, reg_name},
+    notation::{NotationError, OutName, Place, PracticeText, Size, reg_name},
 };
 
 /// TRACE32 control over RCL for coding agents. The first word is the permission grade.
@@ -58,6 +58,8 @@ pub enum ReadLeaf {
     /// Header, target and CPU check, profile, PowerView; `--full` adds `profile=<hash>`, the binding, the config,
     /// and the state directory
     Status(ReadStatus),
+    /// Memory as `0x` cells, or into a file in the output directory
+    Mem(ReadMem),
     /// Registers of PowerView's selected core; no name: the general-purpose set
     Reg(ReadReg),
     /// Static command schema
@@ -69,6 +71,45 @@ pub struct ReadStatus {
     /// Add the profile hash, the binding, the config, and the state directory
     #[arg(long)]
     pub full: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ReadMem {
+    /// `[CLASS:]0x<hex>`, or `@<reg>` with an optional `+0x<hex>` or `-0x<hex>` offset
+    #[arg(value_name = "LOC")]
+    pub loc: Place,
+    /// Bytes to read; default one cell. At most 4K without --to, at most [calls] transfer_max with it
+    #[arg(long, value_name = "SIZE")]
+    pub len: Option<Size>,
+    /// Access width in bytes; default the touched mmio regions' width, else the profile's word
+    #[arg(long, value_enum)]
+    pub width: Option<Width>,
+    /// Write the bytes to a new file of this name in a fresh output directory instead
+    #[arg(long, value_name = "NAME")]
+    pub to: Option<OutName>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Width {
+    #[value(name = "1")]
+    W1,
+    #[value(name = "2")]
+    W2,
+    #[value(name = "4")]
+    W4,
+    #[value(name = "8")]
+    W8,
+}
+
+impl Width {
+    pub fn bytes(self) -> u8 {
+        match self {
+            Width::W1 => 1,
+            Width::W2 => 2,
+            Width::W4 => 4,
+            Width::W8 => 8,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -171,6 +212,9 @@ macro_rules! leaves {
 
 leaf!(Read, ReadStatus, path: ["read", "status"], waits: "-", connects: true,
       examples: ["t32ctl read status", "t32ctl read status --full", "t32ctl read status --json"]);
+leaf!(Read, ReadMem, path: ["read", "mem"], waits: "`--to`: the transfer, bounded", connects: true,
+      examples: ["t32ctl read mem @sp --len 64", "t32ctl read mem A:0x40000000 --len 16",
+                 "t32ctl read mem 0x40000000 --len 64M --to ddr.bin"]);
 leaf!(Read, ReadReg, path: ["read", "reg"], waits: "-", connects: true,
       examples: ["t32ctl read reg", "t32ctl read reg x0 sp", "t32ctl read reg esr_el1 far_el1 --json"]);
 leaf!(Read, ReadDescribe, path: ["read", "describe"], waits: "no connection", connects: false,
@@ -183,6 +227,7 @@ leaf!(Raw, RawEval, path: ["raw", "eval"], waits: "the function", connects: true
 
 leaves! {
     (Read, ReadStatus),
+    (Read, ReadMem),
     (Read, ReadReg),
     (Read, ReadDescribe),
     (Raw, RawCommand),
@@ -196,6 +241,7 @@ impl Cli {
         match &self.grade {
             GradeCmd::Read(g) => match g.leaf {
                 ReadLeaf::Status(_) => &<ReadStatus as Leaf<Read>>::SPEC,
+                ReadLeaf::Mem(_) => &<ReadMem as Leaf<Read>>::SPEC,
                 ReadLeaf::Reg(_) => &<ReadReg as Leaf<Read>>::SPEC,
                 ReadLeaf::Describe(_) => &<ReadDescribe as Leaf<Read>>::SPEC,
             },

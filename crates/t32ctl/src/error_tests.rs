@@ -139,6 +139,7 @@ fn every_tag_maps_to_its_exit_and_every_exit_has_a_code_and_a_next_step() {
         [
             ("usage", 2),
             ("notation", 2),
+            ("memory-policy", 2),
             ("refused", 2),
             ("not-halted", 3),
             ("target-down", 3),

@@ -12,7 +12,7 @@ use t32rcl::FuncValue;
 
 use crate::{
     error::{CtlError, Exit},
-    notation::shell_word,
+    notation::{Size, display_ms, shell_word},
 };
 
 pub const SCHEMA: &str = "t32ctl.report/1";
@@ -198,6 +198,7 @@ impl Hint {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Body {
     Status(Box<StatusBody>),
+    Mem(MemBody),
     Regs(RegsBody),
     Eval(EvalBody),
     Cmd(CmdBody),
@@ -207,17 +208,128 @@ impl Body {
     /// Exit 0 or 1: whether the command ended as asked.
     pub fn outcome(&self) -> Exit {
         match self {
-            Body::Status(_) | Body::Regs(_) | Body::Eval(_) | Body::Cmd(_) => Exit::Ok,
+            Body::Mem(MemBody { data: MemData::Stopped(_), .. }) => Exit::Outcome,
+            Body::Status(_) | Body::Mem(_) | Body::Regs(_) | Body::Eval(_) | Body::Cmd(_) => Exit::Ok,
         }
     }
 
     pub fn lines(&self) -> Vec<String> {
         match self {
             Body::Status(s) => s.lines(),
+            Body::Mem(m) => m.lines(),
             Body::Regs(r) => r.lines(),
             Body::Eval(e) => vec![e.to_string()],
             Body::Cmd(_) => vec!["cmd: done".into()],
         }
+    }
+}
+
+/// `read mem`: the place, the physical address of a translated place, the regions the read touched,
+/// and the bytes as cells or in a file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct MemBody {
+    /// The place with its class: `D:0x40107e40`.
+    pub place: String,
+    /// The place as text prints it: without the class when it is the profile's default.
+    #[serde(skip)]
+    pub shown: String,
+    #[serde(skip)]
+    pub class: String,
+    #[serde(skip)]
+    pub addr: u64,
+    /// The physical address of the first byte, for a translated class.
+    pub phys: Option<Phys>,
+    pub len: u64,
+    pub width: u8,
+    pub regions: Vec<RegionRef>,
+    #[serde(flatten)]
+    pub data: MemData,
+}
+
+/// A physical address: `0x...` in text, `A:0x...` in JSON.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Phys(pub u64);
+
+impl Serialize for Phys {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(&format_args!("A:{:#x}", self.0))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RegionRef {
+    pub name: String,
+    pub kind: &'static str,
+}
+
+/// The bytes of a read: cells at the access width, little-endian; a file; or a transfer its bound
+/// stopped.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemData {
+    Cells(Vec<String>),
+    File(FileStats),
+    Stopped(StoppedTransfer),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct FileStats {
+    pub path: String,
+    pub bytes: u64,
+    pub after_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct StoppedTransfer {
+    pub bound_ms: u64,
+    /// Bytes written before the bound; the partial file was removed.
+    pub bytes: u64,
+}
+
+/// `0x` and two hex digits per byte of each `width`-byte little-endian cell. AArch64 is
+/// little-endian; another byte order needs a profile key.
+pub fn cells(data: &[u8], width: u8) -> Vec<String> {
+    let w = usize::from(width.max(1));
+    data.chunks(w)
+        .map(|c| {
+            let v = c.iter().rev().fold(0u64, |acc, &b| (acc << 8) | u64::from(b));
+            format!("0x{v:0digits$x}", digits = 2 * c.len())
+        })
+        .collect()
+}
+
+/// Bytes per cell line.
+const LINE: usize = 16;
+
+impl MemBody {
+    fn lines(&self) -> Vec<String> {
+        let mut head = format!("mem {} len={} width={} class={}", self.shown, Size(self.len), self.width, self.class);
+        if let Some(p) = self.phys {
+            head.push_str(&format!(" phys={:#x}", p.0));
+        }
+        let regions: Vec<String> = self.regions.iter().map(|r| format!("{} {:?}", r.kind, r.name)).collect();
+        let noun = if regions.len() == 1 { "region" } else { "regions" };
+        head.push_str(&format!(" ({noun} {})", regions.join(", ")));
+        let mut v = vec![head];
+        let prefix = self.shown.strip_suffix(&format!("{:#x}", self.addr)).unwrap_or_default();
+        match &self.data {
+            MemData::Cells(cells) => {
+                let per_line = (LINE / usize::from(self.width.max(1))).max(1);
+                for (i, line) in cells.chunks(per_line).enumerate() {
+                    let at = self.addr.wrapping_add((i * LINE) as u64);
+                    v.push(format!("{prefix}{at:#x}: {}", line.join(" ")));
+                }
+            }
+            MemData::File(f) => {
+                v.push(format!("file: {} ({} in {})", f.path, Size(f.bytes), display_ms(f.after_ms)));
+            }
+            MemData::Stopped(s) => v.push(format!(
+                "transfer stopped at the {} bound after {}; the partial file was removed",
+                display_ms(s.bound_ms),
+                Size(s.bytes)
+            )),
+        }
+        v
     }
 }
 
