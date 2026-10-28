@@ -13,8 +13,8 @@ use t32stage::{
 use super::{
     hex,
     lab::{
-        Answer, Case, CaseRecord, Ending, Expect, Lab, LabSizes, Run, Seen, Slot, Until, raw_note, stack_depth,
-        stop_token, vm_slot,
+        Answer, Case, CaseRecord, Ending, Expect, Lab, LabSizes, Seen, Slot, Until, raw_note, stack_depth, stop_token,
+        vm_slot,
     },
     pattern, soft,
 };
@@ -337,21 +337,12 @@ pub fn script_halt(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     result.and(closed)
 }
 
-/// `stage` + `start`; `None` when the case did not get that far.
-fn begin(ctx: &mut ProbeCtx<'_>, lab: &mut Lab, case: &Case) -> Result<Option<Run>, ProbeFail> {
-    let staged = match lab.stage(ctx, case)? {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    Ok(lab.start(ctx, staged)?.ok())
-}
-
 fn script_halt_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
     let dash = || "-".to_string();
     let mut finished: Vec<CaseRecord> = Vec::new();
 
     let mut stop = dash();
-    if let Some(mut run) = begin(ctx, lab, &hs_stop())? {
+    if let Some(mut run) = lab.begin(ctx, &hs_stop())? {
         let seen = lab.wait(ctx, &mut run, Until::Done)?;
         stop = match seen {
             Seen::End(Ending::Halted { .. }) => lab.observe(ctx, &mut run, Duration::from_secs(1))?,
@@ -362,7 +353,7 @@ fn script_halt_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
     ctx.text("stop", stop);
 
     let (mut err, mut errmsg, mut errid, mut reset) = (dash(), "none", "none".to_string(), dash());
-    if let Some(mut run) = begin(ctx, lab, &hs_err())? {
+    if let Some(mut run) = lab.begin(ctx, &hs_err())? {
         let seen = lab.wait(ctx, &mut run, Until::Done)?;
         err = run.watch.last().unwrap_or_else(dash);
         if let Some(d) = run.diags.first() {
@@ -388,7 +379,7 @@ fn script_halt_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
     ctx.text("reset", reset);
 
     let (mut t32stop, mut wait_cut, mut end1) = (dash(), dash(), dash());
-    if let Some(mut run) = begin(ctx, lab, &hs_wait())? {
+    if let Some(mut run) = lab.begin(ctx, &hs_wait())? {
         if lab.wait(ctx, &mut run, Until::Marker("w"))? == Seen::Reached {
             lab.pause(Duration::from_millis(500));
             let (token, took) = lab.stop(ctx, &mut run)?;
@@ -415,7 +406,7 @@ fn script_halt_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
     ctx.text("end1", end1);
 
     let mut unwind = dash();
-    if let Some(mut run) = begin(ctx, lab, &hs_unwind())? {
+    if let Some(mut run) = lab.begin(ctx, &hs_unwind())? {
         if lab.wait(ctx, &mut run, Until::Marker("w"))? == Seen::Reached {
             unwind = match soft(t32stage::unwind_practice(ctx.session))? {
                 Some(CleanupOutcome::Done) => "done".to_string(),
@@ -433,7 +424,7 @@ fn script_halt_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
     if let Some(l) = lab.l {
         stop_save = dash();
         ctx.session.mem_write(&l.addr(), &pattern(u64::from(LARGE) + 1, LARGE as usize))?;
-        if let Some(mut run) = begin(ctx, lab, &hs_save())? {
+        if let Some(mut run) = lab.begin(ctx, &hs_save())? {
             let mut took = None;
             if lab.wait(ctx, &mut run, Until::Marker("w"))? == Seen::Reached {
                 lab.pause(Duration::from_millis(50));

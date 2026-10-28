@@ -10,7 +10,7 @@ use serde::{Serialize, Serializer};
 use crate::{
     cli::Gates,
     ctx::{ProbeCtx, ProbeResult},
-    probes::{optin, scriptlab, scripts, storage, transport},
+    probes::{channels, optin, scriptlab, scripts, storage, transport},
 };
 
 /// Why a probe is not in the default run.
@@ -134,6 +134,8 @@ probes! {
         "STOP, uncaught errors, T32_Stop status, END, ERROR.* reads, files and globals after END";
     ScriptError = "script-error", Safe, [Bundle], true, 90, scripts::script_error,
         "failing scripts surface as failures, never as success";
+    ChannelIn = "channel-in", Safe, [ScriptLab], true, 180, channels::channel_in,
+        "client to script without macros: VM: strings, DO arguments, EVAL, READ, OS.PPD, ~~~~ reads";
     TarDownload = "tar-download", Safe, [Bundle], true, 60, storage::tar_download,
         "TAR + ZIP in PowerView, download through VM:, untar in Rust";
     Dialog = "dialog", Tier::OptIn(Dialog), [Bundle], true, 40, optin::dialog,
@@ -260,6 +262,7 @@ mod tests {
             "script-lab",
             "script-halt",
             "script-error",
+            "channel-in",
             "tar-download",
         ];
         let opt = [("dialog", Dialog), ("multi-client", MultiClient), ("run-control", RunControl), ("elf-unzip", Elf)];
@@ -278,7 +281,7 @@ mod tests {
         let names = |v: Vec<&ProbeDef>| v.iter().map(|d| d.id.name()).collect::<Vec<_>>();
         assert_eq!(names(select(&[ProbeId::VmFile], &[], &none).unwrap()), ["connect", "tempdir", "vm-rw", "vm-file"]);
         let default = select(&[], &[ProbeId::Latency], &none).unwrap();
-        assert_eq!(default.len(), 15);
+        assert_eq!(default.len(), 16);
         assert!(default.iter().all(|d| d.tier == Tier::Safe));
         assert_eq!(select(&[ProbeId::Dialog], &[], &none).unwrap_err(), "dialog needs --allow-dialog");
         let gates = Gates { dialog: true, ..Gates::default() };

@@ -43,7 +43,7 @@ pub(crate) fn yes_no(s: Script, expr: &str, v: bool) -> Script {
 }
 
 pub(crate) fn readable(s: Script, tag: &str, name: &str, v: bool) -> Script {
-    yes_no(s, &format!("OS.FILE.readable(\"{}\\{name}\")", dir(tag)), v)
+    yes_no(s, &format!("OS.FILE.readable(\"{}\\{}\")", dir(tag), name.replace('/', "\\")), v)
 }
 
 /// `Lab::open` without `{L}`: work directory, a snapshot of never-initialized units, the marker.
@@ -93,7 +93,7 @@ pub(crate) fn staged(mut s: Script, tag: &str, case: &Case, out: ScriptOut) -> S
         let addr = u64::from(BASE) + (k * 1024) as u64;
         s = s.expect_req(Request::MemWrite { access: "VM".into(), addr, data: chunk.to_vec() }).reply_ok();
     }
-    let script = format!("{}\\{}", dir(tag), case.script_name());
+    let script = format!("{}\\{}", dir(tag), case.script_name().replace('/', "\\"));
     s = s.expect_cmd(&format!("Data.SAVE.Binary \"{script}\" VM:0x{BASE:08X}++0x{:08X}", text.len() - 1)).reply_ok();
     s.expect_fn(&format!("OS.FILE.SIZE(\"{script}\")")).reply_decimal(text.len() as i64)
 }

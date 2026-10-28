@@ -11,6 +11,7 @@
 //! PRACTICE text written here, outside `t32stage::practice`, is probe-only: it measures how
 //! PowerView behaves and never becomes a Phase 1 code path.
 
+pub mod channels;
 pub mod lab;
 pub mod optin;
 pub mod scriptlab;

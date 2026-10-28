@@ -15,7 +15,7 @@
 //! `GetPracticeState` alone never ends a script: a halted script and a `WAIT` may look alike.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
 
@@ -145,7 +145,22 @@ impl Case {
         self
     }
 
-    fn script_name(&self) -> String {
+    pub fn args(mut self, args: impl Into<String>) -> Self {
+        self.args = Some(args.into());
+        self
+    }
+
+    pub fn script(mut self, path: impl Into<String>) -> Self {
+        self.script = Some(path.into());
+        self
+    }
+
+    pub fn dirs(mut self, dirs: &[&str]) -> Self {
+        self.dirs.extend(dirs.iter().map(|d| d.to_string()));
+        self
+    }
+
+    pub(crate) fn script_name(&self) -> String {
         self.script.clone().unwrap_or_else(|| format!("{}.cmm", self.id))
     }
 }
@@ -227,7 +242,7 @@ pub(crate) struct Rendered {
 
 impl Rendered {
     /// Files below `{S}` the script may write, value files only for the `Write` channel.
-    fn outputs(&self, id: &str, out: ScriptOut) -> Vec<String> {
+    pub(crate) fn outputs(&self, id: &str, out: ScriptOut) -> Vec<String> {
         let mut v: Vec<String> = self.markers.iter().map(|m| format!("{id}-{m}.bin")).collect();
         for k in &self.asks {
             v.push(format!("{id}-{k}-yes.bin"));
@@ -748,6 +763,7 @@ pub(crate) struct Lab {
     fill: Fill,
     script: VmRegion,
     r: VmRegion,
+    p: VmRegion,
     b: VmRegion,
     pub l: Option<VmRegion>,
     pub out: ScriptOut,
@@ -757,6 +773,8 @@ pub(crate) struct Lab {
     /// Lowercase names below `{S}` with a registered removal.
     registered: BTreeSet<String>,
     staged: BTreeSet<String>,
+    /// Markers and asks of sub-scripts, by the id of the case that runs them.
+    subs: BTreeMap<String, Rendered>,
     /// A script this Lab started may still be on the stack.
     ours_on_stack: bool,
     pub cut: Vec<String>,
@@ -816,6 +834,7 @@ impl Lab {
             fill,
             script,
             r,
+            p,
             b,
             l,
             out: ctx.learned.script_out.unwrap_or(ScriptOut::Off),
@@ -823,6 +842,7 @@ impl Lab {
             limit: ctx.deadline.checked_sub(LAB_RESERVE).unwrap_or(ctx.deadline),
             registered: BTreeSet::new(),
             staged: BTreeSet::new(),
+            subs: BTreeMap::new(),
             ours_on_stack: false,
             cut: Vec::new(),
             records: Vec::new(),
@@ -845,6 +865,40 @@ impl Lab {
 
     pub fn r_slot(&self, k: u32) -> VmRegion {
         self.r.slice(SLOT * k, SLOT).expect("16 slots fit the result region")
+    }
+
+    /// The 64 KiB blob region `{B}`.
+    pub fn blob(&self) -> VmRegion {
+        self.b
+    }
+
+    /// Input slot `{Pk}`, at most 0x100 bytes.
+    pub fn input(&self, ctx: &mut ProbeCtx<'_>, k: u32, bytes: &[u8]) -> Result<(), ProbeFail> {
+        assert!(k < 8 && bytes.len() <= SLOT as usize, "input slot {k} holds 0x100 bytes");
+        Ok(ctx.session.mem_write(&self.p.addr().offset(u64::from(SLOT * k)).expect("inside P"), bytes)?)
+    }
+
+    /// The long input `{PL}`, at most 12 KiB.
+    pub fn input_long(&self, ctx: &mut ProbeCtx<'_>, bytes: &[u8]) -> Result<(), ProbeFail> {
+        assert!(bytes.len() <= (INPUT_LEN - 0x1000) as usize, "{{PL}} holds 12 KiB");
+        Ok(ctx.session.mem_write(&self.p.addr().offset(0x1000).expect("inside P"), bytes)?)
+    }
+
+    /// `MKDIR` below `{S}`, its removal registered first; `Check` when it does not appear.
+    pub fn mkdir(&mut self, ctx: &mut ProbeCtx<'_>, rel: &str) -> Result<(), ProbeFail> {
+        let p = self.path(rel)?;
+        ctx.push(Undo::RemoveDir(p.clone()))?;
+        self.registered.insert(rel.to_ascii_lowercase());
+        ctx.session.cmd(&cmd::mkdir(&p))?;
+        if !self.dir_exists(ctx, rel)? {
+            return Err(ProbeFail::Check(format!("MKDIR did not create {p}")));
+        }
+        Ok(())
+    }
+
+    pub fn dir_exists(&self, ctx: &mut ProbeCtx<'_>, rel: &str) -> Result<bool, ProbeFail> {
+        let expr = fnc::dir_exists(&self.path(rel)?);
+        Ok(ctx.session.eval(&expr)?.into_bool(&expr)?)
     }
 
     /// A pause between the probe's own steps; none in tests.
@@ -908,13 +962,32 @@ impl Lab {
         Ok(())
     }
 
+    /// A script a case `DO`s, rendered with the directives under the id of that case, before the
+    /// case is staged. Its markers and asks are read with the case's own.
+    pub fn stage_sub(&mut self, ctx: &mut ProbeCtx<'_>, parent: &str, name: &str, body: &str) -> Result<(), ProbeFail> {
+        let case = Case::new(parent, body, Expect::End, Duration::ZERO);
+        let rendered = render(&case, &self.fill, self.out).map_err(template_error)?;
+        let mut names = rendered.outputs(parent, self.out);
+        names.push(name.to_string());
+        self.claim(ctx, &names)?;
+        let p = self.path(name)?;
+        if soft(transfer::put_file(ctx.session, &self.script, rendered.text.as_bytes(), &p))?.is_none() {
+            return Err(ProbeFail::Check(format!("{name} could not be staged")));
+        }
+        let sub = self.subs.entry(parent.to_string()).or_default();
+        sub.markers.extend(rendered.markers);
+        sub.asks.extend(rendered.asks);
+        sub.puts.extend(rendered.puts);
+        Ok(())
+    }
+
     /// Render, refuse stale outputs, register every removal, write the script. `Err(record)` when
     /// the script did not arrive intact; the case is then not run.
     pub fn stage(&mut self, ctx: &mut ProbeCtx<'_>, case: &Case) -> Result<Result<Staged, CaseRecord>, ProbeFail> {
         if !self.staged.insert(case.id.clone()) {
             return Err(template_error(format!("{}: id staged twice", case.id)));
         }
-        let rendered = render(case, &self.fill, self.out).map_err(template_error)?;
+        let mut rendered = render(case, &self.fill, self.out).map_err(template_error)?;
         let args =
             case.args.as_deref().map(|a| fill_text(a, &self.fill, &case.id)).transpose().map_err(template_error)?;
         for d in &case.dirs {
@@ -926,6 +999,15 @@ impl Lab {
         names.extend(case.outputs.iter().cloned());
         names.push(script_name.clone());
         self.claim(ctx, &names)?;
+        if let Some(sub) = self.subs.remove(&case.id) {
+            for m in sub.markers {
+                if !rendered.markers.contains(&m) {
+                    rendered.markers.push(m);
+                }
+            }
+            rendered.asks.extend(sub.asks);
+            rendered.puts.extend(sub.puts);
+        }
         let script = self.path(&script_name)?;
         if soft(transfer::put_file(ctx.session, &self.script, rendered.text.as_bytes(), &script))?.is_none() {
             return Ok(Err(self.record(ctx, CaseRecord::not_run(&case.id, "FAIL"))));
@@ -1180,6 +1262,29 @@ impl Lab {
         Ok((Slot::Text(text), raw))
     }
 
+    /// `stage` + `start`; `None` when the case did not get that far (its record says why).
+    pub fn begin(&mut self, ctx: &mut ProbeCtx<'_>, case: &Case) -> Result<Option<Run>, ProbeFail> {
+        let staged = match self.stage(ctx, case)? {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        };
+        Ok(self.start(ctx, staged)?.ok())
+    }
+
+    /// A file below `{S}` loaded through the blob region; `None` when absent, empty or refused.
+    pub fn fetch(&self, ctx: &mut ProbeCtx<'_>, name: &str) -> Result<Option<Vec<u8>>, ProbeFail> {
+        if !self.readable(ctx, name)? {
+            return Ok(None);
+        }
+        let p = self.path(name)?;
+        match soft(transfer::file_size(ctx.session, &p))? {
+            Some(size) if size > 0 && size <= u64::from(self.b.len()) => {
+                Ok(soft(transfer::get_file(ctx.session, &p, &self.b, size as u32))?)
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// `stage + start + wait(Done) + finish`.
     pub fn run(&mut self, ctx: &mut ProbeCtx<'_>, case: &Case) -> Result<CaseRecord, ProbeFail> {
         let staged = match self.stage(ctx, case)? {
@@ -1220,6 +1325,15 @@ impl Lab {
         }
         Ok(())
     }
+}
+
+/// A function's value as text; `None` when PowerView refused it.
+pub(crate) fn eval_text(ctx: &mut ProbeCtx<'_>, expr: &str) -> Result<Option<String>, ProbeFail> {
+    Ok(soft(ctx.session.eval(expr))?.map(|v| match v {
+        FuncValue::Text(t) => t,
+        FuncValue::Empty => String::new(),
+        other => other.to_string(),
+    }))
 }
 
 /// `st<status>` for an answered `T32_Stop`, `err<code>` for a refused one.
