@@ -150,6 +150,7 @@ fn a_cached_snapshot_costs_one_call_and_a_run_finishes_by_token() {
         args: vec!["a".into(), "0x10".into()],
         timeout: Duration::from_secs(5),
         collect_outputs: false,
+        params: vec![],
     };
     let report = st.run(&mut session, &snap, &req).unwrap();
     assert_eq!(
@@ -187,9 +188,51 @@ fn an_operator_script_started_after_our_run_is_never_unwound() {
         args: vec![],
         timeout: Duration::from_secs(5),
         collect_outputs: false,
+        params: vec![],
     };
     assert!(st.run(&mut session, &snap, &req).unwrap().outcome.is_success());
     assert!(matches!(st.run(&mut session, &snap, &req), Err(StageError::Busy { depth: -1 })));
+    assert!(st.close(&mut session).is_clean());
+    let _ = std::fs::remove_dir_all(state_dir);
+}
+
+#[test]
+fn parameter_macros_are_journaled_for_clearing_before_they_are_set() {
+    let b = bundle();
+    let dir = format!("C:\\T\\t32ctl\\{}", b.key());
+    let mut s = opened(Script::new().attach());
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
+    s = idle(s, 0);
+    s = s.expect_req(Request::MacroSet { name: "&t32ctl_p_part".into(), value: "user".into() }).reply_macro("");
+    s = s.expect_req(Request::MacroSet { name: "&t32ctl_p_offset".into(), value: "0.".into() }).reply_macro("");
+    s = set(s, Macro::Snap, &dir);
+    s = set(s, Macro::Entry, "main.cmm");
+    s = set(s, Macro::Args, "");
+    s = executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "", "");
+    for name in ["&t32ctl_p_part", "&t32ctl_p_offset"] {
+        s = s.expect_req(Request::MacroSet { name: name.into(), value: String::new() }).reply_macro("");
+    }
+    s = closed(s, false);
+    let mut session = session_with(vec![Ok(s)], |_| {});
+
+    let cfg = config("stage-params");
+    let state_dir = cfg.state_dir.clone();
+    let mut st = stage(&mut session, cfg);
+    let snap = st.ensure_snapshot(&mut session, &b).unwrap();
+    let params = vec![
+        (crate::param_macro("part").unwrap(), "user".to_string()),
+        (crate::param_macro("offset").unwrap(), "0.".to_string()),
+    ];
+    let req = RunRequest {
+        entry: RelPath::new("main.cmm").unwrap(),
+        args: vec![],
+        timeout: Duration::from_secs(5),
+        collect_outputs: false,
+        params,
+    };
+    assert!(st.run(&mut session, &snap, &req).unwrap().outcome.is_success());
+    let journal = std::fs::read_to_string(state_dir.join("journal/stage-params.undo")).unwrap();
+    assert!(journal.lines().any(|l| l == "clear-macros\tt32ctl_p_part,t32ctl_p_offset"), "{journal}");
     assert!(st.close(&mut session).is_clean());
     let _ = std::fs::remove_dir_all(state_dir);
 }
@@ -218,6 +261,7 @@ fn run_once(tag: &str, b: &Bundle, s: Script) -> RunOutcome {
         args: vec![],
         timeout: Duration::from_secs(5),
         collect_outputs: false,
+        params: vec![],
     };
     let outcome = st.run(&mut session, &snap, &req).unwrap().outcome;
     assert!(st.close(&mut session).is_clean());
@@ -314,6 +358,7 @@ fn a_busy_stack_is_refused_and_a_dialog_is_stopped_and_unwound() {
         args: vec![],
         timeout: Duration::from_secs(5),
         collect_outputs: false,
+        params: vec![],
     };
     assert!(matches!(st.run(&mut session, &snap, &req), Err(StageError::Busy { depth: 2 })));
     assert_eq!(st.run(&mut session, &snap, &req).unwrap().outcome, RunOutcome::DialogAborted);
@@ -354,6 +399,7 @@ fn a_script_that_outlives_stop_and_end_is_an_unwind_failure_not_busy() {
         args: vec![],
         timeout: Duration::ZERO,
         collect_outputs: false,
+        params: vec![],
     };
     assert!(matches!(st.run(&mut session, &snap, &req), Err(StageError::UnwindFailed { depth: 1 })));
     assert!(st.close(&mut session).is_clean());

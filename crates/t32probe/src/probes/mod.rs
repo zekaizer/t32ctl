@@ -78,7 +78,7 @@ pub(crate) fn run_entry(
     timeout: Duration,
 ) -> Result<RunReport, ProbeFail> {
     let args = args.iter().map(|a| a.to_string()).collect();
-    let req = RunRequest { entry: RelPath::new(entry)?, args, timeout, collect_outputs: false };
+    let req = RunRequest { entry: RelPath::new(entry)?, args, timeout, collect_outputs: false, params: vec![] };
     Ok(stage.run(session, snap, &req)?)
 }
 

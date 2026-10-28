@@ -35,7 +35,7 @@ pub use ledger::{
     CleanupItem, CleanupOutcome, CleanupReport, Journal, Ledger, RESTORE_VM, Undo, default_state_dir, pv_state_dir,
     replay_leftovers, unwind_practice,
 };
-pub use macros::Macro;
+pub use macros::{Macro, PARAM_PREFIX, param_macro};
 pub use practice::{ExistsFn, PvPath, RegName, RelPath, StagePath, StageRoot, Symbol};
 pub use runner::{PollSchedule, PollStats, PracticeErrorInfo, RunOutcome, RunReport, RunRequest, ScriptRc, runner_cmm};
 pub use stage::{OpenError, Outputs, Retention, Snapshot, Stage, StageConfig, StagedFile, UploadStats};

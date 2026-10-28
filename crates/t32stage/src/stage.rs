@@ -255,7 +255,8 @@ impl Stage {
 
     /// Run `req.entry` from the snapshot under the runner. Requires an idle PRACTICE stack
     /// (`StageError::Busy` otherwise, with nothing changed); afterwards the stack is empty again
-    /// on every outcome.
+    /// on every outcome. Parameter macros are set over EXP 2 without a `GLOBAL` (build 168999
+    /// needs none) after their clearing is registered.
     pub fn run(&mut self, session: &mut Session, snap: &Snapshot, req: &RunRequest) -> Result<RunReport, StageError> {
         let args = render_args(&req.args)?;
         self.require_idle(session)?;
@@ -269,6 +270,12 @@ impl Stage {
         } else {
             None
         };
+        if !req.params.is_empty() {
+            self.ledger.push(Undo::ClearMacros(req.params.iter().map(|(name, _)| name.clone()).collect()))?;
+            for (name, value) in &req.params {
+                session.macro_set(name, value)?;
+            }
+        }
         session.macro_set(&Macro::Snap.name(), &snap.dir.text())?;
         session.macro_set(&Macro::Entry.name(), &self.root.native(&req.entry))?;
         session.macro_set(&Macro::Args.name(), &args)?;

@@ -29,7 +29,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use t32rcl::PracticeState;
+use t32rcl::{MacroName, PracticeState};
 
 use crate::{macros::Macro, practice::RelPath};
 
@@ -75,6 +75,8 @@ pub struct RunRequest {
     pub timeout: Duration,
     /// Create a per-run output directory (`&t32ctl_out`) the entry script may write into.
     pub collect_outputs: bool,
+    /// Macros the run sets before `DO` and clears at `close`, named by `param_macro`.
+    pub params: Vec<(MacroName, String)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

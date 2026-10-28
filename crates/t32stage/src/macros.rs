@@ -5,7 +5,7 @@
 //! Global macros are PowerView-wide shared state; every name has the `t32ctl_` prefix, and the
 //! run token makes values left by an earlier or crashed run harmless.
 
-use t32rcl::MacroName;
+use t32rcl::{LocalError, MacroName};
 
 macro_rules! macro_table {
     ($( $variant:ident = $text:literal, $doc:literal; )+) => {
@@ -46,6 +46,18 @@ impl Macro {
     }
 }
 
+/// The prefix of a procedure parameter's macro.
+pub const PARAM_PREFIX: &str = "t32ctl_p_";
+
+/// `t32ctl_p_<name>`, the macro a script reads a parameter from. `name` is not empty.
+pub fn param_macro(name: &str) -> Result<MacroName, LocalError> {
+    let full = format!("{PARAM_PREFIX}{name}");
+    if name.is_empty() {
+        return Err(LocalError::BadMacroName(full));
+    }
+    MacroName::new(&full)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +69,15 @@ mod tests {
             m.name();
             assert!(m.text().starts_with("t32ctl_"));
             assert!(seen.insert(m.text()));
+        }
+    }
+
+    #[test]
+    fn a_parameter_macro_is_prefixed_and_a_valid_name() {
+        assert_eq!(param_macro("part").map(|m| m.amp()), Ok("&t32ctl_p_part".to_string()));
+        assert!(param_macro(&"a".repeat(55)).is_ok());
+        for bad in ["a-b", "", &"a".repeat(56)] {
+            assert!(param_macro(bad).is_err(), "{bad}");
         }
     }
 }
