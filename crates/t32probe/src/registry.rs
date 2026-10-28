@@ -10,7 +10,7 @@ use serde::{Serialize, Serializer};
 use crate::{
     cli::Gates,
     ctx::{ProbeCtx, ProbeResult},
-    probes::{channels, files, functions, macros, optin, scriptlab, scripts, storage, transport},
+    probes::{channels, files, functions, macros, optin, scriptlab, scripts, storage, transport, unpack},
 };
 
 /// Why a probe is not in the default run.
@@ -150,6 +150,8 @@ probes! {
         "client macros seen by DO'd scripts: EXP bare/amp, command-line GLOBAL and assignment, declared-only, undeclared, EXPLICIT, implicit visibility";
     MacroReturn = "macro-return", Safe, [ScriptLab], true, 180, macros::macro_return,
         "script macros seen by the client and later scripts: script GLOBAL over EXP, writes into client globals, frames during WAIT, EXP while halted with CONTinue, markers across END, storage form, generated wrappers";
+    UnpackLiteral = "unpack-literal", Safe, [ScriptLab], true, 300, unpack::unpack_literal,
+        "the unpack shape on literal paths: time per file and per MiB, .bak on rerun, pre-RM, the empty-or-relative path guard, ABSPATH identity";
     Dialog = "dialog", Tier::OptIn(Dialog), [Bundle], true, 40, optin::dialog,
         "script opens a dialog: state 2, T32_Stop, script ends (shows a window)";
     MultiClient = "multi-client", Tier::OptIn(MultiClient), [Bundle], true, 60, optin::multi_client,
@@ -282,6 +284,7 @@ mod tests {
             "channel-out",
             "macro-visibility",
             "macro-return",
+            "unpack-literal",
         ];
         let opt = [("dialog", Dialog), ("multi-client", MultiClient), ("run-control", RunControl), ("elf-unzip", Elf)];
         for n in safe {
@@ -299,7 +302,7 @@ mod tests {
         let names = |v: Vec<&ProbeDef>| v.iter().map(|d| d.id.name()).collect::<Vec<_>>();
         assert_eq!(names(select(&[ProbeId::VmFile], &[], &none).unwrap()), ["connect", "tempdir", "vm-rw", "vm-file"]);
         let default = select(&[], &[ProbeId::Latency], &none).unwrap();
-        assert_eq!(default.len(), 22);
+        assert_eq!(default.len(), 23);
         assert!(default.iter().all(|d| d.tier == Tier::Safe));
         assert_eq!(select(&[ProbeId::Dialog], &[], &none).unwrap_err(), "dialog needs --allow-dialog");
         let gates = Gates { dialog: true, ..Gates::default() };

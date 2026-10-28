@@ -135,6 +135,8 @@ pub struct Learned {
     pub script_out: Option<ScriptOut>,
     /// A value set over EXP 2 reads back inside a `DO`'d script. macro-visibility decides.
     pub exp_to_script: Option<bool>,
+    /// `OS.FILE.ABSPATH` returns an absolute stage path unchanged. unpack-literal decides.
+    pub abspath_same: Option<bool>,
 }
 
 impl Learned {

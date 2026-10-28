@@ -950,6 +950,21 @@ impl Lab {
         Ok(())
     }
 
+    /// List the directory `rel` below `{S}`: a file nobody registered gets its removal registered.
+    /// The unregistered names as `rel/<name>`; `None` when listing is refused.
+    pub fn sweep(&mut self, ctx: &mut ProbeCtx<'_>, rel: &str) -> Result<Option<Vec<String>>, ProbeFail> {
+        let Listing::Names { names, .. } = list_dir(ctx.session, &self.path(rel)?)? else { return Ok(None) };
+        let mut stray = Vec::new();
+        for n in names {
+            let r = format!("{rel}/{n}");
+            if self.registered.insert(r.to_ascii_lowercase()) {
+                ctx.push(Undo::RemoveFile(self.path(&r)?))?;
+                stray.push(r);
+            }
+        }
+        Ok(Some(stray))
+    }
+
     /// Refuse a name that exists before anything writes it, then register its removal.
     fn claim(&mut self, ctx: &mut ProbeCtx<'_>, names: &[String]) -> Result<(), ProbeFail> {
         for n in names {

@@ -21,6 +21,7 @@ pub mod scriptlab;
 pub mod scripts;
 pub mod storage;
 pub mod transport;
+pub mod unpack;
 
 use std::time::Duration;
 
