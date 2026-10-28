@@ -212,11 +212,12 @@ pub fn not_run(gates: &Gates) -> Vec<ProbeId> {
 
 /// `--list` text.
 pub fn list_text() -> String {
+    let width = ALL.iter().map(|d| d.id.name().len()).max().unwrap_or(0) + 1;
     let mut s = String::new();
     for d in ALL {
         let req: Vec<_> = d.requires.iter().map(|r| r.name()).collect();
         s += &format!(
-            "{:<13}{:<34}{:>5}s  {}\n    requires: {}\n",
+            "{:<width$}{:<34}{:>5}s  {}\n    requires: {}\n",
             d.id.name(),
             d.tier.label(),
             d.deadline.as_secs(),
@@ -250,6 +251,14 @@ pub fn list_markdown() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_text_keeps_a_gap_after_the_longest_name() {
+        for line in list_text().lines().filter(|l| !l.starts_with(' ')) {
+            let name = line.split_whitespace().next().unwrap();
+            assert!(ALL.iter().any(|d| d.id.name() == name), "{line}");
+        }
+    }
 
     #[test]
     fn table_is_ordered_unique_and_acyclic() {
