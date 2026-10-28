@@ -115,6 +115,16 @@ pub enum ScriptOut {
     Off,
 }
 
+impl ScriptOut {
+    pub fn tag(self) -> &'static str {
+        match self {
+            ScriptOut::VmSet => "vmset",
+            ScriptOut::Write => "write",
+            ScriptOut::Off => "none",
+        }
+    }
+}
+
 /// Tunables measured by earlier probes and used by later ones. The executor copies them into
 /// each probe context and back.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

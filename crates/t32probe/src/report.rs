@@ -154,6 +154,7 @@ pub struct Config {
     pub keepalive: Option<String>,
     pub exists_fn: Option<String>,
     pub stage_root: Option<String>,
+    pub script_out: Option<String>,
 }
 
 fn find<'a>(outcomes: &'a [Outcome], probe: ProbeId, key: &str) -> Option<&'a Value> {
@@ -176,6 +177,7 @@ pub fn config(outcomes: &[Outcome]) -> Config {
         keepalive: find(outcomes, ProbeId::Keepalive, key::KEEPALIVE_INTERVAL).map(format_value),
         exists_fn: text(ProbeId::Tempdir, key::EXISTS),
         stage_root: text(ProbeId::Tempdir, key::ROOT),
+        script_out: text(ProbeId::ScriptLab, key::SCRIPT_OUT),
     }
 }
 
@@ -188,6 +190,7 @@ fn config_line(c: &Config) -> String {
         format!("keepalive={}", q(c.keepalive.clone())),
         format!("exists={}", q(c.exists_fn.clone())),
         format!("stage_root={}", q(c.stage_root.clone())),
+        format!("script_out={}", q(c.script_out.clone())),
     ];
     fit("config      ".into(), tokens, WIDTH)
 }

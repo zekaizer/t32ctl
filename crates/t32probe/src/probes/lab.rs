@@ -75,6 +75,7 @@ impl LabTiming {
         round: Duration::from_millis(100),
         pause: 1.0,
     };
+    #[cfg(test)]
     pub const INSTANT: LabTiming = LabTiming {
         sample: Duration::ZERO,
         marker_every: Duration::ZERO,
@@ -614,14 +615,6 @@ const DIAG_FUNCTIONS: [&str; 6] = [
 ];
 
 impl Diag {
-    pub fn function(&self, expr: &str) -> Option<&str> {
-        self.functions.iter().find(|(e, _)| e == expr).and_then(|(_, v)| v.as_deref())
-    }
-
-    pub fn evaluated(&self, expr: &str) -> Option<&str> {
-        self.eval.iter().find(|(e, _)| e == expr).and_then(|(_, v)| v.as_deref())
-    }
-
     fn text(&self) -> String {
         let mut parts = Vec::new();
         for (tag, v) in [("", &self.functions), ("eval:", &self.eval), ("again:", &self.again)] {
@@ -696,10 +689,6 @@ impl CaseRecord {
 
     pub fn answer(&self, k: &str) -> Answer {
         self.answers.iter().find(|(x, _)| x == k).map_or(Answer::Unreached, |(_, a)| *a)
-    }
-
-    pub fn put(&self, n: u8) -> Option<&Slot> {
-        self.puts.iter().find(|(x, _)| *x == n).map(|(_, s)| s)
     }
 
     pub fn ended(&self) -> bool {
@@ -843,10 +832,6 @@ impl Lab {
 
     pub fn r_slot(&self, k: u32) -> VmRegion {
         self.r.slice(SLOT * k, SLOT).expect("16 slots fit the result region")
-    }
-
-    pub fn pause(&self, d: Duration) {
-        std::thread::sleep(d.mul_f64(self.timing.pause));
     }
 
     /// Every result slot back to the "never written" fill.
@@ -1056,20 +1041,6 @@ impl Lab {
             soft(ctx.session.cmd(cmd::END))?;
         }
         stack_depth(ctx)
-    }
-
-    /// Samples for `d`, at least one; the last `(state, depth)`. Feeds the watch.
-    pub fn observe(&self, ctx: &mut ProbeCtx<'_>, run: &mut Run, d: Duration) -> Result<(u8, i64), ProbeFail> {
-        let t = ctx.session.now();
-        loop {
-            let now = ctx.session.now();
-            let (state, depth) = sample(ctx)?;
-            run.watch.sample(now, Until::Done, state, depth);
-            if self.timing.sample.is_zero() || now.saturating_duration_since(t) >= d {
-                return Ok((state_code(state), depth));
-            }
-            std::thread::sleep(self.timing.sample);
-        }
     }
 
     /// The `ERROR.*` reads of 3.7, each refused one recorded as such, as `measure diag.<label>`.
