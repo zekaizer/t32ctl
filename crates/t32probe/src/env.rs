@@ -5,7 +5,7 @@ use std::{net::Ipv4Addr, path::PathBuf, process::Command, time::Duration};
 
 use serde::Serialize;
 use t32rcl::{CallBudget, Cancel, ConnectOpts, DevicePrompt, Endpoint, MacroSpelling, PowerViewBuild, Tuning};
-use t32stage::{ExistsFn, PvPath, VmWindow};
+use t32stage::{ExistsFn, PvPath, VmWindow, host};
 
 use crate::cli::Gates;
 
@@ -43,11 +43,8 @@ impl WslFacts {
     pub fn read() -> Self {
         let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok().map(|s| s.trim().to_string());
         let is_wsl = kernel.as_deref().is_some_and(|k| k.to_ascii_lowercase().contains("microsoft"));
-        let default_gateway = std::fs::read_to_string("/proc/net/route")
-            .ok()
-            .and_then(|r| gateway_from_proc_route(&r))
-            .map(|g| g.to_string());
-        let nameserver = std::fs::read_to_string("/etc/resolv.conf").ok().and_then(|t| nameserver_from_resolv_conf(&t));
+        let default_gateway = host::read_default_gateway().map(|g| g.to_string());
+        let nameserver = host::read_nameserver();
         let reported = Command::new("wslinfo")
             .arg("--networking-mode")
             .output()
@@ -60,13 +57,7 @@ impl WslFacts {
 
     /// Hosts for `--host auto`, in order, without duplicates.
     pub fn candidates(&self) -> Vec<String> {
-        let mut v = vec!["127.0.0.1".to_string()];
-        for h in [&self.default_gateway, &self.nameserver].into_iter().flatten() {
-            if !v.contains(h) {
-                v.push(h.clone());
-            }
-        }
-        v
+        host::auto_candidates(self.default_gateway.as_deref(), self.nameserver.as_deref())
     }
 }
 
@@ -82,22 +73,6 @@ fn mode_from(reported: Option<&str>, is_wsl: bool, gateway: Option<&str>) -> Wsl
         a == 172 && (16..32).contains(&b)
     });
     if is_wsl && private_nat { WslMode::Nat } else { WslMode::Unknown }
-}
-
-/// Default route of `/proc/net/route`: destination `00000000`, gateway as little-endian hex.
-pub fn gateway_from_proc_route(route: &str) -> Option<Ipv4Addr> {
-    route.lines().skip(1).find_map(|l| {
-        let cols: Vec<&str> = l.split_whitespace().collect();
-        if cols.get(1) != Some(&"00000000") {
-            return None;
-        }
-        let g = u32::from_str_radix(cols.get(2)?, 16).ok()?;
-        (g != 0).then(|| Ipv4Addr::from(g.to_le_bytes()))
-    })
-}
-
-pub fn nameserver_from_resolv_conf(text: &str) -> Option<String> {
-    text.lines().find_map(|l| l.strip_prefix("nameserver ")).map(|s| s.trim().to_string())
 }
 
 /// Fixed part of the cleanup budget after each probe, independent of the probe's own deadline.
@@ -230,15 +205,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_gateway_is_decoded_from_little_endian_hex() {
-        let t = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
-                 eth0\t0010A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n\
-                 eth0\t00000000\t01201DAC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n";
-        assert_eq!(gateway_from_proc_route(t), Some(Ipv4Addr::new(172, 29, 32, 1)));
-        assert_eq!(gateway_from_proc_route("Iface\tDestination\n"), None);
-    }
-
-    #[test]
     fn networking_mode_prefers_wslinfo_and_never_fails() {
         assert_eq!(mode_from(Some("mirrored"), true, Some("172.29.32.1")), WslMode::Mirrored);
         assert_eq!(mode_from(None, true, Some("172.29.32.1")), WslMode::Nat);
@@ -254,6 +220,5 @@ mod tests {
             ..WslFacts::default()
         };
         assert_eq!(w.candidates(), ["127.0.0.1", "172.29.32.1"]);
-        assert_eq!(nameserver_from_resolv_conf("# x\nnameserver 10.0.0.1\n"), Some("10.0.0.1".into()));
     }
 }

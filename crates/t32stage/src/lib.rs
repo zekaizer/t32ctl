@@ -7,12 +7,14 @@
 //! - [`practice`]: the only place PRACTICE command text is formatted.
 //! - [`Ledger`]: cleanup registered before every side effect, journaled on the WSL side.
 //! - [`transfer`]: single-file movement through `VM:`, and gzip.
+//! - [`host`]: the PowerView hosts `auto` tries from WSL.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod bundle;
 mod error;
+pub mod host;
 mod ledger;
 mod macros;
 pub mod practice;
