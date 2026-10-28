@@ -12,6 +12,7 @@
 //! PowerView behaves and never becomes a Phase 1 code path.
 
 pub mod channels;
+pub mod functions;
 pub mod lab;
 pub mod macros;
 pub mod optin;

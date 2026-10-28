@@ -10,7 +10,7 @@ use serde::{Serialize, Serializer};
 use crate::{
     cli::Gates,
     ctx::{ProbeCtx, ProbeResult},
-    probes::{channels, macros, optin, scriptlab, scripts, storage, transport},
+    probes::{channels, functions, macros, optin, scriptlab, scripts, storage, transport},
 };
 
 /// Why a probe is not in the default run.
@@ -126,6 +126,8 @@ probes! {
         "gzip upload, /UNZIP decode, corrupt gzip must fail, size ceiling";
     Macro = "macro", Safe, [Tempdir], true, 45, scripts::macro_probe,
         "EXP 2 macros: wire spelling, set/get, redeclaration, size, characters, cross spelling, empty and undeclared names, command-line assignment";
+    FnTable = "fn-table", Safe, [Connect, Tempdir, VmRw], true, 60, functions::fn_table,
+        "availability of commands and functions, & in functions, command length, EVAL slot, status codes and ERROR.ID per failure, epoch and CPU reads, path functions";
     Bundle = "bundle", Safe, [Gzip, Macro], true, 90, scripts::bundle,
         "self-extracting bundle, nested DO chain, marker, runner rc, state during the chain";
     ScriptLab = "script-lab", Safe, [VmFile], true, 180, scriptlab::script_lab,
@@ -264,6 +266,7 @@ mod tests {
             "vm-file",
             "gzip",
             "macro",
+            "fn-table",
             "bundle",
             "script-lab",
             "script-halt",
@@ -290,7 +293,7 @@ mod tests {
         let names = |v: Vec<&ProbeDef>| v.iter().map(|d| d.id.name()).collect::<Vec<_>>();
         assert_eq!(names(select(&[ProbeId::VmFile], &[], &none).unwrap()), ["connect", "tempdir", "vm-rw", "vm-file"]);
         let default = select(&[], &[ProbeId::Latency], &none).unwrap();
-        assert_eq!(default.len(), 19);
+        assert_eq!(default.len(), 20);
         assert!(default.iter().all(|d| d.tier == Tier::Safe));
         assert_eq!(select(&[ProbeId::Dialog], &[], &none).unwrap_err(), "dialog needs --allow-dialog");
         let gates = Gates { dialog: true, ..Gates::default() };
