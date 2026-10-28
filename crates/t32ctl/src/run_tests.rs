@@ -270,7 +270,9 @@ fn journals_a_dead_call_left_are_replayed_and_reported_as_notices() {
         "home/.local/state/t32ctl/pv/auto-20000/journal/t32ctl-1-1.undo",
         "rm-file\tLC:\\T\\t32ctl\tk/a.bin\nunwind\n",
     );
-    let s = Script::new().attach().expect_fn("OS.FILE.readable(\"C:\\T\\t32ctl\\k\\a.bin\")").reply_bool(false);
+    let s = Script::new().attach().expect_req(Request::PracticeState).reply_state(0);
+    let s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
+    let s = s.expect_fn("OS.FILE.readable(\"C:\\T\\t32ctl\\k\\a.bin\")").reply_bool(false);
     let s = s.expect_req(Request::TargetState).reply_state(2).expect_fn("SYStem.CPU()").reply_text("CortexA53");
     let s = pv(cores(s), Some(1), 0, 0);
     let out = call("t32ctl read status", &deps(w.env(), vec![Ok(stopped_header(s))]));
@@ -278,14 +280,36 @@ fn journals_a_dead_call_left_are_replayed_and_reported_as_notices() {
         out.text,
         format!(
             "stopped core=0 pc=0x40083e10\n\
-             ! cleaned up after an interrupted call: 1 step\n\
-             ! residue: unwind PRACTICE stack (left by an earlier run); in PowerView type: END \
-             (END also closes every dialog and OPEN file)\n\
+             ! cleaned up after an interrupted call: 2 steps\n\
              {TARGET}pv      build=168999 clients=1 practice=idle\n"
         )
     );
     assert_eq!(out.code, 0);
     assert!(!w.pv_dir().join("journal/t32ctl-1-1.undo").exists());
+}
+
+#[test]
+fn a_journal_whose_script_may_still_run_is_kept_and_no_notice_says_end() {
+    let w = World::new("replay-deferred");
+    let journal = "rm-file\tLC:\\T\\t32ctl\tk/a.bin\nunwind\n";
+    w.write("home/.local/state/t32ctl/pv/auto-20000/journal/t32ctl-1-1.undo", journal);
+    let s = Script::new().attach().expect_req(Request::PracticeState).reply_state(1);
+    let s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
+    let s = s.expect_req(Request::TargetState).reply_state(2).expect_fn("SYStem.CPU()").reply_text("CortexA53");
+    let s = pv(cores(s), Some(1), 1, 1);
+    let out = call("t32ctl read status", &deps(w.env(), vec![Ok(stopped_header(s))]));
+    assert_eq!(
+        out.text,
+        format!(
+            "stopped core=0 pc=0x40083e10\n\
+             ! cleanup left by an earlier run: deferred: its script may still be running (PRACTICE Running, \
+             stack depth 1); a later call cleans up after it\n\
+             {TARGET}pv      build=168999 clients=1 practice=running (depth 1)\n"
+        )
+    );
+    assert_eq!(out.code, 0);
+    let kept = std::fs::read_to_string(w.pv_dir().join("journal/t32ctl-1-1.undo")).unwrap();
+    assert_eq!(kept, journal);
 }
 
 #[test]

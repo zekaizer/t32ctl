@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use t32rcl::testkit::{ConnectFailure, Request, Script};
 
@@ -116,19 +116,76 @@ fn residue_stays_journaled_and_the_next_run_replays_it_but_skips_live_journals()
     let _ = fs::remove_dir_all(dir);
 }
 
-#[test]
-fn a_crashed_unwind_is_reported_not_executed_on_replay() {
-    let dir = temp_dir("journal-unwind");
+/// A journal a dead call left: `UnwindPractice` with an undo registered after it.
+fn crashed_with_unwind(tag: &str) -> (PathBuf, PathBuf) {
+    let dir = temp_dir(tag);
     let mut ledger = Ledger::journaled(Journal::create(&dir, "crashed").unwrap(), ExistsFn::OsFileReadable);
     ledger.push(Undo::UnwindPractice).unwrap();
     ledger.push(Undo::RemoveDir(file("probe-1"))).unwrap();
     drop(ledger);
+    let path = dir.join("journal/crashed.undo");
+    (dir, path)
+}
 
-    let s = Script::new().attach().expect_fn("OS.DIR(\"C:\\T\\t32ctl\\probe-1\")").reply_bool(false);
+fn practice(s: Script, state: u8, depth: i64) -> Script {
+    s.expect_req(Request::PracticeState).reply_state(state).expect_fn("PRACTICE.StackDepth()").reply_decimal(depth)
+}
+
+#[test]
+fn a_crashed_unwind_is_moot_once_powerview_is_idle_with_an_empty_stack() {
+    let (dir, path) = crashed_with_unwind("journal-unwind");
+    let s = is_dir(practice(Script::new().attach(), 0, 0), "probe-1", false);
     let report = replay_leftovers(&mut session(s), &dir, ExistsFn::OsFileReadable);
     let labels: Vec<_> = report.items.iter().map(|i| i.outcome.label()).collect();
-    assert!(labels[0].starts_with("not-attempted"), "{labels:?}");
-    assert_eq!(labels[1], "already-clean");
+    assert_eq!(labels, ["already-clean", "already-clean"], "{report:?}");
+    assert_eq!(report.items[0].what, "unwind PRACTICE stack (left by an earlier run)");
+    assert!(!path.exists());
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_journal_with_an_unwind_is_kept_whole_while_its_script_may_run() {
+    for (tag, s) in [
+        ("journal-defer-running", practice(Script::new().attach(), 1, 1)),
+        ("journal-defer-dialog", practice(Script::new().attach(), 2, 1)),
+        ("journal-defer-halted", practice(Script::new().attach(), 0, 1)),
+        (
+            "journal-defer-unread",
+            Script::new()
+                .attach()
+                .expect_req(Request::PracticeState)
+                .reply_state(0)
+                .expect_fn("PRACTICE.StackDepth()")
+                .reply_function(0, "syntax error"),
+        ),
+    ] {
+        let (dir, path) = crashed_with_unwind(tag);
+        let before = fs::read_to_string(&path).unwrap();
+        let report = replay_leftovers(&mut session(s), &dir, ExistsFn::OsFileReadable);
+        assert_eq!(report.items.len(), 1, "{tag}: {report:?}");
+        let item = &report.items[0];
+        assert!(
+            matches!(&item.outcome, CleanupOutcome::Deferred(why) if why.contains("may still be running")),
+            "{tag}: {item:?}"
+        );
+        assert!(item.outcome.label().starts_with("deferred: "), "{tag}: {item:?}");
+        assert_eq!(item.manual, None, "{tag}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), before, "{tag}");
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn a_deferred_journal_is_replayed_by_a_later_call_once_the_script_is_gone() {
+    let (dir, path) = crashed_with_unwind("journal-defer-later");
+    let report = replay_leftovers(&mut session(practice(Script::new().attach(), 1, 1)), &dir, ExistsFn::OsFileReadable);
+    assert!(!report.is_clean());
+    let s = is_dir(practice(Script::new().attach(), 0, 0), "probe-1", true);
+    let s = s.expect_cmd("RMDIR \"C:\\T\\t32ctl\\probe-1\"").reply_ok();
+    let s = is_dir(s, "probe-1", false);
+    let report = replay_leftovers(&mut session(s), &dir, ExistsFn::OsFileReadable);
+    assert!(report.is_clean(), "{report:?}");
+    assert!(!path.exists());
     let _ = fs::remove_dir_all(dir);
 }
 

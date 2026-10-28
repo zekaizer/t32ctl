@@ -75,9 +75,10 @@ right before a command that asks your human, so the approval is not wasted on an
 the human approves against the target as it is.
 
 If a notice says an earlier call was interrupted, that call has been cleaned up; look at the
-target again before you continue. If a notice names a PowerView command to type, stop and tell
-your human: only a human can clear that residue, and `END` also closes every dialog and `OPEN`
-file in PowerView.
+target again before you continue. If a notice says that cleanup was deferred, the interrupted
+call's script may still be running: let it finish, and a later call cleans up after it. If a
+notice names a PowerView command to type, stop and tell your human: only a human can clear that
+residue, and `END` also closes every dialog and `OPEN` file in PowerView.
 
 This t32ctl serves one agent per PowerView. Do not run two of your calls against the same
 debugger at once, and do not let subagents use it beside you. A call that finds the staging

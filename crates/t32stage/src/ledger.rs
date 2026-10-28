@@ -7,9 +7,9 @@
 //!
 //! Undos that name PowerView files, directories, macros or the PRACTICE stack are also written
 //! to a write-ahead journal on the WSL side before they are registered. A process that dies
-//! leaves its journal behind; the next run replays it (`replay_leftovers`). `VM:` restores stay
-//! in memory: their data is too large and too stale to replay. So do setting reverts
-//! (`Undo::Revert`).
+//! leaves its journal behind; the next run replays it (`replay_leftovers`), unless the dead run's
+//! script may still run. `VM:` restores stay in memory: their data is too large and too stale to
+//! replay. So do setting reverts (`Undo::Revert`).
 
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
@@ -157,10 +157,9 @@ impl Undo {
     }
 
     /// Why a human decides this undo when a dead run left it: replaying it would act on a state
-    /// the operator may have created since (their own scripts, a target they started).
+    /// the operator may have created since (a target they started).
     fn left_for_a_human(&self) -> Option<&'static str> {
         match self {
-            Undo::UnwindPractice => Some("check PowerView; type END if a t32ctl script is halted"),
             Undo::BreakTarget => Some("check the target; type Break if t32ctl left it running"),
             _ => None,
         }
@@ -300,6 +299,8 @@ pub enum CleanupOutcome {
     Failed(String),
     /// The step did not run: no connection, or a journal entry left for a human.
     NotAttempted(String),
+    /// A dead call's journal was kept for a later call: its script may still run.
+    Deferred(String),
 }
 
 impl CleanupOutcome {
@@ -316,6 +317,7 @@ impl CleanupOutcome {
             CleanupOutcome::Restored { uninit } => format!("restored({uninit} cleared)"),
             CleanupOutcome::Failed(why) => format!("failed: {why}"),
             CleanupOutcome::NotAttempted(why) => format!("not-attempted: {why}"),
+            CleanupOutcome::Deferred(why) => format!("deferred: {why}"),
         }
     }
 }
@@ -526,9 +528,12 @@ impl Ledger {
 }
 
 /// Replay journals that dead processes left in `<state_dir>/journal`. A journal another live
-/// process holds is locked and skipped. `UnwindPractice` and `BreakTarget` are reported, never
-/// executed: since the crash the stack may hold the operator's own scripts and the target may run
-/// because the operator started it.
+/// process holds is locked and skipped. `UnwindPractice` is never executed: since the crash the
+/// stack may hold the operator's own scripts. A journal holding it replays only while PRACTICE is
+/// idle with an empty stack, the unwind moot; otherwise the dead call's script may still run and
+/// write under the files and macros the journal names, so the journal stays untouched for a later
+/// call (`Deferred`). `BreakTarget` is reported, never executed: the target may run because the
+/// operator started it.
 pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsFn) -> CleanupReport {
     let mut report = CleanupReport::default();
     let Ok(entries) = fs::read_dir(state_dir.join(JOURNAL_DIR)) else { return report };
@@ -545,10 +550,28 @@ pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsF
             Err(TryLockError::Error(_)) => continue,
         }
         let text = fs::read_to_string(&path).unwrap_or_default();
+        let unwind = Undo::UnwindPractice.to_line();
+        if text.lines().any(|l| Some(l) == unwind.as_deref())
+            && let Err(seen) = practice_gone(session)
+        {
+            report.items.push(CleanupItem {
+                what: "cleanup left by an earlier run".into(),
+                outcome: CleanupOutcome::Deferred(format!(
+                    "its script may still be running ({seen}); a later call cleans up after it"
+                )),
+                manual: None,
+            });
+            continue;
+        }
         let journal = Journal { path: path.clone(), file };
         let mut ledger = Ledger { pending: Vec::new(), journal: Some(journal), exists };
         for line in text.lines().filter(|l| !l.is_empty()) {
             match Undo::from_line(line) {
+                Some(Undo::UnwindPractice) => report.items.push(CleanupItem {
+                    what: format!("{} (left by an earlier run)", Undo::UnwindPractice.describe()),
+                    outcome: CleanupOutcome::AlreadyClean,
+                    manual: None,
+                }),
                 Some(undo) => match undo.left_for_a_human() {
                     Some(why) => report.items.push(CleanupItem {
                         what: format!("{} (left by an earlier run)", undo.describe()),
@@ -567,6 +590,16 @@ pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsF
         report.extend(ledger.run(session));
     }
     report
+}
+
+/// `Ok` when PRACTICE is idle with an empty stack; else what was seen, or why it is unknown.
+fn practice_gone(session: &mut Session) -> Result<(), String> {
+    let state = session.practice_state().map_err(|e| format!("PRACTICE state unknown: {e}"))?;
+    let depth = stack_depth(session).map_err(|e| format!("PRACTICE stack depth unknown: {e}"))?;
+    match (state, depth) {
+        (PracticeState::Idle, 0) => Ok(()),
+        (state, depth) => Err(format!("PRACTICE {state:?}, stack depth {depth}")),
+    }
 }
 
 #[cfg(test)]

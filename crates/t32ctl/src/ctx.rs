@@ -46,7 +46,8 @@ use t32rcl::{
     PracticeState, Session, TargetState,
 };
 use t32stage::{
-    CleanupReport, ExistsFn, Ledger, OpenError, RegName, Stage, StageConfig, Undo, practice::fnc, replay_leftovers,
+    CleanupOutcome, CleanupReport, ExistsFn, Ledger, OpenError, RegName, Stage, StageConfig, Undo, practice::fnc,
+    replay_leftovers,
 };
 
 use crate::{
@@ -276,10 +277,15 @@ fn replay_notices(report: &CleanupReport) -> Vec<Notice> {
     v
 }
 
-/// One line per command a human must type for what cleanup could not do.
+/// One line per command a human must type for what cleanup could not do, and one per journal kept
+/// for a later call: nothing to type while its script may still run.
 fn residue_notices(report: &CleanupReport) -> Vec<Notice> {
     let mut v = Vec::new();
     for item in report.residue() {
+        if let CleanupOutcome::Deferred(_) = item.outcome {
+            v.push(Notice::new(format!("{}: {}", item.what, item.outcome.label())));
+            continue;
+        }
         match &item.manual {
             Some(commands) => v.extend(commands.lines().map(|c| {
                 let end = if c == t32stage::practice::cmd::END {

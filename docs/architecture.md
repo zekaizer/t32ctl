@@ -86,7 +86,9 @@ because a cleanup that cannot run must still print the exact command to type int
 The ledger runs newest first, never stops at a failure, and revives a dead connection once.
 Undos that name PowerView files, directories, macros or the PRACTICE stack are written to a
 locked journal on the WSL side before they are registered; the next run replays journals left
-by dead processes. `VM:` restores stay in memory: they are captured per 4 KiB unit, written back,
+by dead processes. A journal that names the PRACTICE stack replays only while PowerView is idle
+with an empty stack; otherwise the dead process's script may still run, and the journal waits for
+a later run. `VM:` restores stay in memory: they are captured per 4 KiB unit, written back,
 read back and compared, and a unit that was never initialized is cleared alone.
 
 A run's output directory (`out-<token>`) is the one undo that removes what it holds. Its script
