@@ -115,7 +115,17 @@ fn connect_failures_name_what_to_check() {
     let refused = from_connect(&ConnectError::Refused { endpoint: endpoint.clone() });
     assert_eq!(refused.kind, ErrorKind::Unreachable);
     assert_eq!(refused.message, "127.0.0.1:20000: connection refused");
-    assert_eq!(refused.details, ["PowerView not running, RCL not enabled (RCL=NETTCP in config.t32), or wrong --port"]);
+    assert_eq!(
+        refused.details,
+        ["PowerView not running, RCL not enabled (RCL=NETTCP in config.t32), or wrong [connection] port in \
+          ~/.config/t32ctl/config.toml"]
+    );
+    let dropped = from_connect(&ConnectError::TimedOut { endpoint: endpoint.clone(), after: Duration::from_secs(3) });
+    assert_eq!(
+        dropped.details,
+        ["wrong [connection] host in ~/.config/t32ctl/config.toml for this WSL networking mode, or a firewall drops \
+          the port"]
+    );
     let silent = ConnectError::NoAnswer { endpoint: endpoint.clone(), waited: Duration::from_secs(5) };
     assert_eq!(from_connect(&silent).kind, ErrorKind::NoAnswer);
     let stopped = ConnectError::Cancelled { endpoint: endpoint.clone(), reason: CancelReason::Interrupt };

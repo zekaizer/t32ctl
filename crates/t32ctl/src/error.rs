@@ -383,7 +383,22 @@ pub fn from_connect(e: &ConnectError) -> CtlError {
         ConnectError::Cancelled { .. } => ErrorKind::Interrupted,
         _ => ErrorKind::Unreachable,
     };
-    CtlError::new(kind, e.to_string()).with_details(vec![e.hint().to_string()])
+    CtlError::new(kind, e.to_string()).with_details(vec![connect_hint(e).to_string()])
+}
+
+/// t32rcl's hint names `t32probe`'s `--host` and `--port`; t32ctl takes both from the config.
+fn connect_hint(e: &ConnectError) -> &'static str {
+    match e {
+        ConnectError::Refused { .. } => {
+            "PowerView not running, RCL not enabled (RCL=NETTCP in config.t32), or wrong [connection] port in \
+             ~/.config/t32ctl/config.toml"
+        }
+        ConnectError::TimedOut { .. } | ConnectError::Unreachable { .. } => {
+            "wrong [connection] host in ~/.config/t32ctl/config.toml for this WSL networking mode, or a firewall \
+             drops the port"
+        }
+        _ => e.hint(),
+    }
 }
 
 /// Classify a failed staging step. `step` names it and leads the message; a bundle error is the
