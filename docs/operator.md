@@ -153,4 +153,4 @@ The first Ctrl-C stops the current probe at its next RCL call, runs its cleanup 
 budget (30 seconds plus time to write back and verify the `VM:` it touched at 1 MB/s, times
 `--scale`), marks the remaining probes `INTR` and prints the partial report. A second Ctrl-C
 exits at once with 130; the JSON written after the previous probe stays valid, and the journal
-lets the next run finish the cleanup.
+lets the next run finish the cleanup. SIGTERM and SIGHUP (a closed terminal) act like Ctrl-C.

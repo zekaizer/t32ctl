@@ -112,11 +112,18 @@ fn target_read_and_load_code_need_their_gates() {
     needs_gate("load-code", "--allow-load-code --elf <path>");
 }
 
+/// SIGINT, SIGTERM and SIGHUP (a closed terminal) stop the run the same way.
 #[test]
-fn sigint_during_attach_prints_the_partial_report_and_exits_130() {
+fn a_signal_during_attach_prints_the_partial_report_and_exits_130() {
+    for sig in ["INT", "TERM", "HUP"] {
+        interrupt_during_attach(sig);
+    }
+}
+
+fn interrupt_during_attach(sig: &str) {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = l.local_addr().expect("addr").port();
-    let state = std::env::temp_dir().join(format!("t32probe-smoke-sigint-{}", std::process::id()));
+    let state = std::env::temp_dir().join(format!("t32probe-smoke-sig{sig}-{}", std::process::id()));
     let mut child = Command::new(bin())
         .args(["--host", "127.0.0.1", "--port", &port.to_string(), "--only", "connect", "--timeout", "30"])
         .arg("--state-dir")
@@ -128,7 +135,7 @@ fn sigint_during_attach_prints_the_partial_report_and_exits_130() {
     let (mut peer, _) = l.accept().expect("t32probe connects");
     let mut attach = [0u8; 64];
     let _ = peer.read(&mut attach);
-    let sent = Command::new("kill").args(["-INT", &child.id().to_string()]).status().expect("kill runs");
+    let sent = Command::new("kill").args([&format!("-{sig}"), &child.id().to_string()]).status().expect("kill runs");
     assert!(sent.success());
 
     let give_up = Instant::now() + Duration::from_secs(10);
@@ -138,14 +145,17 @@ fn sigint_during_attach_prints_the_partial_report_and_exits_130() {
         }
         if Instant::now() > give_up {
             let _ = child.kill();
-            panic!("t32probe still runs 10 s after SIGINT");
+            panic!("t32probe still runs 10 s after SIG{sig}");
         }
         thread::sleep(Duration::from_millis(20));
     };
     let mut text = String::new();
     child.stdout.take().expect("piped").read_to_string(&mut text).expect("utf-8 report");
     let _ = std::fs::remove_dir_all(&state);
-    assert_eq!(status.code(), Some(130), "{text}");
-    assert!(text.lines().any(|l| l.starts_with("connect      INTR")), "{text}");
-    assert!(text.lines().last().is_some_and(|l| l.starts_with("summary:") && l.ends_with("exit=130")), "{text}");
+    assert_eq!(status.code(), Some(130), "SIG{sig}: {text}");
+    assert!(text.lines().any(|l| l.starts_with("connect      INTR")), "SIG{sig}: {text}");
+    assert!(
+        text.lines().last().is_some_and(|l| l.starts_with("summary:") && l.ends_with("exit=130")),
+        "SIG{sig}: {text}"
+    );
 }

@@ -22,7 +22,7 @@ use std::{
 };
 
 use clap::Parser;
-use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use t32rcl::{Cancel, Endpoint, Session};
 use t32stage::CleanupReport;
 
@@ -81,10 +81,11 @@ fn run_id() -> String {
 
 fn run(args: &Args) -> Result<u8, String> {
     let started = Instant::now();
-    // First Ctrl-C sets the flag: the current probe stops, its cleanup runs, the partial report
-    // prints. A second one exits at once with 130; the JSON written so far stays valid.
+    // First Ctrl-C, SIGTERM or SIGHUP (a closed terminal) sets the flag: the current probe stops,
+    // its cleanup runs, the partial report prints. A second one exits at once with 130; the JSON
+    // written so far stays valid.
     let flag = Arc::new(AtomicBool::new(false));
-    for sig in [SIGINT, SIGTERM] {
+    for sig in [SIGINT, SIGTERM, SIGHUP] {
         signal_hook::flag::register_conditional_shutdown(sig, 130, Arc::clone(&flag)).map_err(|e| e.to_string())?;
         signal_hook::flag::register(sig, Arc::clone(&flag)).map_err(|e| e.to_string())?;
     }
