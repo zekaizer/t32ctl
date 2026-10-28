@@ -199,3 +199,45 @@ fn hints_are_complete_commands_quoted_for_the_shell() {
     assert_eq!(r.text(), "next: t32ctl burn proc flash --part user --build 'my build'\n");
     assert!(r.json().ends_with("\"next\":[\"t32ctl burn proc flash --part user --build 'my build'\"]}\n"));
 }
+
+fn run_body(outcome: Outcome, cached: bool) -> RunBody {
+    RunBody {
+        subject: Subject::Script {
+            entry: "tools/t32/a.cmm".into(),
+            bundle: Bundled { hash: None, root: Some("tools/t32".into()), files: 1, cached },
+        },
+        result: Some(RunResult {
+            outcome,
+            rc: t32stage::ScriptRc::Unset,
+            message: String::new(),
+            error: None,
+            line: None,
+            after_ms: 1500,
+            burn: false,
+        }),
+        outputs: OutputsView { dir: None, files: Vec::new(), missing: Vec::new() },
+    }
+}
+
+#[test]
+fn a_run_names_each_outcome_in_json_and_an_uploaded_snapshot_in_text() {
+    let outcomes = [
+        (Outcome::Finished, "finished", Exit::Ok),
+        (Outcome::Failed, "failed", Exit::Outcome),
+        (Outcome::Halted, "halted", Exit::Outcome),
+        (Outcome::TimedOut { timeout_ms: 1000 }, "timed-out", Exit::Outcome),
+        (Outcome::UploadStopped { flag: "--image".into(), bound_ms: 600_000 }, "upload-stopped", Exit::Outcome),
+    ];
+    for (outcome, name, exit) in outcomes {
+        let body = run_body(outcome, true);
+        assert_eq!(body.exit(), exit, "{name}");
+        let v = serde_json::to_value(Body::Run(Box::new(body))).unwrap();
+        assert_eq!(v["result"]["outcome"], name);
+        assert_eq!(v["result"]["after_ms"], 1500);
+    }
+    let lines = Body::Run(Box::new(run_body(Outcome::Finished, false))).lines();
+    assert_eq!(
+        lines,
+        ["script tools/t32/a.cmm (bundle tools/t32, 1 file, uploaded)", "result: finished after 1.5s", "outputs: none"]
+    );
+}
