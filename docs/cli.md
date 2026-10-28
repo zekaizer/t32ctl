@@ -154,6 +154,11 @@ most 1 h. `raw script --timeout` accepts 1 s to 2 h (5 min by default), and so d
 declared timeout. The skill keeps a single call under two minutes unless the agent raised its own
 command timeout, and runs a longer call, such as a flash, in the background.
 
+`raw cmd` waits for its command. A command that blocks in PowerView, such as `WAIT`, holds the
+call and keeps every other RCL client from connecting until it ends; past the RCL call budget the
+call is exit 5 `no-answer`, and PowerView may still be running the command. Long work belongs in
+`raw script`, whose script may `WAIT` while RCL keeps answering.
+
 ### Run control and breakpoints
 
 Run control acts on all cores, as TRACE32 SMP mode does. Every run command waits for the stop,
@@ -250,6 +255,12 @@ Other arguments:
 - **Procedure parameters:** `--<name> VALUE`, generated from the profile at run time, where a
   parameter `foo_bar` is typed `--foo-bar`; booleans are `true` or `false`. The types are in
   [profiles.md](profiles.md#parameters).
+- **PRACTICE text (`raw cmd 'TEXT'`, `raw eval 'EXPR'`):** one line without control characters,
+  1 to 2037 bytes (the RCL command limit), quoted in single quotes. It is sent literally:
+  PowerView expands no macro in a command sent over RCL, so `&name` stays literal, and a
+  function's file argument is a literal name, not an expression.
+- **Script arguments (`raw script ... -- ARG...`):** letters, digits, and `_ - . / : + = , @`,
+  at most 4 KiB in total (the PRACTICE macro limit).
 - **Output names (`NAME`, for `--to`):** a plain file name, without `/` and not starting with `.`.
   The file is written as `~/.local/state/t32ctl/out/<run-id>/NAME`, and the report prints its
   path.
@@ -306,7 +317,7 @@ notice.
 | Lease contended (holder only) | `! another caller has been waiting for the lease since 10:15:40, until 10:17:10 at the latest` |
 | Instance marker missing | `! PowerView instance marker missing: restarted, or PMACRO.RESet ran` |
 | Journals replayed | `! cleaned up after an interrupted call: removed 2 staged files, cleared 3 macros` |
-| Residue | `! residue: a PRACTICE script is still on the stack; in PowerView type: END` |
+| Residue | `! residue: unwind PRACTICE stack; in PowerView type: END (END also closes every dialog and OPEN file)` |
 | Breakpoint missing | `! breakpoint b3 is no longer in PowerView (removed in the GUI?); tag dropped` |
 
 Only a `read` or `run` call acknowledges a change made outside t32ctl. A `write`, `sys`, `burn`
@@ -437,11 +448,12 @@ Errors are classified in one module, by RCL status code, `RemoteKind`, `StageErr
 runner outcome, never by message text. Exit 2 means the command text is wrong. Exit 3 means the
 target or the debugger is not in the state the command needs, and the report names what to do before
 running the same command again. A finished script or procedure is a result: rc 0 is exit 0; a
-non-zero rc, a PRACTICE error, or a timeout is exit 1. The script sets its rc in `&t32ctl_rc`; an
-empty rc is success except for a `burn` procedure. A dialog is exit 5, because only the operator can
-close a PowerView window. A run whose runner never reached its end (`RunOutcome::Vanished`: idle,
-empty stack, no token) is exit 5 `script-vanished`, because something outside t32ctl cleared the
-PRACTICE stack.
+non-zero rc, a PRACTICE error, or a timeout is exit 1. The script assigns its rc as a string,
+`&t32ctl_rc="0"`; t32ctl takes `0`, `0.` and `0x0` as zero, and any other value, numeric or not, is
+a failure. An empty rc is success except for a `burn` procedure. A dialog is exit 5, because only
+the operator can close a PowerView window. A run whose runner never reached its end
+(`RunOutcome::Vanished`: idle, empty stack, no token) is exit 5 `script-vanished`, because
+something outside t32ctl cleared the PRACTICE stack.
 
 ## State kept between calls
 
@@ -494,8 +506,8 @@ previous version.
   target. It never redoes or undoes the dead call's action. A breakpoint entry written before
   `Break.Set` is confirmed or dropped the same way.
 - **Flash progress.** A procedure with the `flash` effect is recorded before it starts and cleared
-  only when it completes with `&t32ctl_rc` set to `0.` by the script
-  ([profiles.md](profiles.md#parameters)). Otherwise the record stays, and every call reports it
+  only when it completes with rc 0, which the script sets explicitly (`&t32ctl_rc="0"`,
+  [profiles.md](profiles.md#parameters)). Otherwise the record stays, and every call reports it
   until a flash completes.
 - **Lease.** Holder id, purpose, deadlines, the pid of a holder call in flight, a waiter's
   deadline while one waits, and the previous lease for the next `run lease take` to report. The
@@ -582,7 +594,7 @@ sequence of primitives:
 
 | Command | Why it is not a composition |
 |---|---|
-| `run go LOC`, `run step` | Start, bounded client poll, stop classification, fault registers, and the return value after `step out`. A run that does not wait is the most common agent mistake, and a PRACTICE `WAIT` would poison the RCL link. |
+| `run go LOC`, `run step` | Start, bounded client poll, stop classification, fault registers, and the return value after `step out`. A run that does not wait is the most common agent mistake, and a PRACTICE `WAIT` sent over RCL keeps every other RCL client out until it ends. |
 | `read stack` | One `Frame.view` window parse gives frames, args, and locals without moving PowerView's view. A `Frame.Up` loop moves the GUI's view and costs a round trip per frame. |
 | `write load`, `run symbols` | The ELF goes through `VM:` staging: gzip, `/UNZIP` detection and its fallback, window sizing, the hash record. Composing would expose staging. |
 | `read mem --to`, `write mem --from` | Large transfers switch to staged `Data.SAVE.Binary` and `Data.LOAD.Binary` in slices; the agent sees one command. |
@@ -685,18 +697,37 @@ Tests that keep it one definition:
 Adding a command means adding an argument struct with its `leaf!` spec to its grade's clap enum,
 and a body that takes `Ctx<G>`. Everything else follows from the definition.
 
-## Phase 0 unknowns as tunables
+## Phase 0 results (build 168999)
 
-A live Phase 0 run has not happened yet. Each open answer changes a value in the connection
-config or a behavior inside t32ctl, never the contract.
+The contract left the open Phase 0 questions to tunables, so an answer would change a value or a
+behavior inside t32ctl, never the command line. The safe tier of `t32probe` has run against
+PowerView build 168999, and the answers settled every tunable but the chunk sizes, which keep
+their measured default. [trace32-pitfalls.md](trace32-pitfalls.md) has the evidence.
 
-| Unknown | Where it hides |
+| Question | Build 168999 | What t32ctl does |
+|---|---|---|
+| `DO` over ExecuteCommand returns at once or at script end | At once (`script-lab`). | The runner polls the PRACTICE state; `tuning.do_blocks` is gone. |
+| EXP global macro names with or without `&` | With `&`; a bare name is a separate store that no script sees (`macro-visibility`). | Every macro is set and read with `&`; `tuning.macro` is gone. |
+| Which existence function answers | `OS.FILE.readable()` (`tempdir`). | Fixed; `tuning.exists` is gone. |
+| How the stage root is named | Literally: commands sent over RCL never expand macros. | `<OS.PTD()>\t32ctl` or `[staging] root`, spelled out by the client; `tuning.stage_root` is gone. |
+| Keepalive interval | About 2 s, below the 10 s idle budget (`keepalive`). | Fixed; `tuning.keepalive` is gone. |
+| Chunk sizes | 15360 bytes per memory request, both directions (`vm-rw`). | `tuning.read_chunk` and `tuning.write_chunk`, default 15360: the only tunables left. |
+| A `DIALOG.OK` window outlives `T32_Stop` | Not measured yet (`dialog`, opt-in). | A behavior: `dialog` is exit 5, and a later `no-answer` names a modal dialog. |
+| `Go <loc>` leaves a temporary breakpoint | Not measured yet (`run-control`, opt-in). | `tuning.go_leaves_breakpoint`, planned with `run go`: `run go LOC` would use a tagged temporary breakpoint. |
+
+Other results changed what the contract says:
+
+| Result | Contract |
 |---|---|
-| `DO` over ExecuteCommand returns at once or at script end | `tuning.do_blocks` widens the call budget of script runs; the runner polls either way. |
-| A `DIALOG.OK` window outlives `T32_Stop` | A behavior: `dialog` is exit 5, and a later `no-answer` already names a modal dialog. |
-| EXP global macro names with or without `&` | `tuning.macro`, passed to `t32rcl` `Tuning`. |
-| Chunk sizes, keepalive, staging root | `tuning.read_chunk`, `tuning.write_chunk`, `tuning.keepalive`, `tuning.exists`, `tuning.stage_root`, and `[staging]`, copied from the t32probe `config` line. |
-| `Go <loc>` leaves a temporary breakpoint | `tuning.go_leaves_breakpoint` makes `run go LOC` use a tagged temporary breakpoint; reconciliation ignores an untagged one at the go target. |
+| Commands sent over RCL never expand macros, and a function's file argument is a name, not an expression. | `raw cmd` and `raw eval` send their text literally: `&name` stays literal, and a function takes a literal file name. |
+| A command sent over RCL is at most 2037 characters. | `raw cmd` and `raw eval` text is 1 to 2037 bytes (`notation`). |
+| A PRACTICE macro holds at most 4 KiB. | `raw script` arguments are at most 4 KiB in total. |
+| A blocking command (`WAIT`) on the command line blocks every new RCL connection until it ends. | `raw cmd` with a blocking command holds the call and keeps every other RCL client out; long work belongs in `raw script`, where `WAIT` is fine. |
+| `&x="0"` stores `0`, `&x=0` stores `0x0`, `&x=0.` stores `0.`. | Scripts assign `&t32ctl_rc="0"`; t32ctl takes `0`, `0.` and `0x0` as zero ([profiles.md](profiles.md#writing-procedure-scripts)). |
+| `ENDDO` hands back unevaluated text; an undeclared macro stays literal in a script. | Results travel only through `&t32ctl_rc` and `&t32ctl_msg`, and t32ctl sets every macro a script may read. |
+| `END` ends every script, closes every custom dialog and every `OPEN` file. | A residue notice that asks for `END` says so. |
+| With the target down, `Register(PC)` fails with "target system down". | The header of a down target is `down`; reads that need the target are exit 3 `target-down`. |
+| The `api.` function group starts at build 171257. | `read status` asks `RCL.TCP.NrUsedCons()` first, then `api.RCL.TCP.NrUsedCons()`. |
 
 ## What Phase 1 does not do
 

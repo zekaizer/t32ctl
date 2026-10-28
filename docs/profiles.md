@@ -10,7 +10,7 @@ the command line in [cli.md](cli.md).
 
 | Layer | File | Owner | Holds |
 |---|---|---|---|
-| connection | `~/.config/t32ctl/config.toml` | operator, not in git | endpoint, `VM:` staging window, Phase 0 tunables, lease limits, call limits |
+| connection | `~/.config/t32ctl/config.toml` | operator, not in git | endpoint, `VM:` staging window, memory chunk sizes, lease limits, call limits |
 | target | `<board dir>/support/t32ctl/`: `profile.toml` and the `.cmm` scripts beside it | team, in git | CPU and cores, ELF path, run timing, stop rules, access classes, memory map, peripheral views, procedures, variants |
 | binding | `<repo>/.t32ctl.toml` (optional), `--build`, `T32CTL_BUILD`, `T32CTL_PROFILE` | project, in git | which build directory, profile directory, and variant a workspace uses |
 | state | `~/.local/state/t32ctl/pv/<host>-<port>/` | t32ctl | epoch, tags, loaded ELF, intents, flash progress, lease |
@@ -79,8 +79,9 @@ After connecting, every call checks two things against the profile:
 
 ## Connection config
 
-Personal, outside every repository. The `[tuning]` keys are the t32probe `config` line of a
-Phase 0 run, key for key, so a probe result changes a value here and never the contract.
+Personal, outside every repository. `[tuning]` holds the memory chunk sizes, which default to
+what build 168999 measured. The other questions Phase 0 left open are answered and need no key
+([cli.md](cli.md#phase-0-results-build-168999)).
 
 ```toml
 # ~/.config/t32ctl/config.toml: personal, not in git. Every key is optional.
@@ -94,16 +95,11 @@ port = 20000                   # the state directory is pv/<host>-<port>/ with h
 [staging]
 vm_base = 0x01000000           # the VM: window t32ctl may use; keep it clear of your own scripts
 vm_len = 0x04000000            # 64M; a larger file is uploaded in slices
-# root = 'C:\T32\tmp\t32ctl'   # instead of OS.PTD()\t32ctl
+# root = 'C:\T32\tmp\t32ctl'   # instead of OS.PTD()\t32ctl; ASCII-safe, spelled out literally
 
-[tuning]                       # the t32probe `config` line of a Phase 0 run, key for key
-read_chunk = 15360
-write_chunk = 15360
-macro = "bare"
-keepalive = "1.00s"
-exists = "OS.FILE.readable"
-stage_root = "literal"
-do_blocks = false              # whether DO over ExecuteCommand blocks until the script ends
+[tuning]
+read_chunk = 15360             # 8 to 15360: bytes per RCL memory read (15360 measured on build 168999)
+write_chunk = 15360            # 8 to 15360: bytes per RCL memory write
 go_leaves_breakpoint = false   # whether `Go <loc>` leaves a temporary breakpoint behind
 
 [lease]
@@ -371,17 +367,55 @@ profile at run time, so validation keeps parameter names out of the bypass patte
 ([below](#validation)). A check the procedure performs, such as a readback verification, is part
 of its script, not an option.
 
-Before the run, t32ctl declares each macro `GLOBAL`, sets it over RCL, and clears it after the run
-through the cleanup ledger. A `file` parameter is uploaded through the `VM:` window, in slices
-appended to one file when it is larger than the window, and removed after the run. The script
-writes its declared outputs into the directory `&t32ctl_out` and reports its result through two
-global macros that t32ctl declares and empties before the run. `&t32ctl_rc` is `0.` for success;
-any other value is a failure (exit 1, with the value in the report). `&t32ctl_msg` is one line of
-text for the report. An empty `&t32ctl_rc` counts as success for `read`, `run`, `write`, and `sys`
-procedures and for `raw script`, so a team script that knows nothing of t32ctl still works. It
-counts as failure for a `burn` procedure, which must confirm success explicitly after its own
-verification, so a flash that ends without saying so never clears the flash record. A PRACTICE
-error is a failure whatever the macros hold. An `ENDDO` value is not read.
+Before the run, t32ctl sets each parameter macro over EXP 2 with the `&` spelling, which reaches
+the macro a script reads without a `GLOBAL` declaration, and clears it after the run through the
+cleanup ledger. A `file` parameter is uploaded through the `VM:` window, in slices appended to one
+file when it is larger than the window, and removed after the run. Every run also gets
+`&t32ctl_out`, a fresh absolute directory for the script's outputs. Every declared parameter has a
+value, given or default, so a script never reads an unset t32ctl macro.
+
+The script writes its declared outputs into `&t32ctl_out` and reports its result through two
+macros that t32ctl empties before the run. `&t32ctl_rc` is zero for success, assigned as a string:
+`&t32ctl_rc="0"`. t32ctl also takes `0.` and `0x0`, the forms a numeric assignment stores; any
+other value, numeric or not, is a failure (exit 1, with the value in the report). `&t32ctl_msg` is
+one line of text for the report. An empty `&t32ctl_rc` counts as success for `read`, `run`,
+`write`, and `sys` procedures and for `raw script`, so a team script that knows nothing of t32ctl
+still works. It counts as failure for a `burn` procedure, which must confirm success explicitly
+after its own verification, so a flash that ends without saying so never clears the flash record.
+A PRACTICE error is a failure whatever the macros hold: the runner catches it and reports it
+through its own macro, `&t32ctl_fail`. An `ENDDO` value is not read.
+
+### Writing procedure scripts
+
+PowerView build 168999 showed how PRACTICE treats macros, paths, and files
+([trace32-pitfalls.md](trace32-pitfalls.md)). A procedure's scripts, and a script set that
+`raw script` runs, follow these rules:
+
+- Expand macros only inside scripts. PowerView never expands a macro in a command sent over RCL,
+  so t32ctl sets every macro a script reads, and the script builds every text that uses one.
+- Build a file path into a macro, then pass the quoted macro, never a concatenation:
+  `&log="&t32ctl_out\verify.log"`, then `OPEN #1 "&log" /Create`. A function's file argument is
+  taken as a name: `OS.FILE.SIZE(OS.PPD()+"\x.bin")` answers 0 without an error.
+- Quote file parameters: `"&t32ctl_p_image"`.
+- Never use a relative path. `OS.PWD()` can be anywhere, also inside the operator's WSL home, and
+  a path that starts with `\` resolves against it too. Name a sibling file of the bundle as
+  `"&t32ctl_snap\<rel>"` or `"~~~~\<rel>"` (the running script's directory).
+- Before writing through a macro path that t32ctl did not set, check that it is non-empty and
+  absolute (`OS.FILE.ABSPATH`): a macro that was never declared stays literal text, and a declared
+  one that was never set expands to an empty string.
+- Return results only through `&t32ctl_rc` and `&t32ctl_msg`, computed into the macro first.
+  `ENDDO` hands back the unevaluated text of its line, and t32ctl does not read it. Of t32ctl's
+  macros, assign only these two.
+- Assign `&t32ctl_rc="0"` as a string. `&t32ctl_rc=0` stores `0x0`, which t32ctl also takes as
+  zero, but the quoted form reads the same in the report and in the script.
+- Write each output once. `SETUP.BAKfile` is on, so rewriting a file leaves `<name>.bak` beside it,
+  and that file comes back as an output too.
+- Check before `MKDIR`, `RM`, and `RMDIR` (`OS.DIR()`, `OS.FILE.readable()`): none of them is
+  idempotent, and `RMDIR` of a non-empty directory fails. A listing with `OS.FIRSTFILE` and
+  `OS.NEXTFILE` includes `.` and `..`.
+- Never `END`. It ends every script on the stack, the runner included (exit 5 `script-vanished`),
+  and closes the operator's dialogs and `OPEN` files. A script ends with `ENDDO`.
+- `WAIT` inside a script is fine: RCL keeps answering while a script waits.
 
 ### Discovery
 

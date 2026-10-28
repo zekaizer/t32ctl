@@ -155,9 +155,9 @@ assumptions under [Open questions](#open-questions).
 | Addition | Crate | Assumed until |
 |---|---|---|
 | Debugger builders in `practice`: run, run to a location, step, halt, the return register after a step out, breakpoints with condition and count, on-chip watchpoints, register and variable writes, core select, address translation to physical, `Frame.view`, symbol and source-line queries, window printing with a printer restore undo, `Data.LOAD.Elf` with code | `t32stage` | `ASSUMED(run-control)`, which gains cases for step, breakpoint options and counts, software breakpoints in RAM, address translation, source lines, and printer routing |
-| Parameter macros `t32ctl_p_<name>`: validated dynamic names, declared `GLOBAL` and set over EXP 2 before the run, cleared through `Undo::ClearMacros`, carried by `RunRequest` | `t32stage` | `ASSUMED(macro)` |
+| Parameter macros `t32ctl_p_<name>`: validated dynamic names, set over EXP 2 with the `&` spelling before the run (no `GLOBAL`), cleared through `Undo::ClearMacros`, carried by `RunRequest` | `t32stage` | none: `macro-visibility` holds on build 168999 |
 | Sliced append upload: a file larger than the `VM:` window is saved slice by slice with `Data.SAVE.Binary /Append`, then size-checked | `t32stage` | `ASSUMED(vm-file)`, which gains an append case |
-| Result macros `t32ctl_rc` and `t32ctl_msg`: declared `GLOBAL` and emptied before a run, read after it; an empty rc is success except for a `burn` procedure | `t32stage` | `ASSUMED(macro)` |
+| Result macros `t32ctl_rc` and `t32ctl_msg`: emptied over EXP 2 before a run, read after it; `0`, `0.` and `0x0` are zero, and an empty rc is success except for a `burn` procedure | `t32stage` | none: `macro-visibility` and `macro-return` hold on build 168999 |
 | An instance marker macro; a missing marker reads as unknown, because `PMACRO.RESet` deletes it as well as a restart | `t32stage` | `ASSUMED(macro)` |
 | One per-PowerView state directory rule, `pv/<host>-<port>/` with the host as configured, beside `default_state_dir()`; `t32probe` uses it as its default `--state-dir` | `t32stage`, `t32probe` | none: no PowerView behavior |
 
