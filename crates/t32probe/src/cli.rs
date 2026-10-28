@@ -23,7 +23,7 @@ use crate::{
 /// Run it in WSL2 on the PC that runs PowerView, with RCL enabled (`RCL=NETTCP` and `PORT=` in
 /// `config.t32`). The default run uses only the `safe` probes.
 #[derive(Debug, Parser)]
-#[command(name = "t32probe", version, about, long_about = None)]
+#[command(name = "t32probe", version = env!("T32PROBE_VERSION"), about, long_about = None)]
 pub struct Args {
     /// PowerView host. `auto` tries 127.0.0.1, the WSL default gateway, then the resolv.conf nameserver.
     #[arg(long, default_value = "auto")]

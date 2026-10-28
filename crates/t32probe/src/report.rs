@@ -209,7 +209,7 @@ pub fn header(env: &Env, build: Option<PowerViewBuild>) -> String {
         format!("run={}", env.cfg.run_id),
         format!("wsl={}", env.cfg.wsl.mode.tag()),
     ]);
-    fit(format!("t32probe {} ", env!("CARGO_PKG_VERSION")), tokens, WIDTH)
+    fit(format!("t32probe {} ", env!("T32PROBE_VERSION")), tokens, WIDTH)
 }
 
 /// One line per manual command, never cut: the operator types it, and a cut command is worse
@@ -323,7 +323,7 @@ pub fn json_report<'a>(
     JsonReport {
         schema: "t32probe.report/1",
         tool: "t32probe",
-        version: env!("CARGO_PKG_VERSION"),
+        version: env!("T32PROBE_VERSION"),
         environment: Environment {
             run_id: &env.cfg.run_id,
             endpoint: env.endpoint.as_ref().map(|e| e.to_string()),
