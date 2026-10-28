@@ -58,7 +58,7 @@ fn ended(s: Script, case: &Case) -> Script {
 fn round(s: Script, id: &str, z: bool) -> Script {
     let s = sampled(s, 1, 1).expect_fn("TRUE()").reply_bool(true);
     let s = s.expect_fn("OS.PPF()").reply_text(&format!("C:\\T\\t32ctl\\probe-r1-lab\\{id}.cmm"));
-    let s = s.expect_req(Request::MacroGet { name: "t32ctl_qr1_e1".into() }).reply_macro("e1-r1");
+    let s = s.expect_req(Request::MacroGet { name: "t32ctl_qr1_lw".into() }).reply_macro("lw-r1");
     let s = s.expect_req(vm_read(R0, 16)).reply_mem(&[0; 16]);
     marker(s.expect_cmd("Data.Set VM:0x01021F00 \"x\" 0").reply_ok(), id, "z", z)
 }
@@ -121,13 +121,13 @@ fn script_lab_passes_on_the_file_oracle_alone() {
         s = ended(s, &c);
         nests.push(c);
     }
-    s = s.expect_req(Request::MacroSet { name: "t32ctl_qr1_e1".into(), value: "e1-r1".into() }).reply_macro("");
+    s = s.expect_req(Request::MacroSet { name: "t32ctl_qr1_lw".into(), value: "lw-r1".into() }).reply_macro("");
     let (w3, lp) = (w3(), looped());
     s = asks(measured(measured(s, &w3, 2), &lp, 1), "loop", &[("n", true)]);
     s = listed(s, TAG, &[]);
 
     s = files_removed(files_removed(s, TAG, &lp, ScriptOut::Off, &[]), TAG, &w3, ScriptOut::Off, &[]);
-    s = s.expect_req(Request::MacroSet { name: "t32ctl_qr1_e1".into(), value: String::new() }).reply_macro("");
+    s = s.expect_req(Request::MacroSet { name: "t32ctl_qr1_lw".into(), value: String::new() }).reply_macro("");
     for c in nests.iter().rev() {
         s = files_removed(s, TAG, c, ScriptOut::Off, &[]);
     }

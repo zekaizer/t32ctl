@@ -572,3 +572,98 @@ fn bundle_skips_unless_all_three_gates_hold() {
     assert_eq!(o.lookup("gate"), Some(&Value::Text("skip:c".into())));
     assert_eq!(o.lookup("sn"), Some(&Value::Text("snap=n empty=n".into())));
 }
+
+/// `{q}_<x>` suffixes a probe creates, the ones it relies on nobody creating, and the cases
+/// whose bodies name them.
+struct Suffixes {
+    probe: &'static str,
+    created: Vec<&'static str>,
+    absent: Vec<&'static str>,
+    bodies: Vec<String>,
+}
+
+fn bodies(cases: Vec<crate::probes::lab::Case>, subs: &[crate::probes::channels::Sub]) -> Vec<String> {
+    cases.into_iter().map(|c| c.body).chain(subs.iter().map(|(_, _, b)| b.to_string())).collect()
+}
+
+fn named_suffixes(text: &str) -> Vec<String> {
+    text.match_indices("{q}_")
+        .map(|(i, m)| {
+            text[i + m.len()..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<String>()
+        })
+        .collect()
+}
+
+fn suffix_table() -> Vec<Suffixes> {
+    use crate::probes::{channels, macros, scriptlab as sl};
+    let (vis, vis_subs) = macros::vis_cases();
+    let (ret, ret_subs) = macros::ret_cases();
+    let (cin, cin_subs) = channels::in_cases("C:\\T\\t32ctl\\probe-r1-in");
+    let (cout, cout_subs) = channels::out_cases();
+    let lab = vec![sl::o0(), sl::c1(), sl::c2(), sl::w300(1), sl::nest(1), sl::w3(), sl::looped(), sl::big()];
+    let halt =
+        vec![sl::hs_stop(), sl::hs_err(), sl::hs_wait(), sl::hs_unwind(), sl::hs_save(), sl::hs_open(), sl::hs_glob()];
+    let mut ret_created = vec!["s1", "d1", "d2", "d3", "glo", "h1", "h2", "mk", "mk2", "n1", "n2", "n3"];
+    ret_created.extend(["p", "p2", "pp", "p1", "r1", "loc", "lo"]);
+    vec![
+        Suffixes {
+            probe: "macro",
+            created: vec!["x1", "x2", "x3", "x4", "x5", "z", "g", "big"],
+            absent: vec!["never"],
+            bodies: Vec::new(),
+        },
+        Suffixes { probe: "fn-table", created: vec!["fx", "fy"], absent: Vec::new(), bodies: Vec::new() },
+        Suffixes { probe: "script-lab", created: vec![sl::RCL_MACRO], absent: Vec::new(), bodies: bodies(lab, &[]) },
+        Suffixes {
+            probe: "script-halt",
+            created: vec!["hg"],
+            absent: Vec::new(),
+            bodies: bodies([halt, vec![sl::hs_read()]].concat(), &[]),
+        },
+        Suffixes {
+            probe: "channel-in",
+            created: vec!["p_addr", "ca"],
+            absent: Vec::new(),
+            bodies: bodies(cin, &cin_subs),
+        },
+        Suffixes { probe: "channel-out", created: Vec::new(), absent: Vec::new(), bodies: bodies(cout, &cout_subs) },
+        Suffixes {
+            probe: "macro-visibility",
+            created: vec!["v1", "v2", "v3", "v4", "c1", "c2", "e1", "im"],
+            absent: vec!["u1", "none"],
+            bodies: bodies(vis, &vis_subs),
+        },
+        Suffixes { probe: "macro-return", created: ret_created, absent: vec!["never"], bodies: bodies(ret, &ret_subs) },
+    ]
+}
+
+#[test]
+fn macro_suffixes_never_collide_across_probes() {
+    let table = suffix_table();
+    for t in &table {
+        for b in &t.bodies {
+            for x in named_suffixes(b) {
+                assert!(
+                    t.created.contains(&x.as_str()) || t.absent.contains(&x.as_str()),
+                    "{}: a case names {{q}}_{x}, which its table entry lacks",
+                    t.probe
+                );
+            }
+        }
+    }
+    for a in &table {
+        for b in &table {
+            if a.probe == b.probe {
+                continue;
+            }
+            for x in &a.created {
+                assert!(
+                    !b.created.contains(x) && !b.absent.contains(x),
+                    "{} creates {{q}}_{x}, which {} also uses",
+                    a.probe,
+                    b.probe
+                );
+            }
+        }
+    }
+}

@@ -26,6 +26,8 @@ use crate::{
 };
 
 const MIB: u32 = 1 << 20;
+/// Suffix of the global the RCL rounds read with EXP; no other probe may use it.
+pub(crate) const RCL_MACRO: &str = "lw";
 /// `{L}` of script-lab and script-halt.
 const LARGE: u32 = 8 * MIB;
 
@@ -165,16 +167,16 @@ fn script_lab_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
         plain.push(lab.run(ctx, &nest(k))?);
     }
 
-    let e1 = MacroName::new(&format!("{}_e1", lab.q()))?;
-    ctx.push(Undo::ClearMacros(vec![e1.clone()]))?;
-    let e1_set = soft(ctx.session.macro_set(&e1, &lab.fill("e1-{run}")?))?.is_some();
-    ctx.measure("globals_left", Value::Count(e1_set.into()));
-    let w3 = during(ctx, lab, &w3(), &e1)?;
-    let lp = during(ctx, lab, &looped(), &e1)?;
+    let lw = MacroName::new(&format!("{}_{RCL_MACRO}", lab.q()))?;
+    ctx.push(Undo::ClearMacros(vec![lw.clone()]))?;
+    let lw_set = soft(ctx.session.macro_set(&lw, &lab.fill(&format!("{RCL_MACRO}-{{run}}"))?))?.is_some();
+    ctx.measure("globals_left", Value::Count(lw_set.into()));
+    let w3 = during(ctx, lab, &w3(), &lw)?;
+    let lp = during(ctx, lab, &looped(), &lw)?;
     let big = match lab.l {
         Some(l) => {
             ctx.session.mem_write(&l.addr(), &pattern(u64::from(LARGE), LARGE as usize))?;
-            during(ctx, lab, &big(), &e1)?
+            during(ctx, lab, &big(), &lw)?
         }
         None => None,
     };
@@ -242,7 +244,7 @@ struct During {
 
 /// Run `case`; once `w` exists, a round of RCL calls every `timing.round` until `z`, each timed.
 /// `None` when the case was not staged or was cut.
-fn during(ctx: &mut ProbeCtx<'_>, lab: &mut Lab, case: &Case, e1: &MacroName) -> Result<Option<During>, ProbeFail> {
+fn during(ctx: &mut ProbeCtx<'_>, lab: &mut Lab, case: &Case, lw: &MacroName) -> Result<Option<During>, ProbeFail> {
     let staged = match lab.stage(ctx, case)? {
         Ok(s) => s,
         Err(_) => return Ok(None),
@@ -269,7 +271,7 @@ fn during(ctx: &mut ProbeCtx<'_>, lab: &mut Lab, case: &Case, e1: &MacroName) ->
             let depth = timed!("depth", stack_depth(ctx)?);
             timed!("true", soft(ctx.session.eval("TRUE()"))?);
             let p = timed!("ppf", soft(ctx.session.eval("OS.PPF()"))?);
-            timed!("exp", soft(ctx.session.macro_get(e1))?);
+            timed!("exp", soft(ctx.session.macro_get(lw))?);
             timed!("mem", soft(ctx.session.mem_read(&lab.r_slot(0).addr(), 16))?);
             let t = ctx.session.now();
             let accepted = soft(ctx.session.with_budget(budget).cmd(&r15))?.is_some();
