@@ -10,7 +10,7 @@ use t32stage::{StagePath, Symbol, Undo, VmRegion, transfer};
 
 use super::{
     lab::{eval_text, raw_note},
-    optin::{Verified, revert, unverified},
+    optin::{Verified, pc, revert, unverified},
     scratch_regions, soft, stage_root, workdir,
 };
 use crate::{
@@ -302,6 +302,84 @@ fn print(
         _ => na(),
     };
     Ok((print.into(), frame))
+}
+
+/// `--elf` loaded into the halted target twice, `/NoReg` and with registers, then compared with
+/// `/DIFF` (general_ref_d: the result is in `FOUND()`). The PC is a `Revert` registered before
+/// the first load and applied after the compare. Target memory keeps the loaded code.
+pub fn load_code(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+    let elf = ctx.env.cfg.gates.load_code.clone().expect("gate opens only with an ELF");
+    let state = ctx.session.target_state()?;
+    if !matches!(state, TargetState::Halted | TargetState::Stopped) {
+        return Err(ProbeFail::Skip(SkipReason::TargetNotUp { state: state.name().into() }));
+    }
+    let size = u32::try_from(elf.bytes.len()).ok().filter(|n| *n > 0 && ctx.env.scratch_window().carve(&[*n]).is_ok());
+    let Some(size) = size else {
+        let why = format!("the ELF ({} bytes) does not fit the scratch window", elf.bytes.len());
+        return Err(ProbeFail::Skip(SkipReason::NotApplicable { why }));
+    };
+    ctx.measure("elf_path", Value::Text(elf.path.display().to_string()));
+    ctx.headline("elf", Value::Bytes(size.into()));
+    let root = stage_root(ctx)?;
+    let dir = workdir(ctx, &root, "load")?;
+    let region = scratch_regions(ctx, &[size])?[0];
+    let mut v = Verified::default();
+    for c in ["Data.LOAD.Elf", "Register.Set"] {
+        if !v.command(ctx, c)? {
+            ctx.text("load", unverified(c));
+            return Ok(());
+        }
+    }
+    let x = dir.join("x.elf")?;
+    ctx.push(Undo::RemoveFile(x.clone()))?;
+    transfer::put_file(ctx.session, &region, &elf.bytes, &x)?;
+    let Some(pc0) = pc(ctx, &mut v)? else { return Err(ProbeFail::Check("Register(PC) was refused".into())) };
+    ctx.push(Undo::Revert { what: "pc".into(), commands: vec![format!("Register.Set PC {pc0}")] })?;
+    let (a, _) = load(ctx, &mut v, &format!("Data.LOAD.Elf {} /NoReg", x.quoted()), size)?;
+    let (b, pc_b) = load(ctx, &mut v, &format!("Data.LOAD.Elf {}", x.quoted()), size)?;
+    ctx.text("load", format!("{a},{b}"));
+    ctx.text("pc", if pc_b.is_some_and(|p| p != pc0) { "set" } else { "kept" });
+    let code = if v.function(ctx, "FOUND")? {
+        let diff = format!("Data.LOAD.Elf {} /DIFF /NoReg /NosYmbol", x.quoted());
+        let budget = transfer::data_budget(ctx.session, size.into());
+        let compared = soft(ctx.session.with_budget(budget).cmd(&diff))?;
+        match compared {
+            Some(()) => match soft(ctx.session.eval("FOUND()").and_then(|f| f.into_bool("FOUND()")))? {
+                Some(true) => "diff",
+                Some(false) => "match",
+                None => "?",
+            },
+            None => "?",
+        }
+        .to_string()
+    } else {
+        unverified("FOUND")
+    };
+    ctx.text("code", code);
+    let mut clean = true;
+    revert(ctx, "pc", &mut clean);
+    let after = pc(ctx, &mut v)?;
+    ctx.measure("pc_restored", Value::Text(format!("{}", after.as_deref() == Some(pc0.as_str()))));
+    ctx.check(clean, || "restoring the PC did not apply".into())
+}
+
+/// One load under a budget sized to the ELF: `<s>:ka<n>` or `refused`, and the PC after it.
+fn load(
+    ctx: &mut ProbeCtx<'_>,
+    v: &mut Verified,
+    command: &str,
+    size: u32,
+) -> Result<(String, Option<String>), ProbeFail> {
+    ctx.session.take_trace();
+    let t = ctx.session.now();
+    let budget = transfer::data_budget(ctx.session, size.into());
+    let done = soft(ctx.session.with_budget(budget).cmd(command))?.is_some();
+    let took = ctx.session.now().saturating_duration_since(t);
+    let ka = ctx.session.take_trace().keepalives_total;
+    let pc = pc(ctx, v)?;
+    ctx.measure(&format!("pc.{command}"), Value::Text(pc.clone().unwrap_or_else(|| "refused".into())));
+    let token = if done { format!("{:.2}:ka{ka}", took.as_secs_f64()) } else { "refused".into() };
+    Ok((token, pc))
 }
 
 #[cfg(test)]

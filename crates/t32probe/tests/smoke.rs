@@ -109,6 +109,7 @@ fn needs_gate(probe: &str, flag: &str) {
 #[test]
 fn target_read_and_load_code_need_their_gates() {
     needs_gate("target-read", "--allow-target-read --symbol <s>");
+    needs_gate("load-code", "--allow-load-code --elf <path>");
 }
 
 #[test]

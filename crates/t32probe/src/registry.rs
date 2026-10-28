@@ -20,6 +20,7 @@ pub enum OptIn {
     MultiClient,
     RunControl,
     TargetRead,
+    LoadCode,
     Elf,
 }
 
@@ -30,6 +31,7 @@ impl OptIn {
             OptIn::MultiClient => "--allow-multi-client",
             OptIn::RunControl => "--allow-run-control --symbol <s>",
             OptIn::TargetRead => "--allow-target-read --symbol <s>",
+            OptIn::LoadCode => "--allow-load-code --elf <path>",
             OptIn::Elf => "--elf <path>",
         }
     }
@@ -162,6 +164,8 @@ probes! {
         "Go/Break and every core's PC, Go to --symbol, steps and step-out, breakpoint kind, write and /COUNT breakpoints, a reverted RAM and register write, breakpoint list unchanged (changes target state)";
     TargetRead = "target-read", Tier::OptIn(TargetRead), [VmFile], true, 180, target::target_read,
         "registers, symbol memory and chunk reads, address translation, Var functions, a memory range over RCL and through a file, epoch reads, windows printed to a file (reads only; leave no printer file open)";
+    LoadCode = "load-code", Tier::OptIn(LoadCode), [VmFile], true, 300, target::load_code,
+        "Data.LOAD.Elf of --elf into the halted target with /NoReg and without, time and keepalives, PC, /DIFF with FOUND(); the PC restored (changes target memory)";
     ElfUnzip = "elf-unzip", Tier::OptIn(Elf), [Gzip, Tempdir], true, 240, optin::elf_unzip,
         "Data.LOAD.Elf x.elf.gz /UNZIP and the VM: fallback; symbols only";
 }
@@ -295,6 +299,7 @@ mod tests {
             ("multi-client", MultiClient),
             ("run-control", RunControl),
             ("target-read", TargetRead),
+            ("load-code", LoadCode),
             ("elf-unzip", Elf),
         ];
         for n in safe {
@@ -306,7 +311,7 @@ mod tests {
         assert_eq!(ALL.len(), safe.len() + opt.len());
         let order: Vec<&str> = ALL.iter().filter(|d| d.tier == Tier::Safe).map(|d| d.id.name()).collect();
         assert_eq!(order, safe);
-        let rows: [(&str, &[&str], u64); 20] = [
+        let rows: [(&str, &[&str], u64); 22] = [
             ("keepalive", &["connect"], 30),
             ("gzip", &["vm-file"], 180),
             ("macro", &["tempdir"], 45),
@@ -327,6 +332,8 @@ mod tests {
             ("multi-client", &["script-lab"], 60),
             ("run-control", &["vm-file"], 180),
             ("target-read", &["vm-file"], 180),
+            ("load-code", &["vm-file"], 300),
+            ("elf-unzip", &["gzip", "tempdir"], 240),
         ];
         for (n, req, secs) in rows {
             let d = ProbeId::parse(n).expect("listed").def();
@@ -348,7 +355,7 @@ mod tests {
         assert!(names(select(&[], &[], &gates).unwrap()).contains(&"dialog"));
         assert_eq!(
             not_run(&gates).iter().map(|p| p.name()).collect::<Vec<_>>(),
-            ["multi-client", "run-control", "target-read", "elf-unzip"]
+            ["multi-client", "run-control", "target-read", "load-code", "elf-unzip"]
         );
     }
 }

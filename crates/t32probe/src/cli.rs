@@ -138,6 +138,10 @@ pub struct Args {
     /// Enable `elf-unzip` with this ELF. Loads its symbols (not its code) into PowerView.
     #[arg(long, value_name = "PATH")]
     pub elf: Option<PathBuf>,
+
+    /// Enable `load-code`: loads the code of --elf into the halted target, then restores the PC.
+    #[arg(long, requires = "elf")]
+    pub allow_load_code: bool,
 }
 
 /// The ELF, read once at start so a missing file is a usage error, not a probe failure.
@@ -223,6 +227,7 @@ pub struct Gates {
     pub multi_client: bool,
     pub run_control: Option<RunControlInput>,
     pub target_read: Option<TargetReadInput>,
+    pub load_code: Option<ElfInput>,
     pub elf: Option<ElfInput>,
 }
 
@@ -233,6 +238,7 @@ impl Gates {
             OptIn::MultiClient => self.multi_client,
             OptIn::RunControl => self.run_control.is_some(),
             OptIn::TargetRead => self.target_read.is_some(),
+            OptIn::LoadCode => self.load_code.is_some(),
             OptIn::Elf => self.elf.is_some(),
         }
     }
@@ -335,8 +341,14 @@ impl Args {
             }),
             _ => None,
         };
-        let gates =
-            Gates { dialog: self.allow_dialog, multi_client: self.allow_multi_client, run_control, target_read, elf };
+        let gates = Gates {
+            dialog: self.allow_dialog,
+            multi_client: self.allow_multi_client,
+            run_control,
+            target_read,
+            load_code: if self.allow_load_code { elf.clone() } else { None },
+            elf,
+        };
         let selected = registry::select(&ids(&self.only)?, &ids(&self.skip)?, &gates)?;
         let window = VmWindow::new(self.vm_base, self.vm_window).map_err(|e| format!("--vm-base/--vm-window: {e}"))?;
         if window.len() < 8 * 1024 * 1024 {
@@ -436,6 +448,8 @@ mod tests {
     fn target_read_and_load_code_need_their_gates() {
         assert_eq!(plan(&["--only", "target-read"]), Err("target-read needs --allow-target-read --symbol <s>".into()));
         assert!(Args::try_parse_from(["t32probe", "--allow-target-read"]).is_err(), "needs --symbol");
+        assert_eq!(plan(&["--only", "load-code"]), Err("load-code needs --allow-load-code --elf <path>".into()));
+        assert!(Args::try_parse_from(["t32probe", "--allow-load-code"]).is_err(), "needs --elf");
         let tr = |extra: &[&str]| {
             let mut v = vec!["--only", "target-read", "--allow-target-read", "--symbol", "main"];
             v.extend_from_slice(extra);
