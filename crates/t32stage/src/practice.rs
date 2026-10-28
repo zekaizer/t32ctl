@@ -74,6 +74,21 @@ impl RelPath {
         self.0.match_indices('/').map(|(i, _)| &self.0[..i])
     }
 
+    /// Where PowerView may keep the old content when a SAVE overwrites this file: the last
+    /// extension replaced by `.bak`, and the whole name plus `.bak`. Never the file itself.
+    pub fn bak_candidates(&self) -> Vec<RelPath> {
+        let name_at = self.0.rfind('/').map_or(0, |i| i + 1);
+        let stem = match self.0[name_at..].rfind('.') {
+            Some(dot) if dot > 0 => Some(&self.0[..name_at + dot]),
+            _ => None,
+        };
+        stem.into_iter()
+            .chain([self.0.as_str()])
+            .filter_map(|base| RelPath::new(&format!("{base}.bak")).ok())
+            .filter(|c| c != self)
+            .collect()
+    }
+
     /// ASCII case-folded form: two paths with the same fold collide on Windows.
     pub fn fold(&self) -> String {
         self.0.to_ascii_lowercase()
@@ -126,40 +141,38 @@ impl fmt::Display for PvPath {
     }
 }
 
-/// Where staged files live. Resolved once per `Stage` and the single source of truth for how a
-/// client-issued command names a staged file.
+/// Where staged files live: an ASCII-safe absolute path, written into client commands as is.
+/// Resolved once per `Stage` and the single source of truth for how a client-issued command names
+/// a staged file. Always spelled out: PowerView does not expand macros in commands sent over RCL
+/// (practice_user, "PRACTICE Macros").
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum StageRoot {
-    /// ASCII-safe absolute path, written into client commands as is.
-    Literal(PvPath),
-    /// `&t32ctl_root`, bound by `cmd::bind_root` and expanded by PowerView, so a temp directory in
-    /// an unknown code page never travels through the client's command bytes.
-    /// ASSUMED(tempdir): command-line assignment creates the global, and both later commands and
-    /// expressions sent over ExecuteFunction expand it; the probe measures the two apart.
-    Macro,
-}
+pub struct StageRoot(PvPath);
 
 /// Name of the root directory below `OS.PTD()`.
 pub const ROOT_DIR: &str = "t32ctl";
 
 impl StageRoot {
-    /// `Literal(<ptd>\t32ctl)` when `OS.PTD()` text is ASCII-safe, `Macro` otherwise.
-    pub fn from_ptd(ptd: &str) -> Self {
-        match PvPath::parse(ptd).and_then(|p| PvPath::parse(&p.join(ROOT_DIR))) {
-            Ok(p) => StageRoot::Literal(p),
-            Err(_) => StageRoot::Macro,
-        }
+    pub fn new(path: PvPath) -> Self {
+        Self(path)
+    }
+
+    /// `<ptd>\t32ctl`. A temp directory that is not ASCII-safe cannot travel through the client's
+    /// command bytes, so the caller needs an explicit root instead.
+    pub fn from_ptd(ptd: &str) -> Result<Self, PathError> {
+        PvPath::parse(ptd).and_then(|p| PvPath::parse(&p.join(ROOT_DIR))).map(Self)
+    }
+
+    pub fn as_path(&self) -> &PvPath {
+        &self.0
+    }
+
+    /// `rel` with the root's separator, for a path PRACTICE appends to this root.
+    pub fn native(&self, rel: &RelPath) -> String {
+        rel.as_str().replace('/', &self.0.sep.to_string())
     }
 
     pub fn path(&self, rel: RelPath) -> StagePath {
         StagePath { root: self.clone(), rel }
-    }
-
-    pub fn tag(&self) -> &'static str {
-        match self {
-            StageRoot::Literal(_) => "literal",
-            StageRoot::Macro => "macro",
-        }
     }
 }
 
@@ -185,26 +198,18 @@ impl StagePath {
 
     /// Path text for PRACTICE, unquoted.
     pub fn text(&self) -> String {
-        match &self.root {
-            StageRoot::Literal(p) => p.join(self.rel.as_str()),
-            StageRoot::Macro => format!("{}\\{}", Macro::Root.amp(), self.rel.as_str().replace('/', "\\")),
-        }
+        self.root.0.join(self.rel.as_str())
     }
 
-    /// `"<text>"`, ready for a command or a function argument. Also what an operator types by
-    /// hand: `&t32ctl_root` stays bound in PowerView, since cleanup never clears it.
+    /// `"<text>"`, ready for a command or a function argument, and what an operator types by hand.
     pub fn quoted(&self) -> String {
         format!("\"{}\"", self.text())
     }
 }
 
-/// For people: the root macro is spelled out as `<OS.PTD()>\t32ctl`.
 impl fmt::Display for StagePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.root {
-            StageRoot::Literal(_) => f.write_str(&self.text()),
-            StageRoot::Macro => write!(f, "<OS.PTD()>\\{ROOT_DIR}\\{}", self.rel.as_str().replace('/', "\\")),
-        }
+        f.write_str(&self.text())
     }
 }
 
@@ -267,7 +272,7 @@ impl Symbol {
 
 /// Characters a script argument may contain besides ASCII letters and digits. Arguments travel
 /// unquoted in a macro value, are spliced into the runner's `DO` line and split by `ENTRY` at
-/// blanks. ASSUMED(script-error): none of them splits or changes an argument there (`,`
+/// blanks. ASSUMED(channel-in): none of them splits or changes an argument there (`,`
 /// separates parameters in some command formats, `/` starts an option); the probe passes each
 /// through `ENTRY` and compares. Widen only with that evidence.
 const ARG_SAFE: &[char] = &['_', '-', '.', '/', ':', '+', '=', ',', '@'];
@@ -294,22 +299,9 @@ pub fn render_args(args: &[String]) -> Result<String, ArgError> {
 pub mod cmd {
     use super::*;
 
-    /// Declares `&t32ctl_root` and binds it to `OS.PTD()+"\t32ctl"`; ide_ref's MKTEMP example
-    /// appends `\` to `OS.PresentTemporaryDirectory()`, so the result carries no separator.
-    /// ASSUMED(tempdir): `GLOBAL` and the assignment work over ExecuteCommand.
-    pub fn bind_root() -> [String; 2] {
-        [global(&[Macro::Root]), format!("{}=OS.PTD()+\"\\{ROOT_DIR}\"", Macro::Root.amp())]
-    }
-
     /// `GLOBAL &a &b ...`. ASSUMED(macro): redeclaring an existing global keeps its value.
     pub fn global(macros: &[Macro]) -> String {
         format!("GLOBAL {}", macros.iter().map(|m| m.amp()).collect::<Vec<_>>().join(" "))
-    }
-
-    /// `&m="<path>"`: PowerView expands `&t32ctl_root` inside the string when the root is a macro.
-    /// ASSUMED(macro): macros expand inside a quoted assignment on the command line.
-    pub fn bind_path(m: Macro, p: &StagePath) -> String {
-        format!("{}={}", m.amp(), p.quoted())
     }
 
     pub fn mkdir(p: &StagePath) -> String {
@@ -347,8 +339,8 @@ pub mod cmd {
         format!("Data.CLEARVM {}", vm_range(r))
     }
 
-    /// `TAR <archive> <dir>\*`: recursive by default (ide_ref).
-    /// ASSUMED(tar-download): names are stored relative to `<dir>`.
+    /// `TAR <archive> <dir>\*`: recursive by default (ide_ref). Build 168999 stores each name with
+    /// the full path minus the drive; `tar::below` makes it relative to `<dir>`.
     pub fn tar(archive: &StagePath, dir: &StagePath) -> String {
         format!("TAR {} \"{}\\*\"", archive.quoted(), dir.text())
     }
@@ -399,7 +391,9 @@ pub mod fnc {
     pub const STACK_DEPTH: &str = "PRACTICE.StackDepth()";
     pub const ERROR_MESSAGE: &str = "ERROR.MESSAGE()";
     pub const ERROR_CMDLINE: &str = "ERROR.CMDLINE()";
-    pub const NR_USED_CONS: &str = "api.RCL.TCP.NrUsedCons()";
+    /// Spellings tried in order (ide_func). The bare one is deprecated but answers from DVD
+    /// 09/2022; the `api.` group starts at build 171257, so build 168999 refuses it.
+    pub const NR_USED_CONS: [&str; 2] = ["RCL.TCP.NrUsedCons()", "api.RCL.TCP.NrUsedCons()"];
 
     pub fn file_size(p: &StagePath) -> String {
         format!("OS.FILE.SIZE({})", p.quoted())
@@ -421,6 +415,17 @@ mod tests {
 
     fn rel(s: &str) -> RelPath {
         RelPath::new(s).unwrap()
+    }
+
+    #[test]
+    fn bak_candidates_cover_both_naming_rules() {
+        let names = |p: &str| rel(p).bak_candidates().iter().map(|c| c.as_str().to_string()).collect::<Vec<_>>();
+        assert_eq!(names("main.cmm"), ["main.bak", "main.cmm.bak"]);
+        assert_eq!(names(".t32ctl/runner.cmm"), [".t32ctl/runner.bak", ".t32ctl/runner.cmm.bak"]);
+        assert_eq!(names("a.tar.gz"), ["a.tar.bak", "a.tar.gz.bak"]);
+        assert_eq!(names(".t32ctl/complete"), [".t32ctl/complete.bak"]);
+        assert_eq!(names("d.x/.hidden"), ["d.x/.hidden.bak"]);
+        assert_eq!(names("old.bak"), ["old.bak.bak"]);
     }
 
     #[test]
@@ -465,19 +470,18 @@ mod tests {
     }
 
     #[test]
-    fn stage_root_is_literal_only_for_ascii_safe_temp_dirs() {
-        let lit = StageRoot::from_ptd("C:\\Users\\op\\AppData\\Local\\Temp");
-        assert_eq!(lit.path(rel("k/a b.bin")).quoted(), "\"C:\\Users\\op\\AppData\\Local\\Temp\\t32ctl\\k\\a b.bin\"");
-        let mac = StageRoot::from_ptd("C:\\Users\\김\\AppData\\Local\\Temp");
-        assert_eq!(mac, StageRoot::Macro);
-        let p = mac.path(rel("k/a.bin"));
-        assert_eq!(p.quoted(), "\"&t32ctl_root\\k\\a.bin\"");
-        assert_eq!(p.to_string(), "<OS.PTD()>\\t32ctl\\k\\a.bin");
+    fn stage_root_comes_only_from_an_ascii_safe_temp_dir() {
+        let root = StageRoot::from_ptd("C:\\Users\\op\\AppData\\Local\\Temp").unwrap();
+        assert_eq!(root.path(rel("k/a b.bin")).quoted(), "\"C:\\Users\\op\\AppData\\Local\\Temp\\t32ctl\\k\\a b.bin\"");
+        assert!(matches!(
+            StageRoot::from_ptd("C:\\Users\\김\\AppData\\Local\\Temp"),
+            Err(PathError::Char { bad: '김', .. })
+        ));
     }
 
     #[test]
     fn command_text_golden() {
-        let root = StageRoot::from_ptd("C:\\T");
+        let root = StageRoot::from_ptd("C:\\T").unwrap();
         let p = root.path(rel("k/a.bin"));
         let r = VmRegion::new(0x0100_0000, NonZeroU32::new(0x40).unwrap()).unwrap();
         assert_eq!(
@@ -496,11 +500,6 @@ mod tests {
         let dir = root.path(rel("o"));
         assert_eq!(cmd::tar(&p, &dir), "TAR \"C:\\T\\t32ctl\\k\\a.bin\" \"C:\\T\\t32ctl\\o\\*\"");
         assert_eq!(cmd::load_elf_symbols(&p, true), "Data.LOAD.Elf \"C:\\T\\t32ctl\\k\\a.bin\" /UNZIP /NoCODE /NoReg");
-        assert_eq!(
-            cmd::bind_root(),
-            ["GLOBAL &t32ctl_root".to_string(), "&t32ctl_root=OS.PTD()+\"\\t32ctl\"".to_string()]
-        );
-        assert_eq!(cmd::bind_path(Macro::Snap, &dir), "&t32ctl_snap=\"C:\\T\\t32ctl\\o\"");
         assert_eq!(ExistsFn::OsFileExist.call(&dir), "OS.FILE.EXIST(\"C:\\T\\t32ctl\\o\")");
     }
 

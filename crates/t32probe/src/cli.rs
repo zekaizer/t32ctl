@@ -23,7 +23,7 @@ use crate::{
 /// Run it in WSL2 on the PC that runs PowerView, with RCL enabled (`RCL=NETTCP` and `PORT=` in
 /// `config.t32`). The default run uses only the `safe` probes.
 #[derive(Debug, Parser)]
-#[command(name = "t32probe", version, about, long_about = None)]
+#[command(name = "t32probe", version = env!("T32PROBE_VERSION"), about, long_about = None)]
 pub struct Args {
     /// PowerView host. `auto` tries 127.0.0.1, the WSL default gateway, then the resolv.conf nameserver.
     #[arg(long, default_value = "auto")]
@@ -101,13 +101,47 @@ pub struct Args {
     #[arg(long, requires = "symbol")]
     pub allow_run_control: bool,
 
-    /// Symbol for `run-control`, and the existence check after `elf-unzip`.
+    /// Symbol for `run-control` and `target-read`, and the symbol queries after `elf-unzip`.
     #[arg(long)]
     pub symbol: Option<String>,
+
+    /// With `run-control`: a source line `<file>:<line>` inside a loop, for a `/COUNT` breakpoint.
+    #[arg(long, value_name = "FILE:LINE", requires = "allow_run_control")]
+    pub loop_line: Option<String>,
+
+    /// With `run-control`: a variable to set write breakpoints on.
+    #[arg(long, value_name = "VAR", requires = "allow_run_control")]
+    pub watch: Option<String>,
+
+    /// With `run-control`: a 4-byte aligned RAM address the probe may write and restore.
+    #[arg(long, value_name = "ADDR", requires = "allow_run_control")]
+    pub scratch_ram: Option<String>,
+
+    /// Enable `target-read`: reads registers, memory and symbols of a halted target and prints
+    /// windows to a file. Leave no PowerView printer file open while it runs.
+    #[arg(long, requires = "symbol")]
+    pub allow_target_read: bool,
+
+    /// With `target-read`: a virtual address to translate.
+    #[arg(long, value_name = "ADDR", requires = "allow_target_read")]
+    pub va: Option<String>,
+
+    /// With `target-read`: a peripheral section name for `WinPrint.PER.view`.
+    #[arg(long, value_name = "NAME", requires = "allow_target_read")]
+    pub per_section: Option<String>,
+
+    /// With `target-read`: `<addr>++<len>` of target memory to read over RCL and save to a file,
+    /// at most 16 MiB.
+    #[arg(long, value_name = "ADDR++LEN", requires = "allow_target_read")]
+    pub read_range: Option<String>,
 
     /// Enable `elf-unzip` with this ELF. Loads its symbols (not its code) into PowerView.
     #[arg(long, value_name = "PATH")]
     pub elf: Option<PathBuf>,
+
+    /// Enable `load-code`: loads the code of --elf into the halted target, then restores the PC.
+    #[arg(long, requires = "elf")]
+    pub allow_load_code: bool,
 }
 
 /// The ELF, read once at start so a missing file is a usage error, not a probe failure.
@@ -118,13 +152,82 @@ pub struct ElfInput {
     pub symbol: Option<Symbol>,
 }
 
+/// What `PvPath` refuses inside a path; a blank is refused too.
+const LINE_FILE_FORBIDDEN: &[char] = &['"', '&', '%', ';', '*', '?', '<', '>', '|', '`'];
+
+/// A source line for a breakpoint: `<file>\<line>` in PRACTICE.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceLine {
+    pub file: String,
+    pub line: u32,
+}
+
+impl SourceLine {
+    /// `<file>:<line>`, split at the last `:` so a drive letter stays in the file. The file goes
+    /// unquoted into a command: no blank and none of the characters a stage path refuses.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let (file, line) = text.rsplit_once(':').ok_or("expected <file>:<line>")?;
+        if file.is_empty() {
+            return Err("the file is empty".into());
+        }
+        if let Some(bad) = file.chars().find(|c| !('!'..='~').contains(c) || LINE_FILE_FORBIDDEN.contains(c)) {
+            return Err(format!("the file contains {bad:?}"));
+        }
+        match line.parse::<u32>() {
+            Ok(line) if line >= 1 => Ok(Self { file: file.to_string(), line }),
+            _ => Err(format!("line {line:?} is not a number of at least 1")),
+        }
+    }
+}
+
+/// `run-control`'s inputs: the symbol to run to and the optional steps' operator-chosen targets.
+#[derive(Clone, Debug)]
+pub struct RunControlInput {
+    pub symbol: Symbol,
+    pub loop_line: Option<SourceLine>,
+    pub watch: Option<Symbol>,
+    pub scratch_ram: Option<u64>,
+}
+
+/// `target-read`'s inputs.
+#[derive(Clone, Debug)]
+pub struct TargetReadInput {
+    pub symbol: Symbol,
+    pub va: Option<u64>,
+    pub per_section: Option<String>,
+    /// Start and length.
+    pub read_range: Option<(u64, u32)>,
+}
+
+/// Largest `--read-range` length.
+const READ_RANGE_MAX: u32 = 16 * 1024 * 1024;
+
+fn parse_section(s: &str) -> Result<String, String> {
+    if (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.') {
+        Ok(s.to_string())
+    } else {
+        Err(format!("{s:?} is not [A-Za-z0-9_.]{{1,64}}"))
+    }
+}
+
+fn parse_range(s: &str) -> Result<(u64, u32), String> {
+    let (a, n) = s.split_once("++").ok_or("expected <addr>++<len>")?;
+    let n = parse_u64(n)?;
+    if !(1..=u64::from(READ_RANGE_MAX)).contains(&n) {
+        return Err(format!("length {n} is not between 1 and {READ_RANGE_MAX}"));
+    }
+    Ok((parse_u64(a)?, n as u32))
+}
+
 /// What the opt-in flags unlocked, with the inputs those probes need. A gate is open iff its
 /// field is set, so "unlocked but missing its input" is not representable.
 #[derive(Clone, Debug, Default)]
 pub struct Gates {
     pub dialog: bool,
     pub multi_client: bool,
-    pub run_control: Option<Symbol>,
+    pub run_control: Option<RunControlInput>,
+    pub target_read: Option<TargetReadInput>,
+    pub load_code: Option<ElfInput>,
     pub elf: Option<ElfInput>,
 }
 
@@ -134,6 +237,8 @@ impl Gates {
             OptIn::Dialog => self.dialog,
             OptIn::MultiClient => self.multi_client,
             OptIn::RunControl => self.run_control.is_some(),
+            OptIn::TargetRead => self.target_read.is_some(),
+            OptIn::LoadCode => self.load_code.is_some(),
             OptIn::Elf => self.elf.is_some(),
         }
     }
@@ -162,6 +267,19 @@ fn check_json_dest(path: &Path) -> Result<(), String> {
     }
 }
 
+fn parse_u64(s: &str) -> Result<u64, String> {
+    let (digits, radix) = s.strip_prefix("0x").map_or((s, 10), |h| (h, 16));
+    u64::from_str_radix(&digits.replace('_', ""), radix).map_err(|e| e.to_string())
+}
+
+fn parse_ram(s: &str) -> Result<u64, String> {
+    let a = parse_u64(s)?;
+    if a % 4 != 0 {
+        return Err(format!("{s} is not 4-byte aligned"));
+    }
+    Ok(a)
+}
+
 fn ids(names: &[String]) -> Result<Vec<ProbeId>, String> {
     names
         .iter()
@@ -185,10 +303,50 @@ impl Args {
             }
             None => None,
         };
+        let run_control = match &symbol {
+            Some(symbol) if self.allow_run_control => Some(RunControlInput {
+                symbol: symbol.clone(),
+                loop_line: self
+                    .loop_line
+                    .as_deref()
+                    .map(SourceLine::parse)
+                    .transpose()
+                    .map_err(|e| format!("--loop-line: {e}"))?,
+                watch: self.watch.as_deref().map(Symbol::parse).transpose().map_err(|e| format!("--watch: {e}"))?,
+                scratch_ram: self
+                    .scratch_ram
+                    .as_deref()
+                    .map(parse_ram)
+                    .transpose()
+                    .map_err(|e| format!("--scratch-ram: {e}"))?,
+            }),
+            _ => None,
+        };
+        let target_read = match &symbol {
+            Some(symbol) if self.allow_target_read => Some(TargetReadInput {
+                symbol: symbol.clone(),
+                va: self.va.as_deref().map(parse_u64).transpose().map_err(|e| format!("--va: {e}"))?,
+                per_section: self
+                    .per_section
+                    .as_deref()
+                    .map(parse_section)
+                    .transpose()
+                    .map_err(|e| format!("--per-section: {e}"))?,
+                read_range: self
+                    .read_range
+                    .as_deref()
+                    .map(parse_range)
+                    .transpose()
+                    .map_err(|e| format!("--read-range: {e}"))?,
+            }),
+            _ => None,
+        };
         let gates = Gates {
             dialog: self.allow_dialog,
             multi_client: self.allow_multi_client,
-            run_control: if self.allow_run_control { symbol } else { None },
+            run_control,
+            target_read,
+            load_code: if self.allow_load_code { elf.clone() } else { None },
             elf,
         };
         let selected = registry::select(&ids(&self.only)?, &ids(&self.skip)?, &gates)?;
@@ -254,6 +412,63 @@ mod tests {
         }
         assert!(plan(&["--timeout", "1e30"]).is_err());
         assert!(plan(&["--scale", "2", "--timeout", "20"]).is_ok());
+    }
+
+    #[test]
+    fn scratch_ram_and_loop_line_are_validated_before_anything_is_sent() {
+        let rc = |extra: &[&str]| {
+            let mut v = vec!["--allow-run-control", "--symbol", "main"];
+            v.extend_from_slice(extra);
+            plan(&v)
+        };
+        assert_eq!(rc(&[]), Ok(()));
+        assert_eq!(
+            rc(&["--loop-line", "C:\\src\\main.c:12", "--watch", "counter", "--scratch-ram", "0x80001000"]),
+            Ok(())
+        );
+        for bad in [
+            ["--scratch-ram", "0x80001002"],
+            ["--scratch-ram", "nope"],
+            ["--loop-line", "main.c"],
+            ["--loop-line", "main.c:0"],
+            ["--loop-line", "main.c:x"],
+            ["--loop-line", ":12"],
+            ["--loop-line", "my file.c:12"],
+            ["--loop-line", "a;b.c:12"],
+            ["--watch", "1x"],
+        ] {
+            let e = rc(&bad).unwrap_err();
+            assert!(e.starts_with(bad[0]), "{bad:?}: {e}");
+        }
+        let parsed = Args::try_parse_from(["t32probe", "--loop-line", "main.c:3"]);
+        assert!(parsed.is_err(), "--loop-line needs --allow-run-control");
+    }
+
+    #[test]
+    fn target_read_and_load_code_need_their_gates() {
+        assert_eq!(plan(&["--only", "target-read"]), Err("target-read needs --allow-target-read --symbol <s>".into()));
+        assert!(Args::try_parse_from(["t32probe", "--allow-target-read"]).is_err(), "needs --symbol");
+        assert_eq!(plan(&["--only", "load-code"]), Err("load-code needs --allow-load-code --elf <path>".into()));
+        assert!(Args::try_parse_from(["t32probe", "--allow-load-code"]).is_err(), "needs --elf");
+        let tr = |extra: &[&str]| {
+            let mut v = vec!["--only", "target-read", "--allow-target-read", "--symbol", "main"];
+            v.extend_from_slice(extra);
+            plan(&v)
+        };
+        assert_eq!(
+            tr(&["--va", "0xFFFF000000001000", "--per-section", "GIC.D", "--read-range", "0x80000000++0x1000"]),
+            Ok(())
+        );
+        for bad in [
+            ["--read-range", "0x80000000++0x1000001"],
+            ["--read-range", "0x80000000++0"],
+            ["--read-range", "0x80000000"],
+            ["--per-section", "a b"],
+            ["--va", "zz"],
+        ] {
+            let e = tr(&bad).unwrap_err();
+            assert!(e.starts_with(bad[0]), "{bad:?}: {e}");
+        }
     }
 
     #[test]

@@ -247,7 +247,7 @@ fn remote_refusals_keep_the_session_live() {
             .reply_function(0, "syntax error")
             .expect(Expect::Any)
             .reply_error(16, "")
-            .expect_req(Request::MacroGet { name: "m".into() })
+            .expect_req(Request::MacroGet { name: "&m".into() })
             .reply_exp_error(3, "no such macro"),
     );
     let kind = |r: Result<()>| r.unwrap_err().remote().map(|e| e.kind);
@@ -263,13 +263,49 @@ fn remote_refusals_keep_the_session_live() {
 }
 
 #[test]
+fn stop_practice_returns_status_1_as_ok() {
+    let mut s = session(
+        Script::new()
+            .attach()
+            .expect_req(Request::Stop)
+            .reply_error(1, "")
+            .expect_req(Request::Stop)
+            .reply_ok()
+            .expect_req(Request::Stop)
+            .reply_error(2, ""),
+    );
+    assert_eq!(s.stop_practice().unwrap(), 1);
+    assert_eq!(s.stop_practice().unwrap(), 0);
+    assert_eq!(s.stop_practice().unwrap_err().remote().map(|e| e.code), Some(2));
+    assert_eq!(s.health(), Health::Live);
+}
+
+#[test]
+fn std_failed_on_a_memory_access_is_a_memory_access_refusal() {
+    let mut s = session(
+        Script::new()
+            .attach()
+            .expect(Expect::Any)
+            .reply_error(113, "")
+            .expect(Expect::Any)
+            .reply_error(113, "")
+            .expect_cmd("NOPE")
+            .reply_error(113, ""),
+    );
+    let kind = |r: Result<()>| r.unwrap_err().remote().map(|e| e.kind);
+    assert_eq!(kind(s.mem_read(&MemAddr::vm(0), 4).map(drop)), Some(RemoteKind::MemoryAccess));
+    assert_eq!(kind(s.mem_write(&MemAddr::vm(0), &[1])), Some(RemoteKind::MemoryAccess));
+    assert_eq!(kind(s.cmd("NOPE")), Some(RemoteKind::Other));
+}
+
+#[test]
 fn a_failed_exp_call_with_a_status_byte_keeps_its_exp_code_and_message() {
     let mut s = session(
         Script::new()
             .attach()
-            .expect_req(Request::MacroGet { name: "m".into() })
+            .expect_req(Request::MacroGet { name: "&m".into() })
             .reply_exp_failed(90, 3, "no such macro")
-            .expect_req(Request::MacroSet { name: "m".into(), value: "v".into() })
+            .expect_req(Request::MacroSet { name: "&m".into(), value: "v".into() })
             .reply_exp_failed(90, 7, "locked"),
     );
     let got = |r: Result<()>| r.unwrap_err().remote().cloned();
@@ -286,9 +322,9 @@ fn a_reply_carrying_the_largest_macro_value_is_received() {
     let mut s = session(
         Script::new()
             .attach()
-            .expect_req(Request::MacroSet { name: "m".into(), value: value.clone() })
+            .expect_req(Request::MacroSet { name: "&m".into(), value: value.clone() })
             .reply_macro("")
-            .expect_req(Request::MacroGet { name: "m".into() })
+            .expect_req(Request::MacroGet { name: "&m".into() })
             .reply_macro(&value),
     );
     let m = MacroName::new("m").unwrap();
@@ -324,6 +360,19 @@ fn eval_string_and_the_device_prompt() {
         |o| o.prompt = Some(DevicePrompt::parse("B::").unwrap()),
     );
     assert_eq!(s.eval_string("ERROR.MESSAGE()").unwrap(), "boom");
+}
+
+#[test]
+fn eval_last_string_reads_the_slot_without_eval() {
+    let mut s = session(Script::new().attach().expect_req(Request::EvalString).reply_string("t32q-ok"));
+    assert_eq!(s.eval_last_string().unwrap(), "t32q-ok");
+}
+
+#[test]
+fn macro_get_payload_returns_the_raw_pl_bytes() {
+    let mut s =
+        session(Script::new().attach().expect_req(Request::MacroGet { name: "&m".into() }).reply_macro("\"0\""));
+    assert_eq!(s.macro_get_payload(&MacroName::new("m").unwrap()).unwrap(), b"\0\0\"0\"");
 }
 
 #[test]

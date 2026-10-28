@@ -21,7 +21,7 @@
 //! | ExecuteCommand | 0x72 | 0x04 | u32 4096, text, NUL | none | `t32_executecommand` |
 //! | ExecuteFunction | 0x72 | 0x05 | u32 4096, text, NUL | u32 type, u32 size, text | `t32_executefunction` |
 //! | GetPracticeState | 0x72 | 0x03 | none | u8 | `t32_getpracticestate` |
-//! | Stop | 0x72 | 0x00 | none | none | `t32_stop` |
+//! | Stop | 0x72 | 0x00 | none | none; status 1 is also success | `t32_stop` |
 //! | GetState | 0x74 | 0x10 | none | u8 | `t32_getstate` |
 //! | EvalGetString | 0x74 | 0x17 | none | text, NUL | `t32_evalgetstring` |
 //! | MemRead | 0x74 | 0x35 | u16 len, addr object | data | `t32_readmemoryobj` |
@@ -295,6 +295,10 @@ fn remote_kind(op: Op, code: u8) -> RemoteKind {
             _ => RemoteKind::Other,
         };
     }
+    // Build 168999 refuses reads of the probe's untouched `VM:` window with STD_FAILED (issue #2).
+    if code == 113 && matches!(op, Op::MemRead | Op::MemWrite) {
+        return RemoteKind::MemoryAccess;
+    }
     STATUS_CODES.iter().find(|(c, ..)| *c == code).map_or(RemoteKind::Other, |(.., k)| *k)
 }
 
@@ -383,6 +387,14 @@ pub(crate) mod resp {
             _ => None,
         };
         parsed.unwrap_or_else(|| FuncValue::Raw { ty, text: text.to_string() })
+    }
+
+    /// `T32_Stop` succeeds with status 0 or 1 (api_remote_c `T32_Stop`: "0 or 1 for ok").
+    pub fn stop(msg: &[u8]) -> Result<u8, RemoteError> {
+        match msg[0] {
+            0 | 1 => Ok(msg[0]),
+            _ => Err(status_error(Op::Stop, msg)),
+        }
     }
 
     pub fn practice_state(result: &[u8]) -> Result<PracticeState, Violation> {
@@ -575,6 +587,14 @@ mod golden {
         assert_eq!(named(57), (Some("STD_RTCKTIMEOUT"), RemoteKind::TargetState));
         assert_eq!(named(67), (Some("STD_USERSIGNAL"), RemoteKind::Other));
         assert_eq!(named(164), (Some("STD_NORTCK"), RemoteKind::TargetState));
+    }
+
+    #[test]
+    fn stop_accepts_status_0_and_1_and_refuses_the_rest() {
+        assert_eq!(resp::stop(&hex("00 01")), Ok(0));
+        assert_eq!(resp::stop(&hex("01 01 00 00 00 00 00 00 00 00")), Ok(1));
+        let e = resp::stop(&hex("02 01")).expect_err("status 2");
+        assert_eq!((e.op, e.code), (Op::Stop, 2));
     }
 
     fn function_result(ty: u32, text: &str) -> Vec<u8> {

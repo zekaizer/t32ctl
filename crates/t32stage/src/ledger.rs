@@ -8,7 +8,8 @@
 //! Undos that name PowerView files, directories, macros or the PRACTICE stack are also written
 //! to a write-ahead journal on the WSL side before they are registered. A process that dies
 //! leaves its journal behind; the next run replays it (`replay_leftovers`). `VM:` restores stay
-//! in memory: their data is too large and too stale to replay.
+//! in memory: their data is too large and too stale to replay. So do setting reverts
+//! (`Undo::Revert`).
 
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
@@ -44,6 +45,10 @@ pub enum Undo {
     ClearMacros(Vec<MacroName>),
     /// `Break` if the target runs.
     BreakTarget,
+    /// PowerView commands that put back a setting the caller changed, sent in order. Never
+    /// journaled: replaying it after a crash would act on a state the operator may have created
+    /// since. Register it right after the change succeeded, so a refused change is never reverted.
+    Revert { what: String, commands: Vec<String> },
 }
 
 impl Undo {
@@ -57,6 +62,7 @@ impl Undo {
                 format!("clear macros {}", m.iter().map(MacroName::as_str).collect::<Vec<_>>().join(","))
             }
             Undo::BreakTarget => "break target".to_string(),
+            Undo::Revert { what, .. } => format!("revert {what}"),
         }
     }
 
@@ -72,6 +78,7 @@ impl Undo {
                 (!clears.is_empty()).then(|| clears.join("\n"))
             }
             Undo::ClearMacros(_) => None,
+            Undo::Revert { commands, .. } => Some(commands.join("\n")),
         }
     }
 
@@ -124,6 +131,12 @@ impl Undo {
                 session.cmd(cmd::BREAK)?;
                 Ok(CleanupOutcome::Done)
             }
+            Undo::Revert { commands, .. } => {
+                for c in commands {
+                    session.cmd(c)?;
+                }
+                Ok(CleanupOutcome::Done)
+            }
         }
     }
 
@@ -139,10 +152,7 @@ impl Undo {
 
     /// Journal line, tab separated. `None` for undos that stay in memory.
     fn to_line(&self) -> Option<String> {
-        let path = |p: &StagePath| match p.root() {
-            StageRoot::Literal(r) => format!("L{}\t{}", r.as_str(), p.rel()),
-            StageRoot::Macro => format!("M\t{}", p.rel()),
-        };
+        let path = |p: &StagePath| format!("L{}\t{}", p.root().as_path().as_str(), p.rel());
         match self {
             Undo::RemoveFile(p) => Some(format!("rm-file\t{}", path(p))),
             Undo::RemoveDir(p) => Some(format!("rm-dir\t{}", path(p))),
@@ -151,18 +161,14 @@ impl Undo {
                 Some(format!("clear-macros\t{}", m.iter().map(MacroName::as_str).collect::<Vec<_>>().join(",")))
             }
             Undo::BreakTarget => Some("break".to_string()),
-            Undo::RestoreVm(_) => None,
+            Undo::RestoreVm(_) | Undo::Revert { .. } => None,
         }
     }
 
     fn from_line(line: &str) -> Option<Undo> {
         let fields: Vec<&str> = line.split('\t').collect();
         let path = |root: &str, rel: &str| -> Option<StagePath> {
-            let root = match root.strip_prefix('L') {
-                Some(lit) => StageRoot::Literal(PvPath::parse(lit).ok()?),
-                None if root == "M" => StageRoot::Macro,
-                None => return None,
-            };
+            let root = StageRoot::new(PvPath::parse(root.strip_prefix('L')?).ok()?);
             Some(root.path(RelPath::new(rel).ok()?))
         };
         match fields.as_slice() {
@@ -180,7 +186,7 @@ impl Undo {
 
 /// `T32_Stop` if a script runs, then `END` until the stack is empty. Only for callers that saw an
 /// empty stack before they started their own script.
-pub(crate) fn unwind_practice(session: &mut Session) -> Result<CleanupOutcome, StageError> {
+pub fn unwind_practice(session: &mut Session) -> Result<CleanupOutcome, StageError> {
     let running = session.practice_state()? != PracticeState::Idle;
     if running {
         session.stop_practice()?;
@@ -352,7 +358,7 @@ impl Ledger {
 
     /// Withdraw the newest `UnwindPractice` once our script is gone from the stack. Journal first;
     /// a failed write leaves the undo pending.
-    pub(crate) fn withdraw_unwind(&mut self) -> Result<(), StageError> {
+    pub fn withdraw_unwind(&mut self) -> Result<(), StageError> {
         let Some(i) = self.pending.iter().rposition(|u| matches!(u, Undo::UnwindPractice)) else { return Ok(()) };
         if let Some(j) = self.journal.as_mut() {
             let lines: Vec<String> =
@@ -361,6 +367,18 @@ impl Ledger {
         }
         self.pending.remove(i);
         Ok(())
+    }
+
+    /// Apply the newest `Revert` named `what` now and drop it whatever the outcome, so `close`
+    /// never sends it a second time. `AlreadyClean` when there is none.
+    pub fn revert_now(&mut self, session: &mut Session, what: &str) -> CleanupOutcome {
+        let newest = self.pending.iter().rposition(|u| matches!(u, Undo::Revert { what: w, .. } if w == what));
+        let Some(i) = newest else { return CleanupOutcome::AlreadyClean };
+        let undo = self.pending.remove(i);
+        match undo.apply(session, self.exists) {
+            Ok(o) => o,
+            Err(e) => CleanupOutcome::Failed(e.to_string()),
+        }
     }
 
     pub fn pending(&self) -> &[Undo] {
@@ -444,7 +462,6 @@ pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsF
         let text = fs::read_to_string(&path).unwrap_or_default();
         let journal = Journal { path: path.clone(), file };
         let mut ledger = Ledger { pending: Vec::new(), journal: Some(journal), exists };
-        let mut needs_root = false;
         for line in text.lines().filter(|l| !l.is_empty()) {
             match Undo::from_line(line) {
                 Some(undo) => match undo.left_for_a_human() {
@@ -453,22 +470,13 @@ pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsF
                         outcome: CleanupOutcome::NotAttempted(why.into()),
                         manual: undo.manual_hint(),
                     }),
-                    None => {
-                        needs_root |=
-                            matches!(&undo, Undo::RemoveFile(p) | Undo::RemoveDir(p) if *p.root() == StageRoot::Macro);
-                        ledger.pending.push(undo);
-                    }
+                    None => ledger.pending.push(undo),
                 },
                 None => report.items.push(CleanupItem {
                     what: format!("journal line {line:?} in {}", path.display()),
                     outcome: CleanupOutcome::NotAttempted("unreadable".into()),
                     manual: None,
                 }),
-            }
-        }
-        if needs_root && session.health() == Health::Live {
-            for c in cmd::bind_root() {
-                let _ = session.cmd(&c);
             }
         }
         report.extend(ledger.run(session));

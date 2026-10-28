@@ -23,10 +23,19 @@ Opt-in probes, each behind its own flag:
 
 | Flag | Probe | What it does to your PC |
 |---|---|---|
-| `--allow-dialog` | `dialog` | Opens a PowerView dialog for about a second and stops it. |
-| `--allow-multi-client` | `multi-client` | Opens a second RCL connection. |
-| `--allow-run-control --symbol main` | `run-control` | Runs the target to the symbol and halts it. Changes target state. |
-| `--elf build/zephyr/zephyr.elf` | `elf-unzip` | Loads the ELF's symbols into PowerView (`/NoCODE /NoReg`, no target writes). The symbols stay loaded. |
+| `--allow-dialog` | `dialog` | Opens a PowerView dialog for about a second and stops it. Check that the window closed. |
+| `--allow-multi-client` | `multi-client` | Opens a second RCL connection, twice. |
+| `--allow-run-control --symbol main` | `run-control` | Runs and halts the target, steps it, sets and deletes breakpoints. If the breakpoint list differs at the end, it is restored from the `STOre` script taken first. Changes target state. |
+| `--loop-line main.c:42`, `--watch counter`, `--scratch-ram 0x80001000` | `run-control` | Optional: a `/COUNT 3` breakpoint on a line inside a loop, write breakpoints on a variable, and a RAM long and X9 written and restored. The address must be RAM nothing else uses. |
+| `--allow-target-read --symbol main` | `target-read` | Reads registers, memory and symbols of the halted target and prints windows to files with `PRinTer.OPEN`. Leave no PowerView printer file open while it runs. |
+| `--va 0xFFFF000000001000`, `--per-section GICD`, `--read-range 0x80000000++0x100000` | `target-read` | Optional: an address to translate, a peripheral section to print, and up to 16 MiB of memory to read over RCL and through a file. |
+| `--elf build/zephyr/zephyr.elf` | `elf-unzip` | Loads the ELF's symbols into PowerView (`/NoCODE /NoReg`, no target writes). The symbols stay loaded. With `--symbol`, also asks the `sYmbol` functions. |
+| `--allow-load-code --elf build/zephyr/zephyr.elf` | `load-code` | Loads the ELF's code into the halted target, then restores the PC. Target memory keeps the code. |
+
+Every target command and function is asked with `PRACTICE.CoMmanD.AVAILable` or
+`PRACTICE.FUNCtion.AVAILable` first; one this build does not offer is skipped and reported as
+`unverified:<name>`. Every setting these probes change is restored right after the step that
+measured it.
 
 Asking for an opt-in probe without its flag is a usage error before anything is sent.
 
@@ -40,7 +49,23 @@ Asking for an opt-in probe without its flag is a usage error before anything is 
 - PRACTICE global macros named `t32ctl_*` and `t32ctl_probe_*`. Macros cannot be deleted over
   RCL; they are set to the empty string.
 - PRACTICE scripts it starts itself, only when no other script is running. A busy PowerView makes
-  the affected probes `SKIP`; the probe never ends a script it did not start.
+  the affected probes `SKIP`.
+- `END` to end a script it started. `END` is global: besides ending every PRACTICE script it
+  closes every custom dialog and every file opened with `OPEN`, yours included (PRACTICE Script
+  Language Reference Guide, `END`). `script-halt`, `script-error` and `macro-return` always send
+  it; every script probe sends it when one of its scripts halts or times out. Close your own
+  `DIALOG` windows and `OPEN` files before a run, or `--skip` those three probes.
+- Script probes write their scripts and answer files below `OS.PTD()\t32ctl\probe-<run id>-<tag>`
+  (`lab`, `halt`, `err`, `in`, `out`, `vis`, `ret`, `unp`, `bun`, ...). A script answers by saving
+  a one-byte marker file such as `<case>-a.bin` or `<case>-k-yes.bin`; the probe checks whether it
+  exists. At the end the directory is listed and files it did not expect (a `.bak` written by
+  `SETUP.BAKfile`) are removed too and counted as `stray=`.
+- `channel-out` creates an AREA window `T32PQ<RUN>` and deletes it right after reading it.
+- Script probes create PRACTICE globals `t32ctl_q<run>_*` whose values carry the run id. Globals
+  cannot be deleted over RCL; they are set to the empty string and their number is reported as
+  `globals_left`.
+- PowerView's GUI stalls for seconds while `vm-large` saves and loads the whole `VM:` window and
+  while `keepalive` blocks in `WAIT 10.s`.
 - On the WSL side: a lock file and a cleanup journal in `$XDG_STATE_HOME/t32ctl/` (default
   `~/.local/state/t32ctl/`). A run that dies leaves its journal; the next run replays it once
   connected and reports the result on a `residue` line.
@@ -55,10 +80,10 @@ reconnect    PASS  timeout=300.12ms kind=idle poisoned=ok revive=4.20ms first_ca
 vm-rw        PASS  max=1MiB w=8.1MB/s r=9.4MB/s chunk=r15360/w15360(client-limit) restore=ok
 gzip         FAIL  up=6.0MB/s unzip_max=8MiB corrupt=ACCEPTED(crc)
   why: /UNZIP accepted corrupt gzip: crc
-skipped(3) prereq gzip FAIL: bundle script-error tar-download
-not run (opt-in): dialog multi-client run-control elf-unzip
-config      read_chunk=15360 write_chunk=15360 macro=bare keepalive=1.00s exists=OS.FILE.readable …
-summary: pass=10 fail=1 unsup=0 skip=3 intr=0 | cleanup=clean | 38.2s | exit=1
+skipped(1) prereq gzip FAIL: bundle
+not run (opt-in): dialog multi-client run-control target-read load-code elf-unzip
+config      read_chunk=15360 write_chunk=15360 macro=amp keepalive=1.00s exists=OS.FILE.readable …
+summary: pass=10 fail=1 unsup=0 skip=1 intr=0 | cleanup=clean | 38.2s | exit=1
 ```
 
 - Every line is at most 100 columns. A long line ends with `…`; the full data is in the JSON.
@@ -77,6 +102,31 @@ summary: pass=10 fail=1 unsup=0 skip=3 intr=0 | cleanup=clean | 38.2s | exit=1
 - The `config` line holds the values Phase 1 pins from this run: memory chunk sizes, the EXP 2
   macro name spelling, the keepalive interval, the file-exists function and the stage-root mode.
   `?` means not measured.
+
+Tokens of the script probes:
+
+- `oracle=fx` (`script-lab`): a script's answer files arrive; every other script probe relies on
+  it. `FAIL` makes their results meaningless.
+- `out=vmset|write|none` (`script-lab`): the channel scripts hand values back through besides the
+  answer files; `none` means only yes/no answers are available.
+- `wait_state=running|idle|mixed` (`script-lab`): how a script in `WAIT` reads. `idle` means a
+  waiting script looks like a halted one.
+- `dip=<ms>/<n>` (`script-lab`): the longest stretch a running script read as idle with a
+  non-empty stack, and how many cases showed one; the Lab never ends a script on that alone.
+- `t32stop=st0|st1|err<code>` (`script-halt`): the status `T32_Stop` answers while a script waits.
+- `v1=<rd1>/<ex>/<rd2>/<exp>` (`macro-visibility`): whether a script reads a macro set over EXP 2
+  (`val`), sees it empty, or halts, then what EXP reads after the script. `bundle` needs `val`.
+- `guard=ok` (`channel-in`, `unpack-literal`): a script wrote nothing through an empty or relative
+  path. `FAIL` means it would have written into PowerView's working directory.
+- `gate=run|skip:a|skip:b|skip:c` (`bundle`): bundle ran, or which precondition kept it from
+  running: (a) scripts do not see EXP-set macros, (b) ABSPATH changed an absolute path, (c) a
+  script did not read the real snapshot path.
+- `stray=<n>`: files the probe did not expect in its directory, removed during cleanup; their
+  names are in the JSON (`stray_names`).
+- `cut=<n>`: cases not started because the probe deadline was near; rerun with `--scale 2`.
+
+`gzip` measures the `/UNZIP` ceiling only up to `--gzip-max-mib` (default 8). To find the real
+ceiling, give it room: `--vm-window 0x08000000 --gzip-max-mib 32`.
 
 `connect` failures carry a class: `refused` (PowerView not running, RCL off, wrong port),
 `connect-timeout` and `unreachable` (wrong host for the WSL networking mode, or a firewall),

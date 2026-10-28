@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Probes about files and `VM:`: tempdir, vm-rw, vm-file, gzip, tar-download.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use t32rcl::{Session, Tuning};
 use t32stage::{
-    ExistsFn, Put, PvPath, RelPath, StagePath, StageRoot, Undo, VmRegion,
+    ExistsFn, RelPath, StagePath, StageRoot, Undo, VmRegion,
     practice::{cmd, fnc},
     transfer,
 };
 
-use super::{ok, pattern, scratch_regions, soft};
+use super::{ok, pattern, scratch_regions, soft, stage_root, workdir};
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
     outcome::{Value, key},
@@ -41,61 +41,29 @@ fn exercise_root(
     Ok(made.then_some(file))
 }
 
-/// `OS.PTD()`, both stage-root modes, the file-exists function, and the MKDIR/RM/RMDIR
-/// semantics staging relies on.
+/// `OS.PTD()`, the stage root (`OS.PTD()\t32ctl` or `--stage-root`), the file-exists function,
+/// and the MKDIR/RM/RMDIR semantics staging relies on.
 pub fn tempdir(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     ctx.session.take_trace();
     let ptd = ctx.session.eval(fnc::PTD)?.into_text(fnc::PTD)?;
     let lossy = ctx.session.take_trace().lossy_text > 0;
     ctx.measure("ptd_text", Value::Text(ptd.clone()));
-    let ascii = !lossy && PvPath::parse(&ptd).is_ok();
-    ctx.text("ptd", if ascii { "ascii" } else { "non-ascii" });
+    let from_ptd = StageRoot::from_ptd(&ptd).ok().filter(|_| !lossy);
+    ctx.text("ptd", if from_ptd.is_some() { "ascii" } else { "non-ascii" });
     ctx.text("sep", if ptd.ends_with(['\\', '/']) { "yes" } else { "no" });
 
+    let (chosen, tag) = match (&ctx.env.cfg.stage_root, from_ptd) {
+        (Some(p), _) => (StageRoot::new(p.clone()), "override"),
+        (None, Some(r)) => (r, "ptd"),
+        (None, None) => {
+            return Err(ProbeFail::Check("OS.PTD() is not an ASCII-safe path; pass --stage-root".into()));
+        }
+    };
+    ctx.text(key::ROOT, tag);
     let one = scratch_regions(ctx, &[4096])?[0].slice(0, 1).expect("1 byte fits");
     ctx.session.mem_write(&one.addr(), &[0x5A])?;
-    let literal = if ascii { exercise_root(ctx, &StageRoot::from_ptd(&ptd), "lit", &one)? } else { None };
-    let bound =
-        cmd::bind_root().iter().try_fold(true, |acc, c| soft(ctx.session.cmd(c)).map(|r| acc && r.is_some()))?;
-    let root_text = if bound {
-        soft(ctx.session.macro_get(&t32stage::Macro::Root.name()))?.unwrap_or_default()
-    } else {
-        String::new()
-    };
-    ctx.measure("root_macro", Value::Text(root_text));
-    let macro_mode = if bound { exercise_root(ctx, &StageRoot::Macro, "mac", &one)? } else { None };
-    // Macro mode needs both halves: `MKDIR` (a command) and `OS.DIR` (a function) must expand
-    // `&t32ctl_root`. Measured apart, so `macro=FAIL` says which half failed.
-    let root_dir = format!("OS.DIR(\"{}\")", t32stage::Macro::Root.amp());
-    let (fn_side, cmd_side) = if bound {
-        let f = soft(ctx.session.eval(&root_dir).and_then(|v| v.into_bool("OS.DIR")))?;
-        (f, soft(ctx.session.eval_string(&root_dir))?)
-    } else {
-        (None, None)
-    };
-    ctx.measure("root_fn_expand", Value::Text(format!("{fn_side:?}")));
-    ctx.measure("root_cmd_eval", Value::Text(format!("{cmd_side:?}")));
-    ctx.text("literal", if ascii { ok(literal.is_some()) } else { "n/a" });
-    ctx.text("macro", ok(macro_mode.is_some()));
-    ctx.text("macro_fn", ok(fn_side == Some(true)));
-
-    let chosen = match &ctx.env.cfg.stage_root {
-        Some(p) => StageRoot::Literal(p.clone()),
-        None => StageRoot::from_ptd(&ptd),
-    };
-    ctx.text(key::ROOT, chosen.tag());
-    let file = match (&chosen, literal, macro_mode) {
-        (StageRoot::Macro, _, Some(f)) => f,
-        (StageRoot::Literal(_), Some(f), _) if ctx.env.cfg.stage_root.is_none() => f,
-        (StageRoot::Literal(_), _, _) if ctx.env.cfg.stage_root.is_some() => {
-            match exercise_root(ctx, &chosen, "override", &one)? {
-                Some(f) => f,
-                None => return Err(ProbeFail::Check("--stage-root is not usable".into())),
-            }
-        }
-        _ => {
-            return Err(ProbeFail::Check(format!("{} stage root does not work; try --stage-root", chosen.tag())));
-        }
+    let Some(file) = exercise_root(ctx, &chosen, tag, &one)? else {
+        return Err(ProbeFail::Check(format!("the {tag} stage root does not work; try --stage-root")));
     };
     let dir_rel = file.rel().parents().last().expect("file sits in a directory").to_string();
     let dir = chosen.path(RelPath::new(&dir_rel)?);
@@ -294,7 +262,7 @@ pub fn vm_file(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
 }
 
 /// gzip upload and `/UNZIP`: two payload kinds, four corruptions that must be refused, and the
-/// largest decompressed size up to `--gzip-max-mib`.
+/// largest decompressed size up to `--gzip-max-mib`, each step timed under a data-sized budget.
 pub fn gzip(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let max = ctx.env.cfg.gzip_max.max(MIB);
     let regions = scratch_regions(ctx, &[MIB + 4096, max])?;
@@ -343,19 +311,28 @@ pub fn gzip(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
 
     let mut ceiling = 0u32;
     let mut size = MIB;
+    let mut stop = "window";
     while size <= max {
         let gz = transfer::gzip(&vec![0u8; size as usize]);
         let f = ctx.staged_file(&format!("zeros-{}m.gz", size / MIB))?;
         transfer::put_file(ctx.session, &a, &gz, &f)?;
         let tail = b.slice(size - 16, 16).expect("inside region B");
         ctx.session.mem_write(&tail.addr(), &[0xA5; 16])?;
-        if !unzip_accepted(ctx.session, &f, b.start())? || ctx.session.mem_read(&tail.addr(), 16)? != [0u8; 16] {
+        let (taken, took) = unzip_timed(ctx.session, &f, b.start(), size)?;
+        ctx.measure(&format!("zeros_{}m_unzip", size / MIB), Value::Seconds(took.as_secs_f64()));
+        if !taken {
+            stop = "refused";
+            break;
+        }
+        if ctx.session.mem_read(&tail.addr(), 16)? != [0u8; 16] {
+            stop = "mismatch";
             break;
         }
         ceiling = size;
         size *= 2;
     }
     ctx.headline("unzip_max", Value::Bytes(ceiling.into()));
+    ctx.text("unzip_stop", stop);
     ctx.check(accepted.is_empty(), || format!("/UNZIP accepted corrupt gzip: {}", accepted.join(", ")))
 }
 
@@ -364,40 +341,94 @@ pub(crate) fn unzip_accepted(session: &mut Session, f: &StagePath, at: u32) -> R
     Ok(soft(session.cmd(&cmd::data_load_binary(f, at, true)))?.is_some())
 }
 
+/// `/UNZIP` of a file that inflates to `len` bytes under `data_budget(len)`: whether PowerView
+/// took it, and how long it took on the session clock.
+pub(crate) fn unzip_timed(
+    session: &mut Session,
+    f: &StagePath,
+    at: u32,
+    len: u32,
+) -> Result<(bool, Duration), ProbeFail> {
+    let budget = transfer::data_budget(session, len.into());
+    let t = session.now();
+    let taken = soft(session.with_budget(budget).cmd(&cmd::data_load_binary(f, at, true)))?.is_some();
+    Ok((taken, session.now().saturating_duration_since(t)))
+}
+
 /// `rejected(n/n)` when every corrupt stream was refused, else `ACCEPTED(<names>)`.
 pub(crate) fn corrupt_token(accepted: &[&str], cases: usize) -> String {
     if accepted.is_empty() { format!("rejected({cases}/{cases})") } else { format!("ACCEPTED({})", accepted.join(",")) }
 }
 
-/// PowerView packs a directory with `TAR` and `ZIP`; the client downloads and untars it.
+/// PowerView packs a work directory with `TAR` and `ZIP`; the client downloads both through `VM:`,
+/// untars and gunzips them. No `Stage`: its `GLOBAL` macros are not part of what is measured.
+/// TAR and ZIP never run twice on one name: an overwrite may ask in a dialog.
 pub fn tar_download(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
-    let files: [(&str, Vec<u8>); 3] =
-        [("a.txt", vec![b'A']), ("b.bin", pattern(1000, 1000)), ("sub/c.bin", pattern(70000, 70000))];
-    let (stage, session) = ctx.stage()?;
-    let dir = stage.path("o")?;
-    let sub = dir.join("sub")?;
-    transfer::ensure_dir(session, &sub, |p| stage.register(Undo::RemoveDir(p.clone())))?;
-    for (name, bytes) in &files {
-        stage.upload(session, Put::Plain, bytes, &format!("o/{name}"))?;
+    let root = stage_root(ctx)?;
+    let dir = workdir(ctx, &root, "tar")?;
+    let regions = scratch_regions(ctx, &[256 * 1024, 256 * 1024])?;
+    let (up, down) = (regions[0], regions[1]);
+    let o = dir.join("o")?;
+    for d in ["o", "o/sub", "o/s d"] {
+        mkdir_checked(ctx, &dir.join(d)?)?;
     }
-    let archive = stage.path("o.tar")?;
-    stage.register(Undo::RemoveFile(archive.clone()))?;
-    session.cmd(&cmd::tar(&archive, &dir))?;
-    let tar_len = transfer::file_size(session, &archive)?;
-    let bytes = stage.download(session, &archive)?;
+    let files: [(&str, Vec<u8>); 4] = [
+        ("a.txt", vec![b'A']),
+        ("b.bin", pattern(1000, 1000)),
+        ("sub/c.bin", pattern(70000, 70000)),
+        ("s d/e.bin", pattern(10, 10)),
+    ];
+    for (name, bytes) in &files {
+        let p = o.join(name)?;
+        ctx.push(Undo::RemoveFile(p.clone()))?;
+        transfer::put_file(ctx.session, &up, bytes, &p)?;
+    }
+    let archive = dir.join("o.tar")?;
+    ctx.push(Undo::RemoveFile(archive.clone()))?;
+    ctx.session.cmd(&cmd::tar(&archive, &o))?;
+    let tar_len = transfer::file_size(ctx.session, &archive)?;
+    ctx.headline("tar", Value::Bytes(tar_len));
+    ctx.check(tar_len <= u64::from(down.len()), || format!("the archive of {tar_len} bytes exceeds 256 KiB"))?;
+    let bytes = transfer::get_file(ctx.session, &archive, &down, tar_len as u32)?;
     let diag = t32stage::diagnose_tar(&bytes);
     let entries = t32stage::walk_tar(&bytes)?;
     ctx.measure("first_header", Value::Text(diag.first_header_hex.clone()));
     ctx.measure("first_name", Value::Text(diag.first_name_raw.clone()));
     ctx.headline("files", Value::Count(entries.len() as u64));
-    ctx.headline("tar", Value::Bytes(tar_len));
     ctx.text("flavor", if diag.ustar_magic { "ustar" } else { "other" });
     ctx.text("sep", if diag.backslash { "\\" } else { "/" });
     let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
     ctx.measure("names", Value::Text(names.join(" ")));
-    let matched = files.iter().all(|(name, bytes)| entries.iter().any(|e| e.name.ends_with(name) && &e.data == bytes));
+    let holds = |name: &str, bytes: &[u8]| entries.iter().any(|e| e.name.ends_with(name) && e.data == bytes);
+    let matched = files.iter().all(|(name, bytes)| holds(name, bytes));
     let relative = files.iter().all(|(name, _)| names.contains(name));
     ctx.text("names", if relative { "relative" } else { "prefixed" });
     ctx.text("roundtrip", ok(matched));
+    ctx.text("space_dir", ok(holds(files[3].0, &files[3].1)));
+
+    let gz = dir.join("o.tar.gz")?;
+    ctx.push(Undo::RemoveFile(gz.clone()))?;
+    let zip = match soft(ctx.session.cmd(&cmd::zip(&archive, &gz)))? {
+        None => "refused",
+        Some(()) => match soft(transfer::file_size(ctx.session, &gz))? {
+            Some(n) if n <= u64::from(down.len()) => {
+                let raw = transfer::get_file(ctx.session, &gz, &down, n as u32)?;
+                ctx.measure("zip_header", Value::Text(super::hex(&raw[..raw.len().min(10)])));
+                let same = transfer::gunzip(&raw).is_ok_and(|t| t == bytes);
+                if raw.starts_with(&[0x1F, 0x8B, 0x08]) && same { "gzip" } else { "other" }
+            }
+            _ => "other",
+        },
+    };
+    ctx.text("zip", zip);
     ctx.check(matched, || format!("archive holds {names:?}, contents or names differ"))
+}
+
+/// `MKDIR` after its removal was registered; `Check` when `OS.DIR` does not see it.
+fn mkdir_checked(ctx: &mut ProbeCtx<'_>, p: &StagePath) -> ProbeResult {
+    ctx.push(Undo::RemoveDir(p.clone()))?;
+    ctx.session.cmd(&cmd::mkdir(p))?;
+    let expr = fnc::dir_exists(p);
+    let made = ctx.session.eval(&expr)?.into_bool(&expr)?;
+    ctx.check(made, || format!("MKDIR did not create {p}"))
 }

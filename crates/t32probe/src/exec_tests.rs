@@ -38,10 +38,12 @@ impl Drop for TestEnv {
     }
 }
 
+/// Scripted probe tests run on a session that learned the bare EXP 2 spelling, so their
+/// expectations name macros without `&`; `macro` tests pick the spelling themselves.
 pub(crate) fn test_env(tag: &str) -> TestEnv {
     let state_dir = std::env::temp_dir().join(format!("t32probe-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&state_dir);
-    TestEnv(Env::new(EnvConfig {
+    let mut env = Env::new(EnvConfig {
         run_id: "r1".into(),
         hosts: vec!["pv".into()],
         port: 20000,
@@ -55,7 +57,9 @@ pub(crate) fn test_env(tag: &str) -> TestEnv {
         latency_n: 3,
         gates: Gates::default(),
         wsl: WslFacts::default(),
-    }))
+    });
+    env.learned.macro_spelling = Some(t32rcl::MacroSpelling::Bare);
+    TestEnv(env)
 }
 
 pub(crate) fn connect(scripts: Vec<Result<Script, ConnectFailure>>) -> Session {
@@ -72,6 +76,7 @@ pub(crate) fn connect_on(clock: &ManualClock, scripts: Vec<Result<Script, Connec
         connector: Arc::new(c),
         clock: Arc::new(clock),
         budget: CallBudget::idle(Duration::from_secs(1)).with_total(Duration::from_secs(60)),
+        tuning: t32rcl::Tuning::default().with_macro_spelling(t32rcl::MacroSpelling::Bare),
         ..ConnectOpts::default()
     };
     Session::connect(Endpoint::new("pv", 20000), opts).unwrap()
@@ -259,7 +264,7 @@ fn a_deadline_inside_stage_open_is_cleaned_up_on_the_revived_connection() {
         .expect(Expect::CommandStarting("GLOBAL &t32ctl_snap".into()))
         .silence(Duration::from_secs(6));
     let mut second = Script::new().attach().expect_fn("TRUE()").reply_bool(true);
-    for m in Macro::ALL.iter().filter(|m| **m != Macro::Root) {
+    for m in Macro::ALL {
         second = second.expect_req(Request::MacroSet { name: m.text().into(), value: String::new() }).reply_macro("");
     }
     let second = cleared(second).expect_fn("TRUE()").reply_bool(true);

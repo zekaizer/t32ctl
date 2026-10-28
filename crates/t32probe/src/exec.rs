@@ -83,7 +83,8 @@ impl<'a> Executor<'a> {
             return Outcome::skipped(def.id, reason);
         }
 
-        let probe_cancel = self.env.cancel.with_deadline(started + self.env.deadline(def.deadline));
+        let deadline = started + self.env.deadline(def.deadline);
+        let probe_cancel = self.env.cancel.with_deadline(deadline);
         self.session.set_cancel(probe_cancel.clone());
         self.session.set_tuning(self.env.learned.tuning());
         self.session.take_trace();
@@ -93,7 +94,7 @@ impl<'a> Executor<'a> {
             Err(e) => (Ledger::new(self.env.exists()), Some(e.to_string())),
         };
 
-        let mut ctx = ProbeCtx::new(self.session, self.env, def.id, ledger);
+        let mut ctx = ProbeCtx::new(self.session, self.env, def.id, ledger, deadline);
         let result = catch_unwind(AssertUnwindSafe(|| (def.run)(&mut ctx))).map_err(panic_text);
         let parts = ctx.into_parts();
         let trace = TraceSummary::from(&self.session.take_trace());

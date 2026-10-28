@@ -2,6 +2,8 @@
 //! What a probe sees: the session, the environment, a ledger for its cleanup, a lazily opened
 //! `Stage`, and a recorder whose measurements survive a probe that fails halfway.
 
+use std::time::Instant;
+
 use t32rcl::{Feature, RemoteKind, Session, Support};
 use t32stage::{
     CleanupReport, ExistsFn, LeaseError, Ledger, OpenError, Retention, Stage, StageConfig, StageError, StagePath, Undo,
@@ -89,6 +91,8 @@ pub struct ProbeCtx<'a> {
     pub session: &'a mut Session,
     pub env: &'a Env,
     pub probe: ProbeId,
+    /// When the executor cancels the probe, on the session clock.
+    pub deadline: Instant,
     /// Register undos here before creating anything; the executor runs it on every exit path.
     pub ledger: Ledger,
     pub learned: Learned,
@@ -108,11 +112,12 @@ pub struct Parts {
 }
 
 impl<'a> ProbeCtx<'a> {
-    pub fn new(session: &'a mut Session, env: &'a Env, probe: ProbeId, ledger: Ledger) -> Self {
+    pub fn new(session: &'a mut Session, env: &'a Env, probe: ProbeId, ledger: Ledger, deadline: Instant) -> Self {
         Self {
             session,
             env,
             probe,
+            deadline,
             ledger,
             learned: env.learned,
             stage: StageSlot::Unopened,

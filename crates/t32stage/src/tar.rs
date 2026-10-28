@@ -73,6 +73,13 @@ pub(crate) fn normalise_name(raw: &str) -> Result<String, TarError> {
     Ok(parts.join("/"))
 }
 
+/// `name` relative to the archived directory `dir` (its PowerView path). Build 168999 stores the
+/// full path without the drive (`tar-download`: `names=prefixed`); a name outside `dir` is kept.
+pub fn below(name: &str, dir: &str) -> String {
+    let Ok(prefix) = normalise_name(dir) else { return name.to_string() };
+    name.strip_prefix(&prefix).and_then(|rest| rest.strip_prefix('/')).unwrap_or(name).to_string()
+}
+
 /// Regular files only; directory entries and extended headers are skipped. A name that would
 /// escape the extraction root is an error, not silently dropped.
 pub fn walk(archive: &[u8]) -> Result<Vec<TarEntry>, TarError> {
@@ -117,6 +124,16 @@ pub fn diagnose(archive: &[u8]) -> TarDiag {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_below_the_archived_directory_drop_its_path() {
+        let dir = "C:\\Users\\op\\T\\t32ctl\\s\\o";
+        assert_eq!(below("Users/op/T/t32ctl/s/o/a.txt", dir), "a.txt");
+        assert_eq!(below("Users/op/T/t32ctl/s/o/s d/e.bin", dir), "s d/e.bin");
+        assert_eq!(below("a.txt", dir), "a.txt");
+        assert_eq!(below("Users/op/T/t32ctl/s/other/a.txt", dir), "Users/op/T/t32ctl/s/other/a.txt");
+        assert_eq!(below("Users/op/T/t32ctl/s/o2/a.txt", dir), "Users/op/T/t32ctl/s/o2/a.txt");
+    }
 
     fn archive(entries: &[(&str, &[u8])], gnu: bool) -> Vec<u8> {
         let mut b = tar::Builder::new(Vec::new());

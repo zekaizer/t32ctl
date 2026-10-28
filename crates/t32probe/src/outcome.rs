@@ -44,6 +44,7 @@ pub mod key {
     pub const KEEPALIVE_INTERVAL: &str = "interval";
     pub const EXISTS: &str = "exists";
     pub const ROOT: &str = "root";
+    pub const SCRIPT_OUT: &str = "out";
 }
 
 /// A measured quantity with a unit. Formatting happens once, in `report`.

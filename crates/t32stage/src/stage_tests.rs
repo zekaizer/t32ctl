@@ -40,11 +40,11 @@ fn opened(s: Script) -> Script {
 }
 
 fn set(s: Script, m: Macro, v: &str) -> Script {
-    s.expect_req(Request::MacroSet { name: m.text().into(), value: v.into() }).reply_macro("")
+    s.expect_req(Request::MacroSet { name: m.amp(), value: v.into() }).reply_macro("")
 }
 
 fn get(s: Script, m: Macro, v: &str) -> Script {
-    s.expect_req(Request::MacroGet { name: m.text().into() }).reply_macro(v)
+    s.expect_req(Request::MacroGet { name: m.amp() }).reply_macro(v)
 }
 
 fn idle(s: Script, depth: i64) -> Script {
@@ -56,7 +56,7 @@ fn closed(mut s: Script, unwind: bool) -> Script {
     if unwind {
         s = idle(s, 0);
     }
-    for m in Macro::ALL.iter().filter(|m| **m != Macro::Root) {
+    for m in Macro::ALL {
         s = set(s, *m, "");
     }
     s
@@ -102,14 +102,26 @@ fn a_failed_open_hands_its_cleanup_back_without_running_it() {
 }
 
 #[test]
+fn a_temp_dir_that_is_not_ascii_safe_needs_an_explicit_root() {
+    let s = Script::new().attach().expect_fn("OS.PTD()").reply_text("C:\\Users\\김\\AppData\\Local\\Temp");
+    let mut session = session_with(vec![Ok(s)], |_| {});
+    let cfg = config("stage-open-non-ascii");
+    let state_dir = cfg.state_dir.clone();
+    let failed = Stage::open(&mut session, cfg).unwrap_err();
+    assert!(matches!(failed.error, StageError::Path(PathError::Char { bad: '김', .. })), "{failed}");
+    assert!(failed.cleanup.pending().is_empty());
+    let _ = std::fs::remove_dir_all(state_dir);
+}
+
+#[test]
 fn a_cached_snapshot_costs_one_call_and_a_run_finishes_by_token() {
     let b = bundle();
     let dir = format!("C:\\T\\t32ctl\\{}", b.key());
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
-    s = set(s, Macro::Entry, "main.cmm");
+    s = set(s, Macro::Snap, &dir);
+    s = set(s, Macro::Entry, "sub\\main.cmm");
     s = set(s, Macro::Args, "a 0x10");
     s = executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "\"0\"", "7.");
     s = closed(s, false);
@@ -121,7 +133,7 @@ fn a_cached_snapshot_costs_one_call_and_a_run_finishes_by_token() {
     let snap = st.ensure_snapshot(&mut session, &b).unwrap();
     assert!(snap.cached);
     let req = RunRequest {
-        entry: RelPath::new("main.cmm").unwrap(),
+        entry: RelPath::new("sub/main.cmm").unwrap(),
         args: vec!["a".into(), "0x10".into()],
         timeout: Duration::from_secs(5),
         collect_outputs: false,
@@ -142,7 +154,7 @@ fn an_operator_script_started_after_our_run_is_never_unwound() {
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "");
     s = executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "0", "");
@@ -173,7 +185,7 @@ fn started(entry: &str) -> (Bundle, String, Script) {
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, entry);
     s = set(s, Macro::Args, "");
     (b, dir, s)
@@ -236,7 +248,7 @@ fn a_busy_stack_is_refused_and_a_dialog_is_stopped_and_unwound() {
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 2);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "");
     s = set(s, Macro::Token, "tok");
@@ -272,7 +284,7 @@ fn a_script_that_outlives_stop_and_end_is_an_unwind_failure_not_busy() {
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "");
     s = set(s, Macro::Token, "tok");
@@ -328,7 +340,7 @@ fn an_uncached_snapshot_is_uploaded_inflated_unpacked_and_verified() {
         ))
         .reply_ok();
     s = s.expect_cmd(&format!("RM \"{tmp}\"")).reply_ok();
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = executed(s, &format!("{dir}\\.t32ctl\\unpack.cmm"), "0", "");
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = s.expect_fn(&format!("OS.FILE.readable(\"{tmp}\")")).reply_bool(false);
@@ -345,11 +357,78 @@ fn an_uncached_snapshot_is_uploaded_inflated_unpacked_and_verified() {
     let _ = std::fs::remove_dir_all(state_dir);
 }
 
+/// The `.bak` removals a transient stage registers while it unpacks `bundle()` into a snapshot
+/// directory that does or does not exist yet.
+fn bak_undos_after_unpack(tag: &str, dir_exists: bool) -> Vec<String> {
+    let b = bundle();
+    let key = b.key();
+    let dir = format!("C:\\T\\t32ctl\\{key}");
+    let packed = b.pack(BASE);
+    let gz_at = BASE + packed.raw_len.next_multiple_of(4096);
+    let tmp = format!("C:\\T\\t32ctl\\{key}.gz");
+
+    let mut s = opened(Script::new().attach());
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(false);
+    s = idle(s, 0);
+    for d in [dir.clone(), format!("{dir}\\.t32ctl")] {
+        s = s.expect_fn(&format!("OS.DIR(\"{d}\")")).reply_bool(dir_exists);
+        if !dir_exists {
+            s = s.expect_cmd(&format!("MKDIR \"{d}\"")).reply_ok();
+        }
+    }
+    s = s.expect(Expect::MemWriteLen { access: "VM".into(), addr: gz_at.into(), len: packed.gz.len() }).reply_ok();
+    s = s.expect(Expect::CommandStarting(format!("Data.SAVE.Binary \"{tmp}\""))).reply_ok();
+    s = s.expect_fn(&format!("OS.FILE.SIZE(\"{tmp}\")")).reply_decimal(packed.gz.len() as i64);
+    s = s.expect(Expect::CommandStarting(format!("Data.LOAD.Binary \"{tmp}\""))).reply_ok();
+    s = s.expect(Expect::CommandStarting(format!("Data.SAVE.Binary \"{dir}\\.t32ctl\\unpack.cmm\""))).reply_ok();
+    s = s.expect_cmd(&format!("RM \"{tmp}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
+    s = executed(s, &format!("{dir}\\.t32ctl\\unpack.cmm"), "0", "");
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
+    let mut session = session_with(vec![Ok(s)], |o| o.tuning = Tuning::new(1008, 0x3C00).unwrap());
+
+    let cfg = StageConfig { retention: Retention::Transient, ..config(tag) };
+    let state_dir = cfg.state_dir.clone();
+    let mut st = stage(&mut session, cfg);
+    st.ensure_snapshot(&mut session, &b).unwrap();
+    let prefix = format!("remove file {dir}\\");
+    let baks = st
+        .pending()
+        .iter()
+        .map(Undo::describe)
+        .filter(|d| d.ends_with(".bak"))
+        .map(|d| d.strip_prefix(&prefix).unwrap_or(&d).to_string())
+        .collect();
+    drop(st);
+    let _ = std::fs::remove_dir_all(state_dir);
+    baks
+}
+
+#[test]
+fn a_transient_stage_removes_the_bak_files_of_a_snapshot_it_unpacked_again() {
+    let mut baks = bak_undos_after_unpack("stage-bak-repair", true);
+    baks.sort();
+    assert_eq!(
+        baks,
+        [
+            ".t32ctl\\complete.bak",
+            ".t32ctl\\runner.bak",
+            ".t32ctl\\runner.cmm.bak",
+            ".t32ctl\\unpack.bak",
+            ".t32ctl\\unpack.cmm.bak",
+            "main.bak",
+            "main.cmm.bak",
+        ]
+    );
+    assert!(bak_undos_after_unpack("stage-bak-fresh", false).is_empty());
+}
+
 #[test]
 fn download_gunzips_what_powerview_zipped() {
     let payload: Vec<u8> = (0..3000).map(|i| (i % 13) as u8).collect();
     let gz = transfer::gzip(&payload);
     let mut s = opened(Script::new().attach());
+    s = s.expect_fn("OS.FILE.SIZE(\"C:\\T\\t32ctl\\a.bin\")").reply_decimal(payload.len() as i64);
     s = s.expect_cmd("ZIP \"C:\\T\\t32ctl\\a.bin\" \"C:\\T\\t32ctl\\a.bin.gz\"").reply_ok();
     s = s.expect_fn("OS.FILE.SIZE(\"C:\\T\\t32ctl\\a.bin.gz\")").reply_decimal(gz.len() as i64);
     s = s.expect_cmd(&format!("Data.LOAD.Binary \"C:\\T\\t32ctl\\a.bin.gz\" VM:0x{BASE:08X}")).reply_ok();

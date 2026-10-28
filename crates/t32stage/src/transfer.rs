@@ -2,10 +2,13 @@
 //! Single-file movement between the client and the PowerView file system through `VM:`.
 //! Anything that is one command stays a `practice::cmd` builder plus `Session::cmd`.
 
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    time::Duration,
+};
 
 use flate2::{Compression, GzBuilder, read::GzDecoder};
-use t32rcl::Session;
+use t32rcl::{CallBudget, Session};
 
 use crate::{
     error::{StageError, VmError},
@@ -38,6 +41,34 @@ pub fn gunzip(bytes: &[u8]) -> Result<Vec<u8>, StageError> {
     Ok(out)
 }
 
+/// Budget for a command that moves `bytes`: never below the session's idle budget.
+pub fn data_budget(session: &Session, bytes: u64) -> CallBudget {
+    // ASSUMED(vm-large): 10 s plus 1 s per MB covers the silence of a SAVE or LOAD.
+    let sized = Duration::from_secs(10) + Duration::from_secs_f64(bytes as f64 / 1e6);
+    let idle = session.budget().idle.max(sized);
+    CallBudget::idle(idle).with_total(idle + Duration::from_secs(60))
+}
+
+/// `Data.SAVE.Binary dest VM:<region>` under `data_budget(region.len())`.
+pub(crate) fn save_region(session: &mut Session, dest: &StagePath, region: &VmRegion) -> Result<(), StageError> {
+    let budget = data_budget(session, region.len().into());
+    session.with_budget(budget).cmd(&cmd::data_save_binary(dest, region, false))?;
+    Ok(())
+}
+
+/// `Data.LOAD.Binary src VM:at [/UNZIP]` under `data_budget(len)`; `len` is what lands in `VM:`.
+pub(crate) fn load_region(
+    session: &mut Session,
+    src: &StagePath,
+    at: u32,
+    len: u32,
+    unzip: bool,
+) -> Result<(), StageError> {
+    let budget = data_budget(session, len.into());
+    session.with_budget(budget).cmd(&cmd::data_load_binary(src, at, unzip))?;
+    Ok(())
+}
+
 pub fn file_size(session: &mut Session, p: &StagePath) -> Result<u64, StageError> {
     let expr = fnc::file_size(p);
     let n = session.eval(&expr)?.into_int(&expr)?;
@@ -51,7 +82,7 @@ pub fn put_file(session: &mut Session, region: &VmRegion, bytes: &[u8], dest: &S
         .slice(0, bytes.len() as u32)
         .ok_or(VmError::WindowTooSmall { need: bytes.len() as u64, have: region.len().into() })?;
     session.mem_write(&slice.addr(), bytes)?;
-    session.cmd(&cmd::data_save_binary(dest, &slice, false))?;
+    save_region(session, dest, &slice)?;
     let got = file_size(session, dest)?;
     if got != bytes.len() as u64 {
         return Err(StageError::SizeMismatch { what: dest.to_string(), want: bytes.len() as u64, got });
@@ -63,16 +94,14 @@ pub fn put_file(session: &mut Session, region: &VmRegion, bytes: &[u8], dest: &S
 /// `OS.FILE.SIZE(src)`; the region must hold it.
 pub fn get_file(session: &mut Session, src: &StagePath, region: &VmRegion, len: u32) -> Result<Vec<u8>, StageError> {
     let slice = region.slice(0, len).ok_or(VmError::WindowTooSmall { need: len.into(), have: region.len().into() })?;
-    session.cmd(&cmd::data_load_binary(src, slice.start(), false))?;
+    load_region(session, src, slice.start(), len, false)?;
     Ok(session.mem_read(&slice.addr(), len as usize)?)
 }
 
 /// Create the root itself if missing. The root is shared and never removed.
 pub fn ensure_root(session: &mut Session, root: &StageRoot) -> Result<(), StageError> {
-    let (text, quoted) = match root {
-        StageRoot::Literal(p) => (p.as_str().to_string(), format!("\"{}\"", p.as_str())),
-        StageRoot::Macro => (crate::macros::Macro::Root.amp(), format!("\"{}\"", crate::macros::Macro::Root.amp())),
-    };
+    let text = root.as_path().as_str().to_string();
+    let quoted = format!("\"{text}\"");
     let expr = format!("OS.DIR({quoted})");
     if !session.eval(&expr)?.into_bool(&expr)? {
         session.cmd(&format!("MKDIR {quoted}"))?;
@@ -110,7 +139,10 @@ mod tests {
     use t32rcl::testkit::{Expect, Script};
 
     use super::*;
-    use crate::{practice::RelPath, testutil::session};
+    use crate::{
+        practice::RelPath,
+        testutil::{session, session_with},
+    };
 
     #[test]
     fn gzip_round_trips_and_is_deterministic() {
@@ -122,7 +154,7 @@ mod tests {
 
     #[test]
     fn put_file_writes_saves_and_checks_the_size() {
-        let root = StageRoot::from_ptd("C:\\T");
+        let root = StageRoot::from_ptd("C:\\T").unwrap();
         let dest = root.path(RelPath::new("a.bin").unwrap());
         let region = VmRegion::new(0x0100_0000, std::num::NonZeroU32::new(4096).unwrap()).unwrap();
         let s = Script::new()
@@ -141,8 +173,36 @@ mod tests {
     }
 
     #[test]
+    fn data_budget_grows_with_bytes_and_never_undercuts_the_session() {
+        let s = Script::new().attach();
+        let session = session_with(vec![Ok(s)], |o| o.budget = CallBudget::idle(Duration::from_secs(20)));
+        assert_eq!(data_budget(&session, 0).idle, Duration::from_secs(20));
+        let big = data_budget(&session, 32 << 20);
+        assert!(big.idle >= Duration::from_secs(43), "{big:?}");
+        assert_eq!(big.total, Some(big.idle + Duration::from_secs(60)));
+    }
+
+    /// `save_region` of `len` bytes whose reply comes after 12 s of silence, under the default
+    /// budget. Without `replies` the script ends at the silence.
+    fn slow_save(len: u32, replies: bool) -> Result<(), StageError> {
+        let dest = StageRoot::from_ptd("C:\\T").unwrap().path(RelPath::new("big.bin").unwrap());
+        let region = VmRegion::new(0x0100_0000, std::num::NonZeroU32::new(len).unwrap()).unwrap();
+        let s = Script::new().attach().expect(Expect::CommandStarting("Data.SAVE.Binary ".into()));
+        let s = s.silence(Duration::from_secs(12));
+        let s = if replies { s.reply_ok() } else { s };
+        let mut session = session_with(vec![Ok(s)], |o| o.budget = CallBudget::DEFAULT);
+        save_region(&mut session, &dest, &region)
+    }
+
+    #[test]
+    fn a_save_of_a_large_region_survives_a_reply_slower_than_the_default_idle() {
+        slow_save(4 << 20, true).unwrap();
+        assert!(matches!(slow_save(1024, false), Err(StageError::Rcl(t32rcl::Error::Timeout { .. }))));
+    }
+
+    #[test]
     fn ensure_dir_registers_before_each_missing_level() {
-        let root = StageRoot::from_ptd("C:\\T");
+        let root = StageRoot::from_ptd("C:\\T").unwrap();
         let dir = root.path(RelPath::new("a/b").unwrap());
         let s = Script::new()
             .attach()
@@ -163,7 +223,7 @@ mod tests {
 
     #[test]
     fn a_refused_registration_stops_ensure_dir_before_its_mkdir() {
-        let dir = StageRoot::from_ptd("C:\\T").path(RelPath::new("a/b").unwrap());
+        let dir = StageRoot::from_ptd("C:\\T").unwrap().path(RelPath::new("a/b").unwrap());
         let s = Script::new().attach().expect_fn("OS.DIR(\"C:\\T\\t32ctl\\a\")").reply_bool(false);
         let journal_full =
             |_: &StagePath| Err(StageError::Journal { path: "j".into(), source: std::io::Error::other("disk full") });

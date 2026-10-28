@@ -10,7 +10,7 @@ use crate::{
 };
 
 fn root() -> StageRoot {
-    StageRoot::from_ptd("C:\\T")
+    StageRoot::from_ptd("C:\\T").unwrap()
 }
 
 fn file(rel: &str) -> StagePath {
@@ -24,7 +24,7 @@ fn readable(s: Script, rel: &str, v: bool) -> Script {
 #[test]
 fn undos_run_newest_first_and_continue_after_a_failure() {
     let mut s = Script::new().attach().expect_req(Request::TargetState).reply_state(2);
-    s = s.expect_req(Request::MacroSet { name: "t32ctl_rc".into(), value: String::new() }).reply_macro("");
+    s = s.expect_req(Request::MacroSet { name: "&t32ctl_rc".into(), value: String::new() }).reply_macro("");
     s = s.expect_fn("OS.DIR(\"C:\\T\\t32ctl\\d\")").reply_bool(true);
     s = s.expect_cmd("RMDIR \"C:\\T\\t32ctl\\d\"").reply_error(90, "directory not empty");
     s = readable(s, "d/a.bin", true).expect_cmd("RM \"C:\\T\\t32ctl\\d\\a.bin\"").reply_ok();
@@ -79,7 +79,7 @@ fn the_journal_is_written_before_the_effect_and_removed_once_clean() {
     assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 3);
 
     let mut s = Script::new().attach();
-    s = s.expect_req(Request::MacroSet { name: "t32ctl_rc".into(), value: String::new() }).reply_macro("");
+    s = s.expect_req(Request::MacroSet { name: "&t32ctl_rc".into(), value: String::new() }).reply_macro("");
     s = s.expect_req(Request::PracticeState).reply_state(0).expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
     s = readable(s, "k/a.bin", false);
     let report = ledger.run(&mut session(s));
@@ -121,12 +121,10 @@ fn a_crashed_unwind_is_reported_not_executed_on_replay() {
     let dir = temp_dir("journal-unwind");
     let mut ledger = Ledger::journaled(Journal::create(&dir, "crashed").unwrap(), ExistsFn::OsFileReadable);
     ledger.push(Undo::UnwindPractice).unwrap();
-    ledger.push(Undo::RemoveDir(StageRoot::Macro.path(RelPath::new("probe-1").unwrap()))).unwrap();
+    ledger.push(Undo::RemoveDir(file("probe-1"))).unwrap();
     drop(ledger);
 
-    let s = Script::new().attach().expect_cmd("GLOBAL &t32ctl_root").reply_ok();
-    let s = s.expect_cmd("&t32ctl_root=OS.PTD()+\"\\t32ctl\"").reply_ok();
-    let s = s.expect_fn("OS.DIR(\"&t32ctl_root\\probe-1\")").reply_bool(false);
+    let s = Script::new().attach().expect_fn("OS.DIR(\"C:\\T\\t32ctl\\probe-1\")").reply_bool(false);
     let report = replay_leftovers(&mut session(s), &dir, ExistsFn::OsFileReadable);
     let labels: Vec<_> = report.items.iter().map(|i| i.outcome.label()).collect();
     assert!(labels[0].starts_with("not-attempted"), "{labels:?}");
@@ -163,9 +161,77 @@ fn a_withdrawn_unwind_leaves_memory_and_the_journal() {
 }
 
 #[test]
-fn manual_commands_are_typeable_in_both_root_modes() {
-    let mac = StageRoot::Macro.path(RelPath::new("probe-1/x y.bin").unwrap());
-    assert_eq!(Undo::RemoveFile(mac.clone()).manual_hint().as_deref(), Some("RM \"&t32ctl_root\\probe-1\\x y.bin\""));
-    assert_eq!(Undo::RemoveFile(file("x.bin")).manual_hint().as_deref(), Some("RM \"C:\\T\\t32ctl\\x.bin\""));
-    assert_eq!(mac.to_string(), "<OS.PTD()>\\t32ctl\\probe-1\\x y.bin", "descriptions stay readable");
+fn unwind_proceeds_when_t32_stop_answers_status_1() {
+    let s = Script::new().attach().expect_req(Request::PracticeState).reply_state(1);
+    let s = s.expect_req(Request::Stop).reply_error(1, "");
+    let s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1).expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
+    let s = s.expect_cmd("END").reply_ok().expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
+    assert_eq!(unwind_practice(&mut session(s)).unwrap(), CleanupOutcome::Done);
+}
+
+fn revert(what: &str, commands: &[&str]) -> Undo {
+    Undo::Revert { what: what.into(), commands: commands.iter().map(|c| c.to_string()).collect() }
+}
+
+#[test]
+fn revert_is_never_journaled_and_runs_newest_first() {
+    let dir = temp_dir("journal-revert");
+    let mut ledger = Ledger::journaled(Journal::create(&dir, "run").unwrap(), ExistsFn::OsFileReadable);
+    ledger.push(revert("core", &["CORE.select 0", "SYStem.Mode Attach"])).unwrap();
+    ledger.push(revert("area", &["AREA.Delete T32PQ1A2B"])).unwrap();
+    assert_eq!(fs::read_to_string(dir.join("journal/run.undo")).unwrap(), "");
+
+    let s = Script::new().attach().expect_cmd("AREA.Delete T32PQ1A2B").reply_ok();
+    let s = s.expect_cmd("CORE.select 0").reply_ok().expect_cmd("SYStem.Mode Attach").reply_ok();
+    let report = ledger.run(&mut session(s));
+    assert!(report.is_clean(), "{report:?}");
+    let what: Vec<_> = report.items.iter().map(|i| i.what.as_str()).collect();
+    assert_eq!(what, ["revert area", "revert core"]);
+    assert!(!dir.join("journal/run.undo").exists());
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_failed_revert_prints_its_commands_as_the_manual_hint() {
+    let mut ledger = Ledger::new(ExistsFn::OsFileReadable);
+    ledger.push(revert("bp", &["Break.Delete main", "Break.Delete sub"])).unwrap();
+    let s = Script::new().attach().expect_cmd("Break.Delete main").reply_error(90, "no breakpoint");
+    let report = ledger.run(&mut session(s));
+    assert!(matches!(report.items[0].outcome, CleanupOutcome::Failed(_)), "{report:?}");
+    assert_eq!(report.items[0].manual.as_deref(), Some("Break.Delete main\nBreak.Delete sub"));
+}
+
+#[test]
+fn revert_now_applies_and_removes_only_that_undo() {
+    let mut ledger = Ledger::new(ExistsFn::OsFileReadable);
+    ledger.push(Undo::RemoveFile(file("x.bin"))).unwrap();
+    ledger.push(revert("a", &["A.old"])).unwrap();
+    ledger.push(revert("a", &["A.new"])).unwrap();
+    ledger.push(revert("b", &["B"])).unwrap();
+    let s = Script::new().attach().expect_cmd("A.new").reply_ok().expect_cmd("A.old").reply_error(90, "refused");
+    let mut session = session(s);
+
+    assert_eq!(ledger.revert_now(&mut session, "a"), CleanupOutcome::Done);
+    assert!(matches!(ledger.revert_now(&mut session, "a"), CleanupOutcome::Failed(_)));
+    assert_eq!(ledger.revert_now(&mut session, "a"), CleanupOutcome::AlreadyClean);
+    let left: Vec<_> = ledger.pending().iter().map(Undo::describe).collect();
+    assert_eq!(left, ["remove file C:\\T\\t32ctl\\x.bin", "revert b"]);
+    ledger.discard();
+}
+
+#[test]
+fn manual_commands_are_typeable() {
+    assert_eq!(Undo::RemoveFile(file("x y.bin")).manual_hint().as_deref(), Some("RM \"C:\\T\\t32ctl\\x y.bin\""));
+}
+
+#[test]
+fn a_macro_root_line_from_an_older_build_is_reported_not_replayed() {
+    let dir = temp_dir("journal-macro-root");
+    let journal = dir.join("journal");
+    fs::create_dir_all(&journal).unwrap();
+    fs::write(journal.join("old.undo"), "rm-dir\tM\tprobe-1\n").unwrap();
+    let report = replay_leftovers(&mut session(Script::new().attach()), &dir, ExistsFn::OsFileReadable);
+    assert_eq!(report.items.len(), 1, "{report:?}");
+    assert_eq!(report.items[0].outcome, CleanupOutcome::NotAttempted("unreadable".into()));
+    let _ = fs::remove_dir_all(dir);
 }

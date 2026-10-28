@@ -52,13 +52,15 @@ impl Default for CallBudget {
     }
 }
 
-/// How EXP 2 names a global macro on the wire. ASSUMED(macro): `Bare`; the probe tries both.
+/// How EXP 2 names a global macro on the wire. Only `Ampersand` reaches the PRACTICE macro a
+/// script uses; `Bare` addresses a separate store that also round-trips (build 168999,
+/// `macro-visibility`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum MacroSpelling {
     /// `name`, as pyrcl's `get_macro(name)` passes whatever the caller gave.
-    #[default]
     Bare,
     /// `&name`, as PRACTICE text spells it.
+    #[default]
     Ampersand,
 }
 
@@ -85,7 +87,8 @@ impl Tuning {
     pub const MAX_CHUNK: usize = 0x3C00;
     /// pyrcl `_library.py`: reads `down_align(1024 - 10, 8)`, writes `1024`. ASSUMED(vm-rw):
     /// PowerView also accepts larger chunks; the probe's ladder finds up to which size.
-    pub const REFERENCE: Tuning = Tuning { read_chunk: 1008, write_chunk: 1024, macro_spelling: MacroSpelling::Bare };
+    pub const REFERENCE: Tuning =
+        Tuning { read_chunk: 1008, write_chunk: 1024, macro_spelling: MacroSpelling::Ampersand };
 
     pub fn new(read_chunk: usize, write_chunk: usize) -> Result<Self, LocalError> {
         for got in [read_chunk, write_chunk] {

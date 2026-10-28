@@ -28,7 +28,7 @@ fn reconnect_forces_a_timeout_and_the_executor_revives_once() {
 
 #[test]
 fn keepalive_reports_the_interval_from_frame_times() {
-    let mut s = Script::new().attach().expect_cmd("WAIT 3.s");
+    let mut s = Script::new().attach().expect_cmd("WAIT 10.s");
     for _ in 0..3 {
         s = s.silence(Duration::from_millis(1000)).keepalive(1);
     }
@@ -43,9 +43,45 @@ fn keepalive_reports_the_interval_from_frame_times() {
 }
 
 #[test]
+fn keepalive_waits_ten_seconds() {
+    let s = Script::new().attach().expect_cmd("WAIT 10.s").silence(Duration::from_secs(12)).reply_ok();
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("probe-keepalive-10s");
+    let r = run(&mut env, &mut session, &[ProbeId::Keepalive.def()]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
+    assert_eq!(o.lookup("n"), Some(&Value::Count(0)));
+    assert_eq!(o.lookup("interval"), Some(&Value::Text("none".into())));
+}
+
+#[test]
+fn clients_counts_under_whichever_spelling_the_build_knows() {
+    let s = Script::new().attach().expect_fn("RCL.TCP.NrUsedCons()").reply_decimal(1);
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("probe-clients-bare");
+    let r = run(&mut env, &mut session, &[ProbeId::Clients.def()]);
+    assert_eq!(r.outcomes[0].verdict, Verdict::Pass, "{:?}", r.outcomes[0]);
+    assert_eq!(r.outcomes[0].lookup("NrUsedCons"), Some(&Value::Count(1)));
+
+    let s = Script::new()
+        .attach()
+        .expect_fn("RCL.TCP.NrUsedCons()")
+        .reply_function(0, "no function 'RCL.TCP.NRUSEDCONS' exists")
+        .expect_fn("api.RCL.TCP.NrUsedCons()")
+        .reply_decimal(2);
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("probe-clients-api");
+    let r = run(&mut env, &mut session, &[ProbeId::Clients.def()]);
+    assert_eq!(r.outcomes[0].verdict, Verdict::Pass, "{:?}", r.outcomes[0]);
+    assert_eq!(r.outcomes[0].lookup("NrUsedCons"), Some(&Value::Count(2)));
+}
+
+#[test]
 fn a_function_refused_on_an_old_build_is_unsupported_not_failed() {
     let s = Script::new()
         .attach()
+        .expect_fn("RCL.TCP.NrUsedCons()")
+        .reply_function(0, "unknown function")
         .expect_fn("api.RCL.TCP.NrUsedCons()")
         .reply_function(0, "unknown function")
         .expect_fn("SOFTWARE.BUILD()")
@@ -59,6 +95,8 @@ fn a_function_refused_on_an_old_build_is_unsupported_not_failed() {
 
     let s = Script::new()
         .attach()
+        .expect_fn("RCL.TCP.NrUsedCons()")
+        .reply_function(0, "unknown function")
         .expect_fn("api.RCL.TCP.NrUsedCons()")
         .reply_function(0, "unknown function")
         .expect_fn("SOFTWARE.BUILD()")
@@ -76,7 +114,12 @@ fn run_control_is_skipped_when_the_target_is_down() {
     let s = Script::new().attach().expect_req(Request::TargetState).reply_state(0);
     let mut session = connect(vec![Ok(s)]);
     let mut env = test_env("probe-runcontrol");
-    env.cfg.gates.run_control = Some(Symbol::parse("main").unwrap());
+    env.cfg.gates.run_control = Some(crate::cli::RunControlInput {
+        symbol: Symbol::parse("main").unwrap(),
+        loop_line: None,
+        watch: None,
+        scratch_ram: None,
+    });
     let r = run(&mut env, &mut session, &[ProbeId::RunControl.def()]);
     assert_eq!(r.outcomes[0].verdict, Verdict::Skipped);
     assert!(matches!(&r.outcomes[0].skip, Some(SkipReason::TargetNotUp { state }) if state == "down"));
@@ -111,8 +154,8 @@ fn version_never_fails_on_an_old_build_number() {
 #[test]
 fn a_macro_probe_that_dies_mid_trial_leaves_no_trial_spelling_behind() {
     let set = |name: &str, value: &str| Request::MacroSet { name: name.into(), value: value.into() };
-    let first = Script::new().attach().expect_req(set("t32ctl_probe_a", "v1")).reply_exp_error(1, "unknown macro");
-    let first = first.expect_req(set("&t32ctl_probe_a", "v1")).silence(Duration::from_millis(1100));
+    let first = Script::new().attach().expect_req(set("&t32ctl_probe_a", "v1")).reply_exp_error(1, "unknown macro");
+    let first = first.expect_req(set("t32ctl_probe_a", "v1")).silence(Duration::from_millis(1100));
     let second = Script::new().attach().expect_fn("TRUE()").reply_bool(true);
     let second = second.expect_req(set("t32ctl_probe_a", "")).reply_macro("");
     let second = second.expect_req(set("t32ctl_probe_b", "")).reply_macro("");
@@ -182,24 +225,6 @@ fn files_below_the_stage_unwind_before_the_stage_directory() {
 }
 
 #[test]
-fn tar_download_removes_a_directory_it_made_before_a_later_mkdir_failed() {
-    let mut s = stage_opened(Script::new().attach()).expect_fn(&format!("OS.DIR(\"{STAGE}\")")).reply_bool(true);
-    s = s.expect_fn(&format!("OS.DIR(\"{STAGE}\\o\")")).reply_bool(false);
-    s = s.expect_cmd(&format!("MKDIR \"{STAGE}\\o\"")).reply_ok();
-    s = s.expect_fn(&format!("OS.DIR(\"{STAGE}\\o\\sub\")")).reply_bool(false);
-    s = s.expect_cmd(&format!("MKDIR \"{STAGE}\\o\\sub\"")).reply_error(90, "access denied");
-    s = s.expect_fn(&format!("OS.DIR(\"{STAGE}\\o\\sub\")")).reply_bool(false);
-    s = stage_closed(dir_removed(s, "o"));
-    let mut session = connect(vec![Ok(s)]);
-    let mut env = test_env("probe-tar-mkdir");
-    let r = run(&mut env, &mut session, &[ProbeId::TarDownload.def()]);
-    let o = &r.outcomes[0];
-    assert_eq!(o.verdict, Verdict::Fail);
-    assert!(o.cleanup.iter().any(|c| c.what.ends_with("probe-r1\\o") && c.result == "done"), "{:?}", o.cleanup);
-    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
-}
-
-#[test]
 fn elf_unzip_reports_a_timed_out_direct_load_not_the_poisoned_call_after_it() {
     let elf = b"\x7fELF t32probe test".to_vec();
     let gz = t32stage::transfer::gzip(&elf);
@@ -266,7 +291,7 @@ fn the_chunk_ladder_calls_its_own_maximum_a_client_limit_and_a_refusal_not() {
 #[test]
 fn a_corrupt_gzip_powerview_loads_counts_as_accepted() {
     use super::storage::{corrupt_token, unzip_accepted};
-    let f = t32stage::StageRoot::from_ptd("C:\\T").path(t32stage::RelPath::new("c.gz").unwrap());
+    let f = t32stage::StageRoot::from_ptd("C:\\T").unwrap().path(t32stage::RelPath::new("c.gz").unwrap());
     let load = "Data.LOAD.Binary \"C:\\T\\t32ctl\\c.gz\" VM:0x02000000 /UNZIP";
     let s = Script::new().attach().expect_cmd(load).reply_ok().expect_cmd(load).reply_error(90, "bad gzip");
     let mut session = connect(vec![Ok(s)]);
@@ -277,21 +302,29 @@ fn a_corrupt_gzip_powerview_loads_counts_as_accepted() {
 }
 
 #[test]
-fn the_macro_probe_falls_back_to_the_ampersand_spelling_and_keeps_it() {
+fn the_gzip_ceiling_unzips_under_a_data_budget() {
+    use super::storage::unzip_timed;
+    let f = t32stage::StageRoot::from_ptd("C:\\T").unwrap().path(t32stage::RelPath::new("z.gz").unwrap());
+    let load = "Data.LOAD.Binary \"C:\\T\\t32ctl\\z.gz\" VM:0x02000000 /UNZIP";
+    let s = Script::new().attach().expect_cmd(load).silence(Duration::from_secs(5)).reply_ok();
+    let mut session = connect(vec![Ok(s.expect_cmd(load).reply_error(90, "out of memory"))]);
+    assert_eq!(unzip_timed(&mut session, &f, 0x0200_0000, 4 << 20).unwrap(), (true, Duration::from_secs(5)));
+    assert!(!unzip_timed(&mut session, &f, 0x0200_0000, 4 << 20).unwrap().0);
+}
+
+#[test]
+fn the_macro_probe_tries_the_ampersand_spelling_first_and_keeps_it() {
     let set = |name: &str, value: &str| Request::MacroSet { name: name.into(), value: value.into() };
     let get = |name: &str| Request::MacroGet { name: name.into() };
     let (a, b) = ("&t32ctl_probe_a", "&t32ctl_probe_b");
-    let mut s = Script::new().attach().expect_req(set("t32ctl_probe_a", "v1")).reply_exp_error(1, "unknown macro");
-    s = s.expect_req(set(a, "v1")).reply_macro("").expect_req(get(a)).reply_macro("v1");
+    let mut s = Script::new().attach().expect_req(set(a, "v1")).reply_macro("").expect_req(get(a)).reply_macro("v1");
     s = s.expect_req(set(a, "keep")).reply_macro("").expect_cmd("GLOBAL &t32ctl_probe_a").reply_ok();
     s = s.expect_req(get(a)).reply_macro("keep");
     s = s.expect(t32rcl::testkit::Expect::Any).reply_macro("").expect_req(get(b)).reply_macro("not it");
     for _ in 0..14 {
         s = s.expect(t32rcl::testkit::Expect::Any).reply_exp_error(1, "refused");
     }
-    s = s.expect_req(set(a, "v1")).reply_macro("");
-    s = s.expect_cmd("&t32ctl_probe_b=\"[&t32ctl_probe_a]\"").reply_ok().expect_req(get(b)).reply_macro("[v1]");
-    s = s.expect_cmd("&t32ctl_probe_b=OS.PTD()").reply_ok().expect_req(get(b)).reply_macro("C:\\T");
+    s = macro_names_refused(s);
     s = s.expect_req(set(a, "")).reply_macro("").expect_req(set(b, "")).reply_macro("");
     let mut session = connect(vec![Ok(s)]);
     let mut env = test_env("probe-macro-amp");
@@ -305,8 +338,7 @@ fn the_macro_probe_falls_back_to_the_ampersand_spelling_and_keeps_it() {
 
 #[test]
 fn tempdir_picks_the_literal_root_and_the_first_exists_function_that_answers() {
-    let lit = "C:\\T\\t32ctl\\probe-r1-lit";
-    let mac = "&t32ctl_root\\probe-r1-mac";
+    let lit = "C:\\T\\t32ctl\\probe-r1-ptd";
     let yes_no = |s: Script, expr: &str, v: bool| s.expect_fn(expr).reply_bool(v);
     let done = |s: Script, cmd: &str| s.expect_cmd(cmd).reply_ok();
     let save = |s: Script, file: &str| done(s, &format!("Data.SAVE.Binary \"{file}\" VM:0x01000000++0x00000000"));
@@ -320,17 +352,9 @@ fn tempdir_picks_the_literal_root_and_the_first_exists_function_that_answers() {
     };
     let mut s = reads(Script::new().attach().expect_fn("OS.PTD()").reply_text("C:\\T"));
     s = s.expect_req(Request::MemWrite { access: "VM".into(), addr: 0x0100_0000, data: vec![0x5A] }).reply_ok();
-    for (root, dir) in [("C:\\T\\t32ctl", lit), ("&t32ctl_root", mac)] {
-        if root.starts_with('&') {
-            s = done(done(s, "GLOBAL &t32ctl_root"), "&t32ctl_root=OS.PTD()+\"\\t32ctl\"");
-            s = s.expect_req(Request::MacroGet { name: "t32ctl_root".into() }).reply_macro("C:\\T\\t32ctl");
-        }
-        s = done(yes_no(s, &format!("OS.DIR(\"{root}\")"), true), &format!("MKDIR \"{dir}\""));
-        s = save(yes_no(s, &format!("OS.DIR(\"{dir}\")"), true), &format!("{dir}\\one.bin"));
-        s = s.expect_fn(&format!("OS.FILE.SIZE(\"{dir}\\one.bin\")")).reply_decimal(1);
-    }
-    s = done(yes_no(s, "OS.DIR(\"&t32ctl_root\")", true), "EVAL OS.DIR(\"&t32ctl_root\")");
-    s = s.expect_req(Request::EvalString).reply_string("TRUE()");
+    s = done(yes_no(s, "OS.DIR(\"C:\\T\\t32ctl\")", true), &format!("MKDIR \"{lit}\""));
+    s = save(yes_no(s, &format!("OS.DIR(\"{lit}\")"), true), &format!("{lit}\\one.bin"));
+    s = s.expect_fn(&format!("OS.FILE.SIZE(\"{lit}\\one.bin\")")).reply_decimal(1);
     s = yes_no(
         yes_no(s, &format!("OS.FILE.readable(\"{lit}\\one.bin\")"), true),
         &format!("OS.FILE.readable(\"{lit}\\missing.bin\")"),
@@ -352,8 +376,6 @@ fn tempdir_picks_the_literal_root_and_the_first_exists_function_that_answers() {
         format!("OS.DIR(\"{lit}\\with space\")"),
         format!("OS.DIR(\"{lit}\\a\\b\")"),
         format!("OS.DIR(\"{lit}\\a\")"),
-        format!("OS.FILE.readable(\"{mac}\\one.bin\")"),
-        format!("OS.DIR(\"{mac}\")"),
         format!("OS.FILE.readable(\"{lit}\\one.bin\")"),
         format!("OS.DIR(\"{lit}\")"),
     ] {
@@ -369,9 +391,297 @@ fn tempdir_picks_the_literal_root_and_the_first_exists_function_that_answers() {
     let o = &r.outcomes[0];
     assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
     let text = |k: &str| o.lookup(k).cloned();
-    assert_eq!(text(crate::outcome::key::ROOT), Some(Value::Text("literal".into())));
+    assert_eq!(text(crate::outcome::key::ROOT), Some(Value::Text("ptd".into())));
     assert_eq!(text(crate::outcome::key::EXISTS), Some(Value::Text("OS.FILE.readable".into())));
-    assert_eq!(text("macro_fn"), Some(Value::Text("ok".into())));
     assert_eq!(env.learned.exists, Some(t32stage::ExistsFn::OsFileReadable));
     assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+}
+
+#[test]
+fn tempdir_asks_for_a_stage_root_when_the_temp_dir_is_not_ascii_safe() {
+    let s = Script::new().attach().expect_fn("OS.PTD()").reply_text("C:\\Users\\김\\AppData\\Local\\Temp");
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("probe-tempdir-non-ascii");
+    let r = run(&mut env, &mut session, &[ProbeId::Tempdir.def()]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Fail);
+    assert!(o.error.as_ref().is_some_and(|e| e.message.contains("--stage-root")), "{o:?}");
+    assert_eq!(o.lookup("ptd"), Some(&Value::Text("non-ascii".into())));
+}
+
+fn set_req(name: &str, value: &str) -> Request {
+    Request::MacroSet { name: name.into(), value: value.into() }
+}
+
+fn get_req(name: &str) -> Request {
+    Request::MacroGet { name: name.into() }
+}
+
+/// The steps after the round trip on run `r1`, Bare learned: nothing crosses spellings, the empty
+/// set works, `never` is refused, command-line assignment reaches both spellings, `;` cuts and
+/// only 4096 B survive.
+fn macro_names(mut s: Script) -> Script {
+    let q = |x: &str| format!("t32ctl_qr1_{x}");
+    let amp = |x: &str| format!("&t32ctl_qr1_{x}");
+    s = s.expect_req(set_req(&q("x1"), "bare-r1")).reply_macro("");
+    s = s.expect_req(get_req(&amp("x1"))).reply_exp_error(1, "unknown macro");
+    s = s.expect_req(set_req(&amp("x2"), "amp-r1")).reply_macro("");
+    s = s.expect_req(get_req(&q("x2"))).reply_exp_error(1, "unknown macro");
+    s = s.expect_req(get_req(&amp("x2"))).reply_macro("amp-r1");
+    s = s.expect_req(set_req(&q("z"), "")).reply_macro("").expect_req(get_req(&q("z"))).reply_macro("");
+    s = s.expect_req(get_req(&q("never"))).reply_exp_error(7, "unknown macro");
+    s = s.expect_req(get_req(&amp("never"))).reply_exp_error(7, "unknown macro");
+    s = s.expect_cmd("GLOBAL &t32ctl_qr1_g").reply_ok();
+    s = s.expect_req(get_req(&q("g"))).reply_macro("").expect_req(get_req(&amp("g"))).reply_macro("");
+    s = s.expect_cmd("GLOBAL &t32ctl_qr1_x3").reply_ok().expect_cmd("&t32ctl_qr1_x3=\"cmd-r1\"").reply_ok();
+    s = s.expect_req(get_req(&q("x3"))).reply_macro("cmd-r1").expect_req(get_req(&amp("x3"))).reply_macro("cmd-r1");
+    s = s.expect_cmd("&t32ctl_qr1_x4=\"cmd4-r1\"").reply_ok().expect_req(get_req(&q("x4"))).reply_macro("");
+    s = s.expect_cmd("GLOBAL &t32ctl_qr1_x5").reply_ok().expect_cmd("&t32ctl_qr1_x5=\"a;b\"").reply_ok();
+    s = s.expect_req(get_req(&q("x5"))).reply_macro("a");
+    for len in [4096usize, 4097, 8192] {
+        let v: String = super::pattern(len as u64, len).iter().map(|b| char::from(b'a' + b % 26)).collect();
+        s = s.expect_req(set_req(&q("big"), &v));
+        s = if len == 4096 {
+            s.reply_macro("").expect_req(get_req(&q("big"))).reply_macro(&v)
+        } else {
+            s.reply_exp_error(3, "too long")
+        };
+    }
+    for x in ["x1", "x2", "x3", "x4", "x5", "z", "g", "big"] {
+        s = s.expect_req(set_req(&q(x), "")).reply_macro("");
+    }
+    s
+}
+
+/// The steps after the round trip with every EXP call and command refused, Amp learned.
+fn macro_names_refused(mut s: Script) -> Script {
+    let exp =
+        |s: Script, n: usize| (0..n).fold(s, |s, _| s.expect(t32rcl::testkit::Expect::Any).reply_exp_error(1, "no"));
+    s = exp(s, 9);
+    s = exp(s.expect_cmd("GLOBAL &t32ctl_qr1_g").reply_error(90, "no"), 2);
+    s = s.expect_cmd("GLOBAL &t32ctl_qr1_x3").reply_error(90, "no");
+    s = exp(s.expect_cmd("&t32ctl_qr1_x3=\"cmd-r1\"").reply_error(90, "no"), 2);
+    s = exp(s.expect_cmd("&t32ctl_qr1_x4=\"cmd4-r1\"").reply_error(90, "no"), 1);
+    s = s.expect_cmd("GLOBAL &t32ctl_qr1_x5").reply_error(90, "no");
+    s = exp(s.expect_cmd("&t32ctl_qr1_x5=\"a;b\"").reply_error(90, "no"), 4);
+    for x in ["x1", "x2", "x3", "x4", "x5", "z", "g", "big"] {
+        s = s.expect_req(set_req(&format!("&t32ctl_qr1_{x}"), "")).reply_macro("");
+    }
+    s
+}
+
+#[test]
+fn macro_cross_spelling_reads_split_when_neither_side_sees_the_other() {
+    let mut s = Script::new().attach().expect_req(set_req("&t32ctl_probe_a", "v1")).reply_exp_error(1, "unknown macro");
+    s = s
+        .expect_req(set_req("t32ctl_probe_a", "v1"))
+        .reply_macro("")
+        .expect_req(get_req("t32ctl_probe_a"))
+        .reply_macro("v1");
+    s = s.expect_req(set_req("t32ctl_probe_a", "keep")).reply_macro("").expect_cmd("GLOBAL &t32ctl_probe_a").reply_ok();
+    s = s.expect_req(get_req("t32ctl_probe_a")).reply_macro("keep");
+    s = s.expect(t32rcl::testkit::Expect::Any).reply_macro("").expect_req(get_req("t32ctl_probe_b")).reply_macro("no");
+    for _ in 0..14 {
+        s = s.expect(t32rcl::testkit::Expect::Any).reply_exp_error(1, "refused");
+    }
+    s = macro_names(s);
+    s = s
+        .expect_req(set_req("t32ctl_probe_a", ""))
+        .reply_macro("")
+        .expect_req(set_req("t32ctl_probe_b", ""))
+        .reply_macro("");
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("probe-macro-names");
+    let r = run(&mut env, &mut session, &[ProbeId::Macro.def()]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
+    for (k, v) in [
+        ("spelling", "bare"),
+        ("xspell", "split"),
+        ("empty", "ok"),
+        ("never", "err7"),
+        ("cmdasgn", "both"),
+        ("semi", "cut"),
+        ("big", "refused"),
+    ] {
+        assert_eq!(o.lookup(k), Some(&Value::Text(v.into())), "{k}");
+    }
+    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+}
+
+/// Runs only the canary check after the bundle.
+fn canary_after(ctx: &mut crate::ctx::ProbeCtx<'_>) -> crate::ctx::ProbeResult {
+    super::scripts::canary(ctx, "after")
+}
+
+#[test]
+fn bundle_fails_when_the_canary_appears() {
+    let s = Script::new().attach().expect_fn("OS.DIR(\"\\pb-r1\")").reply_bool(false);
+    let mut session = connect(vec![Ok(s.expect_fn("OS.DIR(\"pb-r1\")").reply_bool(true))]);
+    let mut env = test_env("bundle-canary");
+    let def: &'static crate::registry::ProbeDef = Box::leak(Box::new(crate::registry::ProbeDef {
+        id: ProbeId::Bundle,
+        tier: crate::registry::Tier::Safe,
+        requires: &[],
+        needs_connection: true,
+        deadline: Duration::from_secs(5),
+        about: "",
+        run: canary_after,
+    }));
+    let r = run(&mut env, &mut session, &[def]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Fail);
+    let msg = o.error.as_ref().map(|e| e.message.clone()).unwrap_or_default();
+    assert!(msg.contains("outside the snapshot directory: pb-r1"), "{msg}");
+    assert_eq!(o.lookup("canary"), Some(&Value::Text("FAIL".into())));
+}
+
+#[test]
+fn bundle_skips_unless_all_three_gates_hold() {
+    use crate::probes::{
+        channels::channels_tests::ran,
+        lab::lab_tests::{closed_down, files_removed, listed, opened},
+        scripts::{probe_bundle, sn_case},
+    };
+    let skipped = |env: &mut crate::exec::tests::TestEnv, s: Script| {
+        let mut session = connect(vec![Ok(s)]);
+        let r = run(env, &mut session, &[ProbeId::Bundle.def()]);
+        let o = r.outcomes.into_iter().next().unwrap();
+        assert_eq!(o.verdict, Verdict::Skipped, "{o:?}");
+        assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+        o
+    };
+    let mut env = test_env("bundle-gates");
+    let o = skipped(&mut env, Script::new().attach());
+    assert_eq!(o.lookup("gate"), Some(&Value::Text("skip:a".into())));
+    env.learned.exp_to_script = Some(true);
+    let o = skipped(&mut env, Script::new().attach());
+    assert_eq!(o.lookup("gate"), Some(&Value::Text("skip:b".into())));
+
+    env.learned.abspath_same = Some(true);
+    let snap = format!("{STAGE}\\{}", probe_bundle("r1").unwrap().key().hex());
+    let case = sn_case(&snap);
+    let mut s = Script::new().attach().expect_fn("OS.DIR(\"\\pb-r1\")").reply_bool(false);
+    s = stage_opened(s.expect_fn("OS.DIR(\"pb-r1\")").reply_bool(false));
+    s = s.expect_req(set_req("t32ctl_snap", &snap)).reply_macro("");
+    s = listed(ran(opened(s, "bun"), "bun", &case, &[], None), "bun", &[]);
+    s = stage_closed(s);
+    s = files_removed(s, "bun", &case, crate::env::ScriptOut::Off, &["sn.cmm", "sn-a.bin", "sn-z.bin"]);
+    s = closed_down(s, "bun");
+    for m in ["t32ctl_probe_main", "t32ctl_probe_deep"] {
+        s = s.expect_req(set_req(m, "")).reply_macro("");
+    }
+    let o = skipped(&mut env, s);
+    assert_eq!(o.lookup("gate"), Some(&Value::Text("skip:c".into())));
+    assert_eq!(o.lookup("sn"), Some(&Value::Text("snap=n empty=n".into())));
+}
+
+/// `{q}_<x>` suffixes a probe creates, the ones it relies on nobody creating, and the cases
+/// whose bodies name them.
+struct Suffixes {
+    probe: &'static str,
+    created: Vec<&'static str>,
+    absent: Vec<&'static str>,
+    bodies: Vec<String>,
+}
+
+fn bodies(cases: Vec<crate::probes::lab::Case>, subs: &[crate::probes::channels::Sub]) -> Vec<String> {
+    cases.into_iter().map(|c| c.body).chain(subs.iter().map(|(_, _, b)| b.to_string())).collect()
+}
+
+fn named_suffixes(text: &str) -> Vec<String> {
+    text.match_indices("{q}_")
+        .map(|(i, m)| {
+            text[i + m.len()..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<String>()
+        })
+        .collect()
+}
+
+fn suffix_table() -> Vec<Suffixes> {
+    use crate::probes::{channels, macros, scriptlab as sl};
+    let (vis, vis_subs) = macros::vis_cases();
+    let (ret, ret_subs) = macros::ret_cases();
+    let (cin, cin_subs) = channels::in_cases("C:\\T\\t32ctl\\probe-r1-in");
+    let (cout, cout_subs) = channels::out_cases();
+    let lab = vec![sl::o0(), sl::c1(), sl::c2(), sl::w300(1), sl::nest(1), sl::w3(), sl::looped(), sl::big()];
+    let halt =
+        vec![sl::hs_stop(), sl::hs_err(), sl::hs_wait(), sl::hs_unwind(), sl::hs_save(), sl::hs_open(), sl::hs_glob()];
+    let mut ret_created = vec!["s1", "d1", "d2", "d3", "glo", "h1", "h2", "mk", "mk2", "n1", "n2", "n3"];
+    ret_created.extend(["p", "p2", "pp", "p1", "r1", "loc", "lo"]);
+    vec![
+        Suffixes {
+            probe: "macro",
+            created: vec!["x1", "x2", "x3", "x4", "x5", "z", "g", "big"],
+            absent: vec!["never"],
+            bodies: Vec::new(),
+        },
+        Suffixes { probe: "fn-table", created: vec!["fx", "fy"], absent: Vec::new(), bodies: Vec::new() },
+        Suffixes { probe: "script-lab", created: vec![sl::RCL_MACRO], absent: Vec::new(), bodies: bodies(lab, &[]) },
+        Suffixes {
+            probe: "script-halt",
+            created: vec!["hg"],
+            absent: Vec::new(),
+            bodies: bodies([halt, vec![sl::hs_read()]].concat(), &[]),
+        },
+        Suffixes {
+            probe: "channel-in",
+            created: vec!["p_addr", "ca"],
+            absent: Vec::new(),
+            bodies: bodies(cin, &cin_subs),
+        },
+        Suffixes { probe: "channel-out", created: Vec::new(), absent: Vec::new(), bodies: bodies(cout, &cout_subs) },
+        Suffixes {
+            probe: "macro-visibility",
+            created: vec!["v1", "v2", "v3", "v4", "c1", "c2", "e1", "im"],
+            absent: vec!["u1", "none"],
+            bodies: bodies(vis, &vis_subs),
+        },
+        Suffixes { probe: "macro-return", created: ret_created, absent: vec!["never"], bodies: bodies(ret, &ret_subs) },
+    ]
+}
+
+#[test]
+fn macro_suffixes_never_collide_across_probes() {
+    let table = suffix_table();
+    for t in &table {
+        for b in &t.bodies {
+            for x in named_suffixes(b) {
+                assert!(
+                    t.created.contains(&x.as_str()) || t.absent.contains(&x.as_str()),
+                    "{}: a case names {{q}}_{x}, which its table entry lacks",
+                    t.probe
+                );
+            }
+        }
+    }
+    for a in &table {
+        for b in &table {
+            if a.probe == b.probe {
+                continue;
+            }
+            for x in &a.created {
+                assert!(
+                    !b.created.contains(x) && !b.absent.contains(x),
+                    "{} creates {{q}}_{x}, which {} also uses",
+                    a.probe,
+                    b.probe
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_listing_leaves_out_the_dot_entries_firstfile_returns() {
+    let dir = "C:\\T\\t32ctl\\d";
+    let mut s = Script::new().attach().expect_fn(&format!("OS.FIRSTFILE(\"{dir}\\*\")")).reply_text(".");
+    for next in ["..", "a.bin", ""] {
+        s = s.expect_fn("OS.NEXTFILE()").reply_text(next);
+    }
+    let mut session = connect(vec![Ok(s)]);
+    let d = t32stage::StageRoot::from_ptd("C:\\T").unwrap().path(t32stage::RelPath::new("d").unwrap());
+    match super::list_dir(&mut session, &d).unwrap() {
+        super::Listing::Names { names, .. } => assert_eq!(names, ["a.bin"]),
+        other => panic!("{other:?}"),
+    }
 }

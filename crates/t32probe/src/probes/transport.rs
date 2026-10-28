@@ -7,9 +7,8 @@ use t32rcl::{
     CallBudget, Endpoint, Error, Feature, Health, Op, PoisonCause, Session,
     version::{BASE_FUNCTIONS, BUILD_FUNCTIONS, FEATURES},
 };
-use t32stage::practice::fnc;
 
-use super::{hex, ok};
+use super::{hex, nr_used_cons, ok};
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
     outcome::{Value, key},
@@ -105,7 +104,7 @@ pub fn latency(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
 }
 
 pub fn clients(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
-    match ctx.session.eval(fnc::NR_USED_CONS).and_then(|v| v.into_int(fnc::NR_USED_CONS)) {
+    match nr_used_cons(ctx.session) {
         Ok(n) => {
             ctx.headline("NrUsedCons", Value::Count(n.max(0) as u64));
             ctx.check(n >= 1, || format!("NrUsedCons is {n} while this client is connected"))
@@ -114,14 +113,15 @@ pub fn clients(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     }
 }
 
-/// `WAIT 3.s` with a generous idle budget. Zero keepalives is a result, not a failure: it
-/// decides whether Phase 1 idle timeouts must exceed the longest blocking command.
+/// `WAIT 10.s` with a generous idle budget, long enough for several keepalive intervals. Zero
+/// keepalives is a result, not a failure: it decides whether Phase 1 idle timeouts must exceed
+/// the longest blocking command.
 pub fn keepalive(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     ctx.session.take_trace();
     let t = Instant::now();
     ctx.session
-        .with_budget(CallBudget::idle(Duration::from_secs(10)).with_total(Duration::from_secs(15)))
-        .cmd("WAIT 3.s")?;
+        .with_budget(CallBudget::idle(Duration::from_secs(15)).with_total(Duration::from_secs(20)))
+        .cmd("WAIT 10.s")?;
     let elapsed = t.elapsed();
     let trace = ctx.session.take_trace();
     let at: Vec<Duration> = trace.keepalives.iter().filter(|k| k.op == Op::Command).map(|k| k.since_request).collect();

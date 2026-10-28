@@ -72,10 +72,11 @@ State 2 (dialog) is answered with `T32_Stop` and an unwind. Runs start only on a
 stack, and the unwind stays pending only until the stack is seen empty again, so the unwinding
 `END` can only end scripts t32stage started.
 
-The stage root is resolved once per `Stage`: the literal `OS.PTD()\t32ctl` path when that text is
-ASCII-safe, otherwise the macro `&t32ctl_root`, which PowerView computes and expands itself so a
-temp directory in an unknown code page never passes through the client's command bytes.
-`--stage-root` overrides both.
+The stage root is resolved once per `Stage`: `--stage-root` when given, otherwise
+`OS.PTD()\t32ctl` when that text is ASCII-safe. A temp directory that is not ASCII-safe needs
+`--stage-root`. PowerView does not expand macros in commands sent over RCL (PRACTICE Script
+Language User's Guide), so no root that PowerView computes itself can be named in a client
+command. For the same reason the client sets every macro a script reads over EXP 2.
 
 ## Cleanup
 
@@ -95,7 +96,42 @@ table). `exec` owns every guarantee: prerequisite skips, one reconnect, deadline
 the cleanup, and the JSON rewrite after each probe. `outcome` is built once and rendered twice,
 as the paste-back text and as JSON, so the two cannot disagree. Probes run in table order and
 learn as they go: `tempdir` picks the file-exists function and `macro` the EXP 2 name spelling
-that later probes use.
+that later probes use, `script-lab` the value channel Lab scripts answer through, and
+`macro-visibility` and `unpack-literal` whether scripts see EXP-set macros and whether ABSPATH
+keeps an absolute path; `bundle` runs only where both hold.
+
+## The Lab: probe scripts on literal paths
+
+Script probes run their PRACTICE through `probes::lab`. A third live run showed a macro set over
+EXP 2 expanding to an empty string inside a `DO`'d script, so a Lab script never takes a path from
+a macro: every path is a literal absolute path below its work directory
+`<root>\probe-<run>-<tag>`, rendered by the client. Writing through a macro is measured only
+behind an `IF` that compares it with the expected literal first.
+
+- Oracle (FX): the script answers by saving the one-byte marker region to `<id>-<name>.bin` with
+  `Data.SAVE.Binary`; the client asks the file-exists function. `@ask k L == R` writes
+  `<id>-k-yes.bin` or `<id>-k-no.bin`. It uses only what the third run proved inside a script.
+  `Data.Set VM:` and `WRITE` are measured as value channels on top of it, never as the oracle.
+- Markers: `a` at the start, `z` after the default answers, `h`, `w` or any other name where a
+  case may halt or wait. Every output name is unique per run and case and is checked absent and
+  registered for removal before the `DO`; the directory is listed at the end and files nobody
+  registered (`.bak` siblings, names PowerView chose) are reported as `stray` and removed.
+- Ending: `GetPracticeState` alone never ends a script, because a halted script and a `WAIT`
+  both read idle with a non-empty stack. A Lab sends `END` only to a stack it filled itself, and
+  only after a marker allowed the halt and it held for 300 ms, after the case timeout and a
+  `T32_Stop`, or after the probe stopped the script on purpose. Before each `DO` the stack must be
+  empty: our own leftover is unwound once, anybody else's script makes the probe `SKIP`. The
+  stack check does not limit what `END` does beyond the stack: it also closes every custom dialog
+  and every `OPEN` file in PowerView (practice_ref `END`), which no RCL call can check
+  beforehand. After an `END` the Lab sends `CLOSE` for the buffers its own script opened.
+- Revert: settings a probe changes (an AREA, a breakpoint, a selected core, a register, a printer
+  file) are undone by `Undo::Revert`, a list of commands that lives only in memory. It is never
+  journaled: replaying it after a crash would act on a state the operator may have changed since,
+  so a dead run leaves it to a human. A probe applies it with `Ledger::revert_now` right after the
+  step that measured it; cleanup applies whatever a failure left pending.
+- The opt-in target probes ask `PRACTICE.CoMmanD.AVAILable` or `PRACTICE.FUNCtion.AVAILable`
+  before each target command or function and record `unverified:<name>` instead of sending one the
+  build does not offer.
 
 ## t32ctl: the Phase 1 contract
 
@@ -138,51 +174,61 @@ socket smoke tests against the static musl binary.
 
 Probe bodies are tested where a script of reasonable size can drive their decisions: `connect`
 (smoke tests), `version`, `clients`, `keepalive`, `reconnect`, `tempdir`, `macro`, the `vm-rw`
-chunk ladder, the `gzip` acceptance decision, and the failure paths of `tar-download`,
-`run-control` and `elf-unzip`. The rest is live-only, because a script would have to answer
-megabytes of `VM:` traffic or stand in for PRACTICE semantics: `latency` (timings only), the
-`vm-rw` round trips from 1 B to 1 MiB, `vm-file`, the `gzip` payloads and ceiling search, `bundle`,
-`script-error`, the `tar-download` archive, `dialog`, `multi-client`, and the run paths of
-`run-control` and `elf-unzip`.
+chunk ladder, the `gzip` acceptance decision, the Lab rendering and judgement, the full runs of
+`script-lab`, `script-halt`, `channel-in`, `channel-out`, `macro-return` and `dialog`, the gates
+and decision points of the other Lab probes, `bundle`, `fn-table`, `fs-semantics`, `vm-large`
+and `tar-download`, the revert paths of `run-control`, `target-read` and `load-code`, and the
+failure path and symbol queries of `elf-unzip`. The rest is live-only, because a script would
+have to answer megabytes of `VM:` traffic or stand in for PRACTICE semantics: `latency` (timings
+only), the `vm-rw` round trips from 1 B to 1 MiB, `vm-file`, the `gzip` payloads and ceiling
+search, the success paths of the large Lab probes, `multi-client` (it opens a real second
+connection), and the run paths of `run-control`, `target-read`, `load-code` and `elf-unzip`.
 
 ## Open questions
 
 Each PowerView behavior below is assumed by code marked `ASSUMED(<probe>)` and is measured by
-that probe. The probe report answers it.
+that probe. The result column is build 168999 (about DVD 09/2024), from the alpha.1 to alpha.8 runs
+on #2; `docs/trace32-pitfalls.md` explains the refuted ones. A row without a result needs an opt-in
+probe that has not run yet.
 
-| Assumption | Probe | Where |
-|---|---|---|
-| PowerView always sends the 8-byte frame pad. | `connect` | `t32rcl::frame` |
-| A long EXP reply (a 60000-byte macro value) arrives as one frame. | `macro` | `t32rcl::frame` |
-| Request id 0 (after id 254) is accepted. | `latency` | `t32rcl::wait` |
-| A keepalive is `[0] == 0xFE`; status 254 shares the byte (raw frames are recorded). | `keepalive` | `t32rcl::wait` |
-| Memory chunks above 1024 bytes are accepted, and up to which size. | `vm-rw` | `t32rcl::Tuning` |
-| Reading never-initialized `VM:` fails instead of returning zeros. | `vm-rw` | `t32stage::vm` |
-| `Data.CLEARVM <range>` exists on DVD 02/2024. | `vm-rw` | `practice::cmd::clear_vm` |
-| `OS.PTD()` answers; whether its text is ASCII-safe; trailing separator. | `tempdir` | `practice::fnc::PTD` |
-| `GLOBAL` and `&m=OS.PTD()+"\t32ctl"` over ExecuteCommand create and set the root macro, and both later commands and ExecuteFunction expressions expand it. | `tempdir` | `practice::cmd::bind_root` |
-| Which of `OS.FILE.readable`, `OS.FILE.EXIST`, `FILE.EXIST` answers. | `tempdir` | `practice::ExistsFn` |
-| `PRACTICE.StackDepth()` answers over ExecuteFunction. | `tempdir` | `practice::fnc::STACK_DEPTH` |
-| `/UNZIP` refuses a corrupt gzip (the bundle's integrity check). | `gzip` | `Stage::ensure_snapshot` |
-| EXP 2 names a macro without `&` (both spellings are tried). | `macro` | `t32rcl::MacroSpelling` |
-| Redeclaring an existing global keeps its value. | `macro` | `practice::cmd::global` |
-| Macros expand inside a quoted command-line assignment. | `macro` | `practice::cmd::bind_path` |
-| `&m="0"` stores `0`, not `"0"` (quotes are stripped either way). | `macro` | `Stage` |
-| One-line `IF` bodies, `GOTO`, `OPEN /Create /Binary` for empty files, and EXP-set macros visible to scripts. | `bundle` | `bundle::render_unpack` |
-| `DO` over ExecuteCommand returns while the script runs. | `bundle` | `Stage::execute_with` |
-| `ENTRY %LINE` after `DO` yields the callee's `ENDDO` value. | `bundle` | `runner::runner_cmm` |
-| `ON ERROR JUMPTO` in the runner catches errors in nested `DO` files and unwinds them. | `script-error` | `runner::runner_cmm` |
-| `EVAL ERROR.MESSAGE()` + EvalGetString reads the error of a halted script. | `script-error` | `Stage` |
-| Arguments with `, / : = + @ - . _` reach `ENTRY` intact through the unquoted `DO` line. | `script-error` | `practice::render_args` |
-| `TAR <archive> <dir>\*` stores names relative to `<dir>`. | `tar-download` | `practice::cmd::tar` |
-| `ZIP` writes plain gzip. | `tar-download` | `practice::cmd::zip` |
-| A modal dialog reads as state 2 and `T32_Stop` ends the wait (and whether the window closes). | `dialog` | `runner::ScriptWatch` |
-| Two `STOre <file> Break` lists differ only when breakpoints differ. | `run-control` | `practice::cmd::store_breakpoints` |
-| `Data.LOAD.Elf ... /UNZIP` exists. | `elf-unzip` | `practice::cmd::load_elf_symbols` |
+| Assumption | Probe | Where | Build 168999 |
+|---|---|---|---|
+| PowerView always sends the 8-byte frame pad. | `connect` | `t32rcl::frame` | holds |
+| A long EXP reply (a 60000-byte macro value) arrives as one frame. | `macro` | `t32rcl::frame` | moot: EXP values over 4 KiB are refused |
+| Request id 0 (after id 254) is accepted. | `latency` | `t32rcl::wait` | holds |
+| A keepalive is `[0] == 0xFE`; status 254 shares the byte (raw frames are recorded). | `keepalive` | `t32rcl::wait` | holds; one about every 2 s |
+| Memory chunks above 1024 bytes are accepted, and up to which size. | `vm-rw` | `t32rcl::Tuning` | holds up to the client limit, 15360 |
+| Reading never-initialized `VM:` fails instead of returning zeros. | `vm-rw` | `t32stage::vm` | holds, as status 113 |
+| `Data.CLEARVM <range>` exists on DVD 02/2024. | `vm-rw` | `practice::cmd::clear_vm` | holds |
+| `OS.PTD()` answers; whether its text is ASCII-safe; trailing separator. | `tempdir` | `practice::fnc::PTD` | holds; ASCII, no separator |
+| Which of `OS.FILE.readable`, `OS.FILE.EXIST`, `FILE.EXIST` answers. | `tempdir` | `practice::ExistsFn` | `OS.FILE.readable` |
+| `PRACTICE.StackDepth()` answers over ExecuteFunction. | `tempdir` | `practice::fnc::STACK_DEPTH` | holds |
+| `/UNZIP` refuses a corrupt gzip (the bundle's integrity check). | `gzip` | `Stage::ensure_snapshot` | holds, 4 of 4 |
+| EXP 2 with `&name` reaches the macro a `DO`'d script uses; bare `name` is a separate store. | `macro-visibility` | `t32rcl::MacroSpelling` | holds for `&name`; bare is a separate store |
+| Redeclaring an existing global keeps its value. | `macro` | `practice::cmd::global` | holds |
+| `&m="0"` stores `0`, not `"0"` (quotes are stripped either way). | `macro-return` | `Stage` | holds |
+| A macro set over EXP 2 reads back inside a `DO`'d script. | `macro-visibility` | `bundle::render_unpack` | holds with `&name` |
+| One-line `IF` bodies, `GOTO` and `OPEN /Create /Binary` for empty files work in the unpack script, which writes nothing behind an empty or relative snapshot path. | `unpack-literal` | `bundle::render_unpack` | holds |
+| `OS.FILE.ABSPATH` returns an absolute path unchanged. | `unpack-literal` | `bundle::render_unpack` | holds |
+| `DO` over ExecuteCommand returns while the script runs. | `script-lab` | `Stage::execute_with` | holds |
+| A script in `WAIT` reads as running, not as halted. | `script-lab` | `runner::ScriptWatch` | holds |
+| `ENTRY %LINE` after `DO` yields the callee's `ENDDO` value. | `channel-out` | `runner::runner_cmm` | partly: the unevaluated text, quotes kept |
+| `ON ERROR JUMPTO` in the runner catches errors in nested `DO` files and unwinds them. | `script-error` | `runner::runner_cmm` | holds, 6 of 6 |
+| `EVAL ERROR.MESSAGE()` + EvalGetString reads the error of a halted script. | `script-error` | `Stage` | holds |
+| `T32_Stop` answers status 0 or 1. | `script-halt` | `t32rcl::Session::stop_practice` | holds; 0 seen |
+| Arguments with `, / : = + @ - . _` reach `ENTRY` intact through the unquoted `DO` line. | `channel-in` | `practice::render_args` | holds |
+| An overwritten file leaves a `.bak` sibling named as `bak_candidates` predicts. | `fs-semantics` | `RelPath::bak_candidates` | holds; last extension becomes `.bak` |
+| 10 s plus 1 s per MB covers the silence of a long `SAVE` or `LOAD` between keepalives. | `vm-large` | `transfer::data_budget` | holds; 32 MiB in under 0.2 s |
+| `TAR <archive> <dir>\*` stores names relative to `<dir>`. | `tar-download` | `practice::cmd::tar` | refuted: full path minus the drive; `tar::below` strips it |
+| `ZIP` writes plain gzip. | `tar-download` | `practice::cmd::zip` | holds |
+| The whole bundle path: upload, unpack, cache hit, repair, runner, nested `DO` chain. | `bundle` | `Stage` | holds (alpha.8) |
+| A modal dialog reads as state 2 and `T32_Stop` ends the wait (and whether the window closes). | `dialog` | `runner::ScriptWatch` | |
+| Two `STOre <file> Break` lists differ only when breakpoints differ. | `run-control` | `practice::cmd::store_breakpoints` | |
+| `Data.LOAD.Elf ... /UNZIP` exists. | `elf-unzip` | `practice::cmd::load_elf_symbols` | |
 
 Questions that only the operator can answer:
 
 - Which DVD is installed? DVD 02/2024 has no build tag in the manuals, so `min=uncertain` is
   expected for builds between 160740 and 166507.
-- Does a second client block while the first one runs a long `DO`? `multi-client` measures it,
-  but it needs `--allow-multi-client`.
+- Can a second client attach while the first one runs a script or blocks in a command?
+  `multi-client` measures it, but it needs `--allow-multi-client`.
