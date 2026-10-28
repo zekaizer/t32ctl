@@ -357,6 +357,72 @@ fn an_uncached_snapshot_is_uploaded_inflated_unpacked_and_verified() {
     let _ = std::fs::remove_dir_all(state_dir);
 }
 
+/// The `.bak` removals a transient stage registers while it unpacks `bundle()` into a snapshot
+/// directory that does or does not exist yet.
+fn bak_undos_after_unpack(tag: &str, dir_exists: bool) -> Vec<String> {
+    let b = bundle();
+    let key = b.key();
+    let dir = format!("C:\\T\\t32ctl\\{key}");
+    let packed = b.pack(BASE);
+    let gz_at = BASE + packed.raw_len.next_multiple_of(4096);
+    let tmp = format!("C:\\T\\t32ctl\\{key}.gz");
+
+    let mut s = opened(Script::new().attach());
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(false);
+    s = idle(s, 0);
+    for d in [dir.clone(), format!("{dir}\\.t32ctl")] {
+        s = s.expect_fn(&format!("OS.DIR(\"{d}\")")).reply_bool(dir_exists);
+        if !dir_exists {
+            s = s.expect_cmd(&format!("MKDIR \"{d}\"")).reply_ok();
+        }
+    }
+    s = s.expect(Expect::MemWriteLen { access: "VM".into(), addr: gz_at.into(), len: packed.gz.len() }).reply_ok();
+    s = s.expect(Expect::CommandStarting(format!("Data.SAVE.Binary \"{tmp}\""))).reply_ok();
+    s = s.expect_fn(&format!("OS.FILE.SIZE(\"{tmp}\")")).reply_decimal(packed.gz.len() as i64);
+    s = s.expect(Expect::CommandStarting(format!("Data.LOAD.Binary \"{tmp}\""))).reply_ok();
+    s = s.expect(Expect::CommandStarting(format!("Data.SAVE.Binary \"{dir}\\.t32ctl\\unpack.cmm\""))).reply_ok();
+    s = s.expect_cmd(&format!("RM \"{tmp}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
+    s = executed(s, &format!("{dir}\\.t32ctl\\unpack.cmm"), "0", "");
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
+    let mut session = session_with(vec![Ok(s)], |o| o.tuning = Tuning::new(1008, 0x3C00).unwrap());
+
+    let cfg = StageConfig { retention: Retention::Transient, ..config(tag) };
+    let state_dir = cfg.state_dir.clone();
+    let mut st = stage(&mut session, cfg);
+    st.ensure_snapshot(&mut session, &b).unwrap();
+    let prefix = format!("remove file {dir}\\");
+    let baks = st
+        .pending()
+        .iter()
+        .map(Undo::describe)
+        .filter(|d| d.ends_with(".bak"))
+        .map(|d| d.strip_prefix(&prefix).unwrap_or(&d).to_string())
+        .collect();
+    drop(st);
+    let _ = std::fs::remove_dir_all(state_dir);
+    baks
+}
+
+#[test]
+fn a_transient_stage_removes_the_bak_files_of_a_snapshot_it_unpacked_again() {
+    let mut baks = bak_undos_after_unpack("stage-bak-repair", true);
+    baks.sort();
+    assert_eq!(
+        baks,
+        [
+            ".t32ctl\\complete.bak",
+            ".t32ctl\\runner.bak",
+            ".t32ctl\\runner.cmm.bak",
+            ".t32ctl\\unpack.bak",
+            ".t32ctl\\unpack.cmm.bak",
+            "main.bak",
+            "main.cmm.bak",
+        ]
+    );
+    assert!(bak_undos_after_unpack("stage-bak-fresh", false).is_empty());
+}
+
 #[test]
 fn download_gunzips_what_powerview_zipped() {
     let payload: Vec<u8> = (0..3000).map(|i| (i % 13) as u8).collect();

@@ -199,15 +199,26 @@ impl Stage {
 
         let transient = self.cfg.retention == Retention::Transient;
         let ledger = &mut self.ledger;
+        let mut fresh = false;
         transfer::ensure_dir(session, &dir.join(RESERVED_DIR)?, |p| {
+            fresh |= *p == dir;
             if transient { ledger.push(Undo::RemoveDir(p.clone())) } else { Ok(()) }
         })?;
         if transient {
             for d in packed.dirs.iter().filter(|d| d.as_str() != RESERVED_DIR) {
                 self.ledger.push(Undo::RemoveDir(dir.join(d)?))?;
             }
-            for f in packed.files.iter().map(RelPath::as_str).chain([UNPACK_PATH, MARKER_PATH]) {
-                self.ledger.push(Undo::RemoveFile(dir.join(f)?))?;
+            let generated = [UNPACK_PATH, MARKER_PATH].map(|p| RelPath::new(p).expect("constant path"));
+            for f in packed.files.iter().chain(&generated) {
+                self.ledger.push(Undo::RemoveFile(dir.join(f.as_str())?))?;
+                // A SAVE over an existing file leaves a `.bak` sibling while SETUP.BAKfile is on;
+                // only a directory that existed before holds files to overwrite.
+                // ASSUMED(fs-semantics): the sibling is named as `bak_candidates` predicts.
+                if !fresh {
+                    for bak in f.bak_candidates() {
+                        self.ledger.push(Undo::RemoveFile(dir.join(bak.as_str())?))?;
+                    }
+                }
             }
         }
 
