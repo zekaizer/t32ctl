@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 t32rcl.workspace = true
+t32stage.workspace = true
 clap.workspace = true
 
 [dev-dependencies]

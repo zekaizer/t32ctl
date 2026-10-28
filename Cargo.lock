@@ -390,6 +390,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "t32rcl",
+ "t32stage",
 ]
 
 [[package]]
