@@ -237,6 +237,60 @@ fn parameter_macros_are_journaled_for_clearing_before_they_are_set() {
     let _ = std::fs::remove_dir_all(state_dir);
 }
 
+/// A run with an output directory, then `fetch_outputs` over a directory that lists `.`, `..`
+/// and the first of `names`. A listing with a file is archived: `TAR` is refused here, which ends
+/// the fetch with an error.
+fn fetch_after_listing(tag: &str, names: &[&str]) -> Result<Outputs, StageError> {
+    let b = bundle();
+    let dir = format!("C:\\T\\t32ctl\\{}", b.key());
+    let out = "C:\\T\\t32ctl\\out-tok";
+    let mut s = opened(Script::new().attach());
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
+    s = idle(s, 0);
+    s = s.expect_fn(&format!("OS.DIR(\"{out}\")")).reply_bool(false).expect_cmd(&format!("MKDIR \"{out}\"")).reply_ok();
+    s = set(s, Macro::Out, out);
+    s = set(s, Macro::Snap, &dir);
+    s = set(s, Macro::Entry, "main.cmm");
+    s = set(s, Macro::Args, "");
+    s = executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "", "");
+    s = s.expect_fn(&format!("OS.FIRSTFILE(\"{out}\\*\")")).reply_text(&format!("{out}\\."));
+    for name in ["..", names.first().copied().unwrap_or_default()] {
+        s = s.expect_fn("OS.NEXTFILE()").reply_text(name);
+    }
+    if !names.is_empty() {
+        s = s.expect_cmd(&format!("TAR \"C:\\T\\t32ctl\\out-tok.tar\" \"{out}\\*\"")).reply_error(90, "refused");
+        s = s.expect_fn("OS.FILE.readable(\"C:\\T\\t32ctl\\out-tok.tar\")").reply_bool(false);
+    }
+    s = s.expect_fn(&format!("OS.DIR(\"{out}\")")).reply_bool(true).expect_cmd(&format!("RMDIR \"{out}\"")).reply_ok();
+    s = s.expect_fn(&format!("OS.DIR(\"{out}\")")).reply_bool(false);
+    s = closed(s, false);
+    let mut session = session_with(vec![Ok(s)], |_| {});
+
+    let cfg = config(tag);
+    let state_dir = cfg.state_dir.clone();
+    let mut st = stage(&mut session, cfg);
+    let snap = st.ensure_snapshot(&mut session, &b).unwrap();
+    let req = RunRequest {
+        entry: RelPath::new("main.cmm").unwrap(),
+        args: vec![],
+        timeout: Duration::from_secs(5),
+        collect_outputs: true,
+        params: vec![],
+    };
+    let report = st.run(&mut session, &snap, &req).unwrap();
+    let fetched = st.fetch_outputs(&mut session, &report);
+    assert!(st.close(&mut session).is_clean());
+    let _ = std::fs::remove_dir_all(state_dir);
+    fetched
+}
+
+#[test]
+fn an_output_directory_with_only_dot_entries_is_empty_and_never_archived() {
+    let outputs = fetch_after_listing("stage-out-empty", &[]).unwrap();
+    assert!(outputs.files.is_empty());
+    assert!(matches!(fetch_after_listing("stage-out-file", &["a.txt"]), Err(StageError::Rcl(_))));
+}
+
 /// Open, cached snapshot, then the run request up to and including `DO` of the runner.
 fn started(entry: &str) -> (Bundle, String, Script) {
     let b = bundle();

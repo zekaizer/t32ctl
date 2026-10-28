@@ -433,6 +433,14 @@ pub mod fnc {
         format!("OS.DIR({})", p.quoted())
     }
 
+    /// The first entry of `dir` (ide_func `OS.FIRSTFILE`); `OS.NEXTFILE()` gives the rest, then
+    /// `""`. Build 168999 lists `.` and `..` too (`fs-semantics`).
+    pub fn first_file(dir: &StagePath) -> String {
+        format!("OS.FIRSTFILE(\"{}\\*\")", dir.text())
+    }
+
+    pub const NEXT_FILE: &str = "OS.NEXTFILE()";
+
     pub fn symbol_exists(s: &Symbol) -> String {
         format!("sYmbol.EXIST({})", s.as_str())
     }
@@ -552,6 +560,8 @@ mod tests {
         assert_eq!(cmd::tar(&p, &dir), "TAR \"C:\\T\\t32ctl\\k\\a.bin\" \"C:\\T\\t32ctl\\o\\*\"");
         assert_eq!(cmd::load_elf_symbols(&p, true), "Data.LOAD.Elf \"C:\\T\\t32ctl\\k\\a.bin\" /UNZIP /NoCODE /NoReg");
         assert_eq!(ExistsFn::OsFileExist.call(&dir), "OS.FILE.EXIST(\"C:\\T\\t32ctl\\o\")");
+        assert_eq!(fnc::first_file(&dir), "OS.FIRSTFILE(\"C:\\T\\t32ctl\\o\\*\")");
+        assert_eq!(fnc::NEXT_FILE, "OS.NEXTFILE()");
     }
 
     #[test]

@@ -286,9 +286,13 @@ impl Stage {
     }
 
     /// Pack the run's output directory with PowerView's `TAR`, download it, untar it, and
-    /// register every listed file and directory for removal.
+    /// register every listed file and directory for removal. An empty directory is not archived:
+    /// `TAR` of one was never measured.
     pub fn fetch_outputs(&mut self, session: &mut Session, report: &RunReport) -> Result<Outputs, StageError> {
         let Some(out) = &report.out else { return Ok(Outputs::default()) };
+        if !has_entries(session, out)? {
+            return Ok(Outputs::default());
+        }
         let archive = self.path(&format!("out-{}.tar", report.token))?;
         self.ledger.push(Undo::RemoveFile(archive.clone()))?;
         session.cmd(&cmd::tar(&archive, out))?;
@@ -491,6 +495,21 @@ impl Stage {
             return Ok((outcome, watch.stats));
         }
     }
+}
+
+/// Whether `dir` lists an entry besides `.` and `..`. Stops at the first one.
+fn has_entries(session: &mut Session, dir: &StagePath) -> Result<bool, StageError> {
+    let first = fnc::first_file(dir);
+    let mut name = session.eval(&first)?.into_text(&first)?;
+    // `.`, `..`, then an entry or the end.
+    for _ in 0..3 {
+        let base = name.rsplit(['\\', '/']).next().unwrap_or_default();
+        if name.is_empty() || !matches!(base, "." | "..") {
+            return Ok(!name.is_empty());
+        }
+        name = session.eval(fnc::NEXT_FILE)?.into_text(fnc::NEXT_FILE)?;
+    }
+    Ok(true)
 }
 
 /// `cfg.root`, or `<OS.PTD()>\t32ctl`. A temp directory that is not ASCII-safe is a
