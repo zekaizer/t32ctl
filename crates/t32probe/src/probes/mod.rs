@@ -13,6 +13,7 @@
 
 pub mod channels;
 pub mod lab;
+pub mod macros;
 pub mod optin;
 pub mod scriptlab;
 pub mod scripts;
@@ -195,6 +196,11 @@ pub(crate) fn exp_as<T>(
             None => soft(Err::<T, _>(e)).map(|_| Err("err?".into())),
         },
     }
+}
+
+/// At most 16 characters of a value, for a headline token.
+pub(crate) fn short(v: &str) -> String {
+    v.chars().take(16).collect()
 }
 
 /// `ok` or `FAIL`, the two-valued result token of most checks.

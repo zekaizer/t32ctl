@@ -28,7 +28,8 @@ const OUTS: [ScriptOut; 3] = [ScriptOut::VmSet, ScriptOut::Write, ScriptOut::Off
 pub(crate) fn s3_cases() -> Vec<(&'static str, Vec<Case>, Vec<Sub>)> {
     let (cases, subs) = in_cases(&dir("in"));
     let (out, out_subs) = out_cases();
-    vec![("in", cases, subs), ("out", out, out_subs)]
+    let (vis, vis_subs) = crate::probes::macros::vis_cases();
+    vec![("in", cases, subs), ("out", out, out_subs), ("vis", vis, vis_subs)]
 }
 
 fn fill_with_large(tag: &str) -> Fill {
@@ -216,16 +217,16 @@ pub(crate) fn ran(s: Script, tag: &str, case: &Case, yes: &[&str], sub: Option<&
     finished(ended_now(s, tag, case), tag, case, yes, sub)
 }
 
-fn yes_no(s: Script, expr: &str, v: bool) -> Script {
+pub(crate) fn yes_no(s: Script, expr: &str, v: bool) -> Script {
     s.expect_fn(expr).reply_bool(v)
 }
 
-fn mkdir(s: Script, tag: &str, rel: &str) -> Script {
+pub(crate) fn mkdir(s: Script, tag: &str, rel: &str) -> Script {
     let p = format!("{}\\{}", dir(tag), rel.replace('/', "\\"));
     yes_no(s.expect_cmd(&format!("MKDIR \"{p}\"")).reply_ok(), &format!("OS.DIR(\"{p}\")"), true)
 }
 
-fn dir_gone(s: Script, tag: &str, rel: &str) -> Script {
+pub(crate) fn dir_gone(s: Script, tag: &str, rel: &str) -> Script {
     yes_no(s, &format!("OS.DIR(\"{}\\{}\")", dir(tag), rel.replace('/', "\\")), false)
 }
 

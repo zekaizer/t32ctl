@@ -868,4 +868,4 @@ fn vmbytes(got: Option<&[u8]>) -> String {
 
 #[cfg(test)]
 #[path = "channels_tests.rs"]
-mod channels_tests;
+pub(crate) mod channels_tests;

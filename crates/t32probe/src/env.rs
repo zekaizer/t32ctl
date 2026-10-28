@@ -133,6 +133,8 @@ pub struct Learned {
     pub exists: Option<ExistsFn>,
     pub build: Option<PowerViewBuild>,
     pub script_out: Option<ScriptOut>,
+    /// A value set over EXP 2 reads back inside a `DO`'d script. macro-visibility decides.
+    pub exp_to_script: Option<bool>,
 }
 
 impl Learned {

@@ -10,7 +10,7 @@ use serde::{Serialize, Serializer};
 use crate::{
     cli::Gates,
     ctx::{ProbeCtx, ProbeResult},
-    probes::{channels, optin, scriptlab, scripts, storage, transport},
+    probes::{channels, macros, optin, scriptlab, scripts, storage, transport},
 };
 
 /// Why a probe is not in the default run.
@@ -138,6 +138,8 @@ probes! {
         "client to script without macros: VM: strings, DO arguments, EVAL, READ, OS.PPD, ~~~~ reads";
     ChannelOut = "channel-out", Safe, [ScriptLab], true, 150, channels::channel_out,
         "script to client without macros: WRITE/WRITEB files, EVAL, AREA, ENDDO values, ENTRY after DO, Data.Set limits, loop expansion";
+    MacroVisibility = "macro-visibility", Safe, [ScriptLab], true, 180, macros::macro_visibility,
+        "client macros seen by DO'd scripts: EXP bare/amp, command-line GLOBAL and assignment, declared-only, undeclared, EXPLICIT, implicit visibility";
     TarDownload = "tar-download", Safe, [Bundle], true, 60, storage::tar_download,
         "TAR + ZIP in PowerView, download through VM:, untar in Rust";
     Dialog = "dialog", Tier::OptIn(Dialog), [Bundle], true, 40, optin::dialog,
@@ -266,6 +268,7 @@ mod tests {
             "script-error",
             "channel-in",
             "channel-out",
+            "macro-visibility",
             "tar-download",
         ];
         let opt = [("dialog", Dialog), ("multi-client", MultiClient), ("run-control", RunControl), ("elf-unzip", Elf)];
@@ -284,7 +287,7 @@ mod tests {
         let names = |v: Vec<&ProbeDef>| v.iter().map(|d| d.id.name()).collect::<Vec<_>>();
         assert_eq!(names(select(&[ProbeId::VmFile], &[], &none).unwrap()), ["connect", "tempdir", "vm-rw", "vm-file"]);
         let default = select(&[], &[ProbeId::Latency], &none).unwrap();
-        assert_eq!(default.len(), 17);
+        assert_eq!(default.len(), 18);
         assert!(default.iter().all(|d| d.tier == Tier::Safe));
         assert_eq!(select(&[ProbeId::Dialog], &[], &none).unwrap_err(), "dialog needs --allow-dialog");
         let gates = Gates { dialog: true, ..Gates::default() };
