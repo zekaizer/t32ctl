@@ -443,15 +443,17 @@ fn cores(ctx: &mut ProbeCtx<'_>, rc: &mut Rc) -> Result<String, ProbeFail> {
     if !rc.v.command(ctx, "CORE.select")? {
         return Ok(unverified("CORE.select"));
     }
-    let Some(c0) = eval_text(ctx, "CORE()")? else { return Ok("partial".into()) };
+    let Some(c0) = soft(ctx.session.eval("CORE()").and_then(|v| v.into_int("CORE()")))? else {
+        return Ok("partial".into());
+    };
     let (mut answered, mut registered) = (0, false);
     for k in 0..n {
-        if soft(ctx.session.cmd(&format!("CORE.select {k}")))?.is_none() {
+        if soft(ctx.session.cmd(&core_select(k)))?.is_none() {
             ctx.measure(&format!("core.{k}"), Value::Text("refused".into()));
             continue;
         }
         if !registered {
-            ctx.push(Undo::Revert { what: "core".into(), commands: vec![format!("CORE.select {c0}")] })?;
+            ctx.push(Undo::Revert { what: "core".into(), commands: vec![core_select(c0)] })?;
             registered = true;
         }
         let pc = pc(ctx, &mut rc.v)?;
@@ -536,7 +538,7 @@ fn write_breakpoints(ctx: &mut ProbeCtx<'_>, rc: &mut Rc, var: &t32stage::Symbol
     }
     let mut set = 0;
     for k in 1..=5u32 {
-        let at = format!("(Var.ADDRESS({})+{})", var.as_str(), 4 * (k - 1));
+        let at = watch_at(var, k);
         match command(ctx, &format!("Break.Set {at} /Write"))? {
             Ok(()) => {
                 ctx.push(Undo::Revert { what: format!("wp{k}"), commands: vec![format!("Break.Delete {at}")] })?;
@@ -558,6 +560,17 @@ fn write_breakpoints(ctx: &mut ProbeCtx<'_>, rc: &mut Rc, var: &t32stage::Symbol
         revert(ctx, &format!("wp{k}"), &mut rc.clean);
     }
     Ok(set.to_string())
+}
+
+/// Address of the `k`-th write breakpoint, 4 bytes after the previous one. Decimal with `.`:
+/// PowerView reads a bare number as hex (ide_ref `SETUP.RADIX`).
+fn watch_at(var: &t32stage::Symbol, k: u32) -> String {
+    format!("(Var.ADDRESS({})+{}.)", var.as_str(), 4 * (k - 1))
+}
+
+/// `CORE.select` of core `k`, decimal with `.` like `watch_at`.
+fn core_select(k: i64) -> String {
+    format!("CORE.select {k}.")
 }
 
 /// `Break.Set <file>\<line> /COUNT 3`, a `Go`, and whether `STOre` keeps the count.

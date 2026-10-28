@@ -91,10 +91,10 @@ fn run_control_reverts_core_and_breakpoints_even_when_a_step_fails() {
     s = s.expect_cmd("Break").reply_ok().expect_req(Request::TargetState).reply_state(1);
     s = avail(s, "FUNCtion", "CORE.NUMBER", true).expect_fn("CORE.NUMBER()").reply_decimal(2);
     s = avail(s, "CoMmanD", "CORE.select", true).expect_fn("CORE()").reply_decimal(0);
-    s = s.expect_cmd("CORE.select 0").reply_ok();
+    s = s.expect_cmd("CORE.select 0.").reply_ok();
     s = avail(s, "FUNCtion", "Register", true).expect_fn("Register(PC)").reply_text("0x100");
-    s = s.expect_cmd("CORE.select 1").reply_error(2, "core not available");
-    s = s.expect_cmd("CORE.select 0").reply_ok();
+    s = s.expect_cmd("CORE.select 1.").reply_error(2, "core not available");
+    s = s.expect_cmd("CORE.select 0.").reply_ok();
     s = s.expect_cmd("Go main").reply_ok().expect_req(Request::TargetState).reply_state(1);
     s = stored(s, "bp1.cmm", BP);
     for c in ["Step.Over", "Step", "Step.Asm", "Step.Out", "Go.Return", "Go.Up"] {
@@ -168,4 +168,12 @@ fn elf_unzip_asks_the_symbol_functions_this_build_offers() {
     assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
     assert_eq!(o.lookup("sym"), Some(&Value::Text("4/5".into())));
     assert_eq!(o.lookup("unverified.sYmbol.SIZEOF"), Some(&Value::Text("unverified:sYmbol.SIZEOF".into())));
+}
+
+#[test]
+fn run_control_writes_every_number_it_sends_with_a_radix() {
+    let var = t32stage::Symbol::parse("counter").unwrap();
+    let got: Vec<String> = (1..=5).map(|k| watch_at(&var, k)).collect();
+    let want = ["+0.)", "+4.)", "+8.)", "+12.)", "+16.)"].map(|t| format!("(Var.ADDRESS(counter){t}"));
+    assert_eq!(got, want);
 }
