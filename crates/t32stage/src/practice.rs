@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The only module that formats PRACTICE command text. Inputs are typed (`StagePath`,
-//! `VmRegion`, `Symbol`, `RegName`, `Macro`) and validated so that no builder needs escaping.
+//! `VmRegion`, `Symbol`, `RegName`, `MemAddr`, `Macro`) and validated so that no builder needs
+//! escaping.
 //!
 //! Syntax sources are the TRACE32 manuals (not in the repository): `general_ref_d`
 //! (`Data.LOAD.Binary`, `Data.SAVE.Binary`, `Data.CLEARVM`, `Data.LOAD.Elf`), `ide_ref` (`MKDIR`,
@@ -8,6 +9,8 @@
 //! Text the manuals do not settle carries `ASSUMED(<probe>)`: the probe that measures it.
 
 use std::fmt;
+
+use t32rcl::MemAddr;
 
 use crate::{
     error::{ArgError, PathError, RegNameError, SymbolError},
@@ -445,6 +448,14 @@ pub mod fnc {
     pub fn register(r: &RegName) -> String {
         format!("Register({})", r.as_str().to_ascii_uppercase())
     }
+
+    /// The physical address `a` translates to, as an address value (`A:0x...`) (general_func
+    /// `TRANS.PHYSICAL`, alias `MMU.PHYSICAL`; available on build 168999, `fn-table`). The width
+    /// does not take part. ASSUMED(target-read): the reply names the physical address after its
+    /// last `:`, and an unmapped address is refused.
+    pub fn physical(a: &MemAddr) -> String {
+        format!("MMU.PHYSICAL({}:0x{:X})", a.access.as_str(), a.addr)
+    }
 }
 
 #[cfg(test)]
@@ -569,6 +580,13 @@ mod tests {
             RegName::new("a-b").unwrap_err().to_string(),
             "register name \"a-b\" is not a letter followed by at most 31 letters, digits or _"
         );
+    }
+
+    #[test]
+    fn a_translation_names_the_address_with_its_class_and_ignores_the_width() {
+        let d = |a| MemAddr::new(t32rcl::AccessClass::parse("D").unwrap(), a);
+        assert_eq!(fnc::physical(&d(0x4010_7000)), "MMU.PHYSICAL(D:0x40107000)");
+        assert_eq!(fnc::physical(&d(0xffff_0000_0000_0abc).with_width(4)), "MMU.PHYSICAL(D:0xFFFF000000000ABC)");
     }
 
     #[test]
