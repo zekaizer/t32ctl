@@ -411,3 +411,126 @@ fn the_prelude_refuses_a_cpu_that_is_not_the_profiles_and_skips_the_check_while_
     let mut c = conn(connected(0));
     assert_eq!(c.prelude(&setup.pv_dir, &setup.profile, CpuCheck::Refuse), Ok(TargetState::Down));
 }
+
+/// One raw request after the prelude of a stopped target, then the header.
+fn raw(request: &str, reply: impl FnOnce(Script) -> Script) -> Script {
+    stopped_header(reply(connected(2).expect_fn(request)))
+}
+
+#[test]
+fn raw_eval_prints_the_value_in_argument_notation_and_its_type() {
+    let w = World::new("eval");
+    type Reply = fn(Script) -> Script;
+    let cases: [(Reply, &str, &str); 8] = [
+        (|s| s.reply_bool(true), "TRUE() (bool)", r#"{"kind":"eval","type":"bool","value":"TRUE()"}"#),
+        (|s| s.reply_decimal(-5), "-5 (decimal)", r#"{"kind":"eval","type":"decimal","value":"-5"}"#),
+        (|s| s.reply_function(4, "0x1F"), "0x1f (hex)", r#"{"kind":"eval","type":"hex","value":"0x1f"}"#),
+        (|s| s.reply_function(0x10, "2.5"), "2.5 (float)", r#"{"kind":"eval","type":"float","value":"2.5"}"#),
+        (|s| s.reply_function(0x400, "1.5s"), "1.5s (time)", r#"{"kind":"eval","type":"time","value":"1.5s"}"#),
+        (
+            |s| s.reply_text("C:\\Users\\op\\AppData\\Local\\Temp"),
+            "\"C:\\Users\\op\\AppData\\Local\\Temp\" (string)",
+            r#"{"kind":"eval","type":"string","value":"C:\\Users\\op\\AppData\\Local\\Temp"}"#,
+        ),
+        (|s| s.reply_function(0x8000, ""), "(empty)", r#"{"kind":"eval","type":"empty","value":""}"#),
+        (|s| s.reply_function(0x9999, "x"), "x (type 0x9999)", r#"{"kind":"eval","type":"type 0x9999","value":"x"}"#),
+    ];
+    for (reply, text, json) in cases {
+        let out = call("t32ctl raw eval 'OS.PTD()'", &deps(w.env(), vec![Ok(raw("OS.PTD()", reply))]));
+        assert_eq!((out.text, out.code), (format!("stopped core=0 pc=0x40083e10\n{text}\n"), 0));
+        let out = call("t32ctl raw eval 'OS.PTD()' --json", &deps(w.env(), vec![Ok(raw("OS.PTD()", reply))]));
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!((v["command"].as_str(), v["body"].to_string()), (Some("raw eval"), json.to_string()));
+    }
+}
+
+#[test]
+fn raw_text_is_sent_literally_and_a_refusal_is_exit_2_with_powerviews_message() {
+    let w = World::new("evalrefused");
+    let s = raw("OS.FILE.SIZE(\"&p\")", |s| s.reply_function(0, "file not found"));
+    let out = call("t32ctl raw eval 'OS.FILE.SIZE(\"&p\")'", &deps(w.env(), vec![Ok(s)]));
+    assert_eq!(
+        out.text,
+        "stopped core=0 pc=0x40083e10\n\
+         error[refused]: OS.FILE.SIZE(\"&p\"): function: PowerView refused: function failed (code 0): file not found\n"
+    );
+    assert_eq!(out.code, 2);
+}
+
+#[test]
+fn a_down_target_still_gets_raw_text_and_a_target_state_code_is_exit_3() {
+    let w = World::new("evaldown");
+    let s = connected(0).expect_fn("Register(PC)").reply_error(3, "");
+    let s = s.expect_req(Request::TargetState).reply_state(0);
+    let out = call("t32ctl raw eval 'Register(PC)'", &deps(w.env(), vec![Ok(s)]));
+    assert_eq!(
+        out.text,
+        "down\nerror[target-down]: Register(PC): function: PowerView refused: target state (code 3 STD_NOTRUNNING)\n"
+    );
+    assert_eq!(out.code, 3);
+    let s = connected(3).expect_cmd("Step").reply_error(2, "");
+    let s = s.expect_req(Request::TargetState).reply_state(3).expect_fn("CORE.NUMBER()").reply_decimal(4);
+    let out = call("t32ctl raw cmd Step", &deps(w.env(), vec![Ok(s)]));
+    assert_eq!((out.text.lines().nth(1).map(|l| l.starts_with("error[not-halted]: Step:")), out.code), (Some(true), 3));
+}
+
+#[test]
+fn a_cpu_mismatch_refuses_raw_eval_before_it_sends_the_text() {
+    let w = World::new("evalmismatch");
+    let s = stopped_header(connected_to(2, "CortexA72"));
+    let out = call("t32ctl raw eval 'OS.PTD()'", &deps(w.env(), vec![Ok(s)]));
+    assert_eq!(
+        out.text,
+        "stopped core=0 pc=0x40083e10\nerror[cpu-mismatch]: connected CPU CortexA72 is not the profile's CortexA53\n"
+    );
+    assert_eq!(out.code, 5);
+}
+
+#[test]
+fn text_above_2037_bytes_is_notation_and_connects_nowhere() {
+    let w = World::new("evallong");
+    let out = call(&format!("t32ctl raw cmd {}", "A".repeat(2038)), &deps(w.env(), vec![]));
+    assert_eq!(out.text, "error[notation]: PRACTICE text is 2038 bytes; it must be 1 to 2037 bytes\n");
+    assert_eq!(out.code, 2);
+}
+
+/// `raw cmd`'s command, then the PRACTICE state and stack it reads after it.
+fn raw_cmd(text: &str, practice: u8, depth: i64) -> Script {
+    let s = connected(2).expect_cmd(text).reply_ok().expect_req(Request::PracticeState).reply_state(practice);
+    stopped_header(s.expect_fn("PRACTICE.StackDepth()").reply_decimal(depth))
+}
+
+#[test]
+fn raw_cmd_reports_done_and_a_script_it_left_on_the_stack() {
+    let w = World::new("cmd");
+    let out = call("t32ctl raw cmd 'PRINT \"hello\"'", &deps(w.env(), vec![Ok(raw_cmd("PRINT \"hello\"", 0, 0))]));
+    assert_eq!((out.text, out.code), ("stopped core=0 pc=0x40083e10\ncmd: done\n".to_string(), 0));
+    let d = deps(w.env(), vec![Ok(raw_cmd("DO C:\\t\\x.cmm", 1, 1))]);
+    let out = call("t32ctl raw cmd 'DO C:\\t\\x.cmm'", &d);
+    assert_eq!(
+        out.text,
+        "stopped core=0 pc=0x40083e10\n\
+         ! a PRACTICE script is on the stack after this command (depth 1, running); proc and raw script calls \
+         wait for it\n\
+         cmd: done\n"
+    );
+    assert_eq!(out.code, 0);
+    let d = deps(w.env(), vec![Ok(raw_cmd("DO C:\\t\\x.cmm", 0, 2))]);
+    let out = call("t32ctl raw cmd 'DO C:\\t\\x.cmm' --json", &d);
+    let v: Value = serde_json::from_str(&out.text).unwrap();
+    assert_eq!(v["body"], serde_json::json!({"kind": "cmd", "practice": "halted", "depth": 2}));
+    assert_eq!(v["notices"][0]["text"].as_str().map(|t| t.contains("(depth 2, halted)")), Some(true));
+}
+
+#[test]
+fn a_command_that_blocks_past_the_call_budget_is_no_answer_and_says_powerview_may_still_run_it() {
+    let w = World::new("cmdblock");
+    let s = connected(2).expect_cmd("WAIT 60.s").silence(std::time::Duration::from_secs(11));
+    let out = call("t32ctl raw cmd 'WAIT 60.s'", &deps(w.env(), vec![Ok(s)]));
+    assert_eq!(
+        out.text,
+        "error[no-answer]: WAIT 60.s: command: no answer for 11.00s (idle timeout, 0 keepalive frames seen)\n\
+         \x20 PowerView may still run the command, and it accepts no new connection until the command ends\n"
+    );
+    assert_eq!(out.code, 5);
+}

@@ -8,6 +8,7 @@
 use std::fmt;
 
 use serde::{Serialize, Serializer};
+use t32rcl::FuncValue;
 
 use crate::{
     error::{CtlError, Exit},
@@ -196,22 +197,70 @@ impl Hint {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Body {
-    Status(StatusBody),
+    Status(Box<StatusBody>),
+    Eval(EvalBody),
+    Cmd(CmdBody),
 }
 
 impl Body {
     /// Exit 0 or 1: whether the command ended as asked.
     pub fn outcome(&self) -> Exit {
         match self {
-            Body::Status(_) => Exit::Ok,
+            Body::Status(_) | Body::Eval(_) | Body::Cmd(_) => Exit::Ok,
         }
     }
 
     pub fn lines(&self) -> Vec<String> {
         match self {
             Body::Status(s) => s.lines(),
+            Body::Eval(e) => vec![e.to_string()],
+            Body::Cmd(_) => vec!["cmd: done".into()],
         }
     }
+}
+
+/// `raw eval`: the value in argument notation and its type (`bool`, `decimal`, `hex`, `float`,
+/// `time`, `string`, `empty`, or `type 0x<word>` for a type t32rcl does not interpret).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct EvalBody {
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// A string without its quotes.
+    pub value: String,
+}
+
+impl EvalBody {
+    pub fn new(v: &FuncValue) -> Self {
+        let (ty, value) = match v {
+            FuncValue::Bool(b) => ("bool".into(), if *b { "TRUE()" } else { "FALSE()" }.into()),
+            FuncValue::Int(n) => ("decimal".into(), n.to_string()),
+            FuncValue::Uint(n) => ("hex".into(), format!("{n:#x}")),
+            FuncValue::Float(x) => ("float".into(), format!("{x:?}")),
+            FuncValue::Seconds(x) => ("time".into(), format!("{x}s")),
+            FuncValue::Text(t) => ("string".into(), t.clone()),
+            FuncValue::Empty => ("empty".into(), String::new()),
+            FuncValue::Raw { ty, text } => (format!("type {ty:#x}"), text.clone()),
+        };
+        Self { ty, value }
+    }
+}
+
+impl fmt::Display for EvalBody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.ty.as_str() {
+            "empty" => f.write_str("(empty)"),
+            "string" => write!(f, "\"{}\" (string)", self.value),
+            ty => write!(f, "{} ({ty})", self.value),
+        }
+    }
+}
+
+/// `raw cmd`: the PRACTICE state after the command.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CmdBody {
+    pub practice: Practice,
+    /// `PRACTICE.StackDepth()`.
+    pub depth: i64,
 }
 
 fn labeled(label: &str, rest: impl fmt::Display) -> String {

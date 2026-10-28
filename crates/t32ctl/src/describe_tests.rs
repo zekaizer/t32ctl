@@ -76,6 +76,8 @@ fn the_skill_blocks_are_tables_between_their_markers() {
          | `t32ctl read status [--full]` | Header, target and CPU check, profile, PowerView; `--full` adds \
          `profile=<hash>`, the binding, the config, and the state directory | - |\n\
          | `t32ctl read describe [--format json\\|skill\\|permissions]` | Static command schema | no connection |\n\
+         | `t32ctl raw cmd 'TEXT'` | One PRACTICE command | the command |\n\
+         | `t32ctl raw eval 'EXPR'` | One PRACTICE function | the function |\n\
          \nFlags on every command: `--json`, `--build DIR`.\n<!-- commands:end -->\n\n"
     ));
     assert!(text.contains("| 130 | interrupted | The call was interrupted;"));

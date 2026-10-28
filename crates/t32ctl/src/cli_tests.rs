@@ -69,12 +69,16 @@ fn flags_parse_only_after_the_grade_word() {
     for bad in ["t32ctl --json read status", "t32ctl --build b read status", "t32ctl --full read status"] {
         assert!(parse_line(bad).is_err(), "{bad}");
     }
-    let GradeCmd::Read(g) = parse_line("t32ctl read --json status --build b").unwrap().grade;
+    let GradeCmd::Read(g) = parse_line("t32ctl read --json status --build b").unwrap().grade else { panic!() };
     assert!(g.globals.json);
     assert_eq!(g.globals.build.as_deref(), Some(std::path::Path::new("b")));
-    let GradeCmd::Read(g) = parse_line("t32ctl read status --full").unwrap().grade;
+    let GradeCmd::Read(g) = parse_line("t32ctl read status --full").unwrap().grade else { panic!() };
     assert!(matches!(g.leaf, ReadLeaf::Status(ReadStatus { full: true })));
     assert!(!g.globals.json);
+    let GradeCmd::Raw(g) = parse_line("t32ctl raw eval 'OS.PTD()' --json").unwrap().grade else { panic!() };
+    assert!(g.globals.json);
+    assert!(matches!(g.leaf, RawLeaf::Eval(RawEval { ref text }) if text.as_str() == "OS.PTD()"));
+    assert!(parse_line("t32ctl --json raw eval 'OS.PTD()'").is_err());
 }
 
 #[test]
@@ -132,8 +136,25 @@ fn help_and_version_print_and_everything_else_is_a_usage_error() {
     assert_eq!(e.message, "unrecognized subcommand 'r'");
     assert_eq!(
         e.details,
-        ["tip: a similar subcommand exists: 'read'", "Usage: t32ctl <COMMAND>", "For more information, try '--help'."]
+        [
+            "tip: some similar subcommands exist: 'read', 'raw'",
+            "Usage: t32ctl <COMMAND>",
+            "For more information, try '--help'."
+        ]
     );
+}
+
+#[test]
+fn raw_text_is_one_line_of_at_most_2037_bytes_or_a_notation_error() {
+    let argv = |text: &str| vec![OsString::from("t32ctl"), "raw".into(), "cmd".into(), text.into()];
+    assert!(matches!(parse(&argv(&"A".repeat(2037))), Parsed::Cli(_)));
+    let Parsed::Usage(e) = parse(&argv(&"A".repeat(2038))) else { panic!("parses") };
+    assert_eq!(
+        (e.kind, e.message.as_str()),
+        (ErrorKind::Notation, "PRACTICE text is 2038 bytes; it must be 1 to 2037 bytes")
+    );
+    let Parsed::Usage(e) = parse(&argv("PRINT 1\nPRINT 2")) else { panic!("parses") };
+    assert_eq!(e.kind, ErrorKind::Notation);
 }
 
 #[derive(Debug, Parser)]
@@ -175,7 +196,7 @@ fn a_hint_parses_back_to_the_arguments_it_was_built_from() {
     let hint = crate::report::Hint(["read", "status", "--full", "--build", "my build's"].map(String::from).to_vec());
     let cli = parse_line(&hint.render()).unwrap();
     assert_eq!(cli.spec().path, ["read", "status"]);
-    let GradeCmd::Read(g) = cli.grade;
+    let GradeCmd::Read(g) = cli.grade else { panic!() };
     assert_eq!(g.globals.build.as_deref(), Some(std::path::Path::new("my build's")));
     assert!(matches!(g.leaf, ReadLeaf::Status(ReadStatus { full: true })));
 }

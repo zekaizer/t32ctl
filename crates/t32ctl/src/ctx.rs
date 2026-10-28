@@ -11,6 +11,33 @@
 //!     Ctx::new(conn, t32rcl::TargetState::Stopped, p)
 //! }
 //! ```
+//!
+//! PRACTICE text is for `raw` alone, so a `read` leaf cannot send a command and a `burn` leaf
+//! cannot evaluate a function:
+//!
+//! ```compile_fail,E0599
+//! use t32ctl::{ctx::Ctx, grade::Read, notation::PracticeText};
+//! fn send(ctx: &mut Ctx<'_, Read>, text: &PracticeText) {
+//!     let _ = ctx.cmd(text);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use t32ctl::{ctx::Ctx, grade::Burn, notation::PracticeText};
+//! fn send(ctx: &mut Ctx<'_, Burn>, text: &PracticeText) {
+//!     let _ = ctx.eval(text);
+//! }
+//! ```
+//!
+//! The same calls compile under `raw`:
+//!
+//! ```
+//! use t32ctl::{ctx::Ctx, grade::Raw, notation::PracticeText};
+//! fn send(ctx: &mut Ctx<'_, Raw>, text: &PracticeText) {
+//!     let _ = ctx.cmd(text);
+//!     let _ = ctx.eval(text);
+//! }
+//! ```
 
 use std::{marker::PhantomData, path::Path};
 
@@ -19,9 +46,10 @@ use t32stage::{CleanupReport, ExistsFn, practice::fnc, replay_leftovers};
 
 use crate::{
     error::{Context, CtlError, ErrorKind, from_connect, from_rcl},
-    grade::Grade,
+    grade::{Grade, Raw},
+    notation::PracticeText,
     profile::Profile,
-    report::{At, CpuMatch, Header, Hex, Notice, Practice, PvStatus, TargetView},
+    report::{At, CmdBody, CpuMatch, Header, Hex, Notice, Practice, PvStatus, TargetView},
 };
 
 /// What a call does when the connected CPU is not the profile's.
@@ -209,20 +237,26 @@ impl<'c, G: Grade> Ctx<'c, G> {
         };
         let build = s.build().map_err(|e| from_rcl(&e, Context::Read, "SOFTWARE.BUILD()"))?;
         let clients = nr_used_cons(s)?;
-        let state = s.practice_state().map_err(|e| from_rcl(&e, Context::Read, "T32_GetPracticeState"))?;
-        let depth = s
-            .eval(fnc::STACK_DEPTH)
-            .and_then(|v| v.into_int(fnc::STACK_DEPTH))
-            .map_err(|e| from_rcl(&e, Context::Read, fnc::STACK_DEPTH))?;
-        let practice = match state {
-            PracticeState::Idle if depth > 0 => Practice::Halted,
-            PracticeState::Idle => Practice::Idle,
-            PracticeState::Running => Practice::Running,
-            PracticeState::Dialog => Practice::Dialog,
-            PracticeState::Other(n) => Practice::Other(n),
-        };
+        let (practice, depth) = practice(s)?;
         Ok((target, PvStatus { build: build.build, base: build.base, clients, practice, depth }))
     }
+}
+
+/// The PRACTICE state and stack depth; an idle state with a non-empty stack is a halted script.
+fn practice(s: &mut Session) -> Result<(Practice, i64), CtlError> {
+    let state = s.practice_state().map_err(|e| from_rcl(&e, Context::Read, "T32_GetPracticeState"))?;
+    let depth = s
+        .eval(fnc::STACK_DEPTH)
+        .and_then(|v| v.into_int(fnc::STACK_DEPTH))
+        .map_err(|e| from_rcl(&e, Context::Read, fnc::STACK_DEPTH))?;
+    let practice = match state {
+        PracticeState::Idle if depth > 0 => Practice::Halted,
+        PracticeState::Idle => Practice::Idle,
+        PracticeState::Running => Practice::Running,
+        PracticeState::Dialog => Practice::Dialog,
+        PracticeState::Other(n) => Practice::Other(n),
+    };
+    Ok((practice, depth))
 }
 
 /// The RCL client count; `None` when PowerView refuses every spelling of the function.
@@ -235,4 +269,37 @@ fn nr_used_cons(s: &mut Session) -> Result<Option<i64>, CtlError> {
         }
     }
     Ok(None)
+}
+
+/// PRACTICE text the caller typed: only a `raw` leaf gets these. The text goes out as typed, also
+/// while the target is down; PowerView's answer decides.
+impl Ctx<'_, Raw> {
+    /// One command, then the PRACTICE state it left. A `DO` returns while its script runs, so a
+    /// script still on the stack is a notice.
+    pub fn cmd(&mut self, text: &PracticeText) -> Result<CmdBody, CtlError> {
+        let s = &mut self.conn.session;
+        s.cmd(text.as_str()).map_err(|e| {
+            let err = from_rcl(&e, Context::Text, text.as_str());
+            if err.kind != ErrorKind::NoAnswer {
+                return err;
+            }
+            // A blocking command (`WAIT`) holds PowerView past the call budget.
+            err.with_details(vec![
+                "PowerView may still run the command, and it accepts no new connection until the command ends".into(),
+            ])
+        })?;
+        let (practice, depth) = practice(s)?;
+        if depth > 0 {
+            self.conn.notices.push(Notice::new(format!(
+                "a PRACTICE script is on the stack after this command (depth {depth}, {practice}); proc and raw \
+                 script calls wait for it"
+            )));
+        }
+        Ok(CmdBody { practice, depth })
+    }
+
+    /// One function.
+    pub fn eval(&mut self, text: &PracticeText) -> Result<FuncValue, CtlError> {
+        self.conn.session.eval(text.as_str()).map_err(|e| from_rcl(&e, Context::Text, text.as_str()))
+    }
 }

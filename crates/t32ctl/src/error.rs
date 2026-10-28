@@ -82,6 +82,8 @@ pub enum ErrorKind {
     Usage,
     Notation,
     Refused,
+    NotHalted,
+    TargetDown,
     RclLocked,
     Unreachable,
     NoAnswer,
@@ -97,10 +99,12 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// In the order of the error-tag table.
-    pub const ALL: [ErrorKind; 14] = [
+    pub const ALL: [ErrorKind; 16] = [
         ErrorKind::Usage,
         ErrorKind::Notation,
         ErrorKind::Refused,
+        ErrorKind::NotHalted,
+        ErrorKind::TargetDown,
         ErrorKind::RclLocked,
         ErrorKind::Unreachable,
         ErrorKind::NoAnswer,
@@ -119,6 +123,8 @@ impl ErrorKind {
             ErrorKind::Usage => "usage",
             ErrorKind::Notation => "notation",
             ErrorKind::Refused => "refused",
+            ErrorKind::NotHalted => "not-halted",
+            ErrorKind::TargetDown => "target-down",
             ErrorKind::RclLocked => "rcl-locked",
             ErrorKind::Unreachable => "unreachable",
             ErrorKind::NoAnswer => "no-answer",
@@ -136,6 +142,7 @@ impl ErrorKind {
     pub fn exit(self) -> Exit {
         match self {
             ErrorKind::Usage | ErrorKind::Notation | ErrorKind::Refused => Exit::Fix,
+            ErrorKind::NotHalted | ErrorKind::TargetDown => Exit::State,
             ErrorKind::RclLocked => Exit::Wait,
             ErrorKind::Unreachable
             | ErrorKind::NoAnswer
@@ -158,6 +165,12 @@ impl ErrorKind {
                 "An argument is not in t32ctl notation or exceeds its bound; the message names the accepted forms."
             }
             ErrorKind::Refused => "PowerView refused the command, function, or memory read; its message is shown.",
+            ErrorKind::NotHalted => {
+                "The command needs a stopped target, or every touched region must declare `running = true`."
+            }
+            ErrorKind::TargetDown => {
+                "The debug port is down: attach first, with the board's `attach` procedure or in PowerView."
+            }
             ErrorKind::RclLocked => "PowerView's API lock is held by another RCL client (status 123).",
             ErrorKind::Unreachable => "PowerView cannot be reached; the details name what to check.",
             ErrorKind::NoAnswer => "PowerView accepted TCP but does not answer: a modal dialog, or a blocking command.",
@@ -226,6 +239,10 @@ pub enum Context {
 
 /// Status codes PowerView reports for target power and debug port failures.
 const TARGET_POWER: [u8; 7] = [57, 128, 140, 144, 161, 162, 164];
+/// `STD_RUNNING`.
+const RUNNING: u8 = 2;
+/// `STD_NOTRUNNING`, `STD_RESET`, `STD_RESETDETECTED`, `STD_CORENOTACTIVE`.
+const DOWN: [u8; 4] = [3, 4, 48, 64];
 const LOCKED: u8 = 123;
 
 /// Classify a failed RCL request. `what` names the request (`SOFTWARE.BUILD()`) and leads the
@@ -239,6 +256,8 @@ pub fn from_rcl(e: &Error, context: Context, what: &str) -> CtlError {
         // A caller that sets a deadline turns its expiry into an outcome before classifying.
         Error::Cancelled { reason: CancelReason::Deadline, .. } => ErrorKind::NoAnswer,
         Error::Remote(r) if r.code == LOCKED => ErrorKind::RclLocked,
+        Error::Remote(r) if r.code == RUNNING => ErrorKind::NotHalted,
+        Error::Remote(r) if DOWN.contains(&r.code) => ErrorKind::TargetDown,
         Error::Remote(r) if TARGET_POWER.contains(&r.code) => ErrorKind::TargetPower,
         Error::Remote(r) if r.kind == RemoteKind::Attach => ErrorKind::Unreachable,
         Error::Remote(_) => match context {

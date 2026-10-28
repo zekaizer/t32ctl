@@ -42,5 +42,5 @@ pub fn status(args: &ReadStatus, ctx: &mut Ctx<'_, Read>, setup: &Setup<'_>) -> 
         });
         body.state_dir = Some(format!("{}/", env.display(&setup.pv_dir)));
     }
-    Ok(Body::Status(body))
+    Ok(Body::Status(Box::new(body)))
 }

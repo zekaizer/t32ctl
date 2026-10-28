@@ -22,14 +22,14 @@ fn profile() -> ProfileView {
 }
 
 fn status(pv: PvStatus) -> Body {
-    Body::Status(StatusBody {
+    Body::Status(Box::new(StatusBody {
         target: target("CortexA53", CpuMatch::Match, 4),
         profile: profile(),
         pv,
         binding: None,
         config: None,
         state_dir: None,
-    })
+    }))
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn the_target_line_says_whether_the_cpu_matches_and_shows_the_profiles_cores_whe
 
 #[test]
 fn full_status_adds_the_hash_binding_config_and_state_lines_before_pv() {
-    let body = Body::Status(StatusBody {
+    let body = Body::Status(Box::new(StatusBody {
         target: target("CortexA53", CpuMatch::Match, 4),
         profile: ProfileView { hash: Some("1c07e9b2".to_string() + &"0".repeat(56)), files: Some(6), ..profile() },
         pv: pv(Practice::Idle, 0, Some(1)),
@@ -125,7 +125,7 @@ fn full_status_adds_the_hash_binding_config_and_state_lines_before_pv() {
             port: 20000,
         }),
         state_dir: Some("~/.local/state/t32ctl/pv/auto-20000/".into()),
-    });
+    }));
     assert_eq!(
         body.lines(),
         [

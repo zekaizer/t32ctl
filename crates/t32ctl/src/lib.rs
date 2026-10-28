@@ -15,6 +15,7 @@ pub mod error;
 pub mod grade;
 pub mod notation;
 pub mod profile;
+pub mod raw;
 pub mod read;
 pub mod report;
 
@@ -23,11 +24,11 @@ use std::{ffi::OsString, fs, path::PathBuf, sync::Arc, time::Duration};
 use t32rcl::{CallBudget, Cancel, CancelReason, Clock, ConnectOpts, Connector, SystemClock, TcpConnector};
 
 use crate::{
-    cli::{Globals, GradeCmd, Leaf, Parsed, ReadLeaf},
+    cli::{Globals, GradeCmd, Leaf, Parsed, RawLeaf, ReadLeaf},
     config::{Binding, Config, Env, Paths},
     ctx::{Conn, CpuCheck, Ctx},
     error::{CtlError, ErrorKind},
-    grade::{Grade, Read},
+    grade::{Grade, Raw, Read},
     profile::Profile,
     report::{Body, Report},
 };
@@ -75,6 +76,10 @@ pub fn run(argv: &[OsString], deps: &Deps) -> Output {
         GradeCmd::Read(g) => match &g.leaf {
             ReadLeaf::Status(a) => connected::<Read, _>(a, &g.globals, deps, CpuCheck::Report, read::status),
             ReadLeaf::Describe(a) => document::<Read, _>(a, |a| describe::render(a.format)),
+        },
+        GradeCmd::Raw(g) => match &g.leaf {
+            RawLeaf::Cmd(a) => connected::<Raw, _>(a, &g.globals, deps, CpuCheck::Refuse, raw::cmd),
+            RawLeaf::Eval(a) => connected::<Raw, _>(a, &g.globals, deps, CpuCheck::Refuse, raw::eval),
         },
     }
 }

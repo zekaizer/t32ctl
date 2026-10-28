@@ -14,7 +14,7 @@ use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum, 
 use crate::{
     error::{CtlError, ErrorKind},
     grade::{Grade, GradeId},
-    notation::NotationError,
+    notation::{NotationError, PracticeText},
 };
 
 /// TRACE32 control over RCL for coding agents. The first word is the permission grade.
@@ -29,6 +29,8 @@ pub struct Cli {
 pub enum GradeCmd {
     /// Read target and debugger state; nothing changes
     Read(ReadCmd),
+    /// PRACTICE text and scripts outside every policy; always asks
+    Raw(RawCmd),
 }
 
 /// Flags every leaf of a grade accepts.
@@ -72,6 +74,37 @@ pub struct ReadDescribe {
     /// `permissions`: the Claude Code permission rules
     #[arg(long, value_enum, default_value_t = DescribeFormat::Json)]
     pub format: DescribeFormat,
+}
+
+#[derive(Debug, Args)]
+pub struct RawCmd {
+    #[command(flatten)]
+    pub globals: Globals,
+    #[command(subcommand)]
+    pub leaf: RawLeaf,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RawLeaf {
+    /// One PRACTICE command
+    Cmd(RawCommand),
+    /// One PRACTICE function
+    Eval(RawEval),
+}
+
+#[derive(Debug, Args)]
+pub struct RawCommand {
+    /// The command, sent literally: PowerView expands no macros in it
+    #[arg(value_name = "'TEXT'")]
+    pub text: PracticeText,
+}
+
+#[derive(Debug, Args)]
+pub struct RawEval {
+    /// The function, sent literally: PowerView expands no macros in it, and a file argument is a
+    /// literal name
+    #[arg(value_name = "'EXPR'")]
+    pub text: PracticeText,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -131,19 +164,30 @@ leaf!(Read, ReadStatus, path: ["read", "status"], waits: "-", connects: true,
 leaf!(Read, ReadDescribe, path: ["read", "describe"], waits: "no connection", connects: false,
       examples: ["t32ctl read describe", "t32ctl read describe --format permissions"]);
 
+leaf!(Raw, RawCommand, path: ["raw", "cmd"], waits: "the command", connects: true,
+      examples: ["t32ctl raw cmd 'PRINT \"hello\"'", "t32ctl raw cmd 'SYStem.Mode Attach' --json"]);
+leaf!(Raw, RawEval, path: ["raw", "eval"], waits: "the function", connects: true,
+      examples: ["t32ctl raw eval 'OS.PTD()'", "t32ctl raw eval 'Register(X0)' --json"]);
+
 leaves! {
     (Read, ReadStatus),
     (Read, ReadDescribe),
+    (Raw, RawCommand),
+    (Raw, RawEval),
 }
 
 impl Cli {
     /// The spec of the leaf this command line names.
     pub fn spec(&self) -> &'static LeafSpec {
-        use crate::grade::Read;
+        use crate::grade::{Raw, Read};
         match &self.grade {
             GradeCmd::Read(g) => match g.leaf {
                 ReadLeaf::Status(_) => &<ReadStatus as Leaf<Read>>::SPEC,
                 ReadLeaf::Describe(_) => &<ReadDescribe as Leaf<Read>>::SPEC,
+            },
+            GradeCmd::Raw(g) => match g.leaf {
+                RawLeaf::Cmd(_) => &<RawCommand as Leaf<Raw>>::SPEC,
+                RawLeaf::Eval(_) => &<RawEval as Leaf<Raw>>::SPEC,
             },
         }
     }

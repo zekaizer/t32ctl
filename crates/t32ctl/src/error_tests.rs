@@ -54,6 +54,8 @@ fn every_status_code_has_one_tag_by_code_and_context() {
     for &(code, kind) in STATUS {
         let e = remote(code, kind);
         let (read, stage) = match code {
+            2 => ("not-halted", "not-halted"),
+            3 | 4 | 48 | 64 => ("target-down", "target-down"),
             123 => ("rcl-locked", "rcl-locked"),
             57 | 128 | 140 | 144 | 161 | 162 | 164 => ("target-power", "target-power"),
             60 | 83 | 147 | 254 => ("unreachable", "unreachable"),
@@ -71,6 +73,14 @@ fn every_status_code_has_one_tag_by_code_and_context() {
     });
     assert_eq!(tag(&failed_function, Context::Read), "refused");
     assert_eq!(tag(&failed_function, Context::Stage), "pv-error");
+}
+
+#[test]
+fn a_target_state_code_names_its_status_in_the_message() {
+    let e = from_rcl(&remote(3, RemoteKind::TargetState), Context::Text, "Register(PC)");
+    assert_eq!(e.kind, ErrorKind::TargetDown);
+    assert_eq!(e.message, "Register(PC): command: PowerView refused: target state (code 3 STD_NOTRUNNING): why");
+    assert_eq!(e.exit(), Exit::State);
 }
 
 #[test]
@@ -130,6 +140,8 @@ fn every_tag_maps_to_its_exit_and_every_exit_has_a_code_and_a_next_step() {
             ("usage", 2),
             ("notation", 2),
             ("refused", 2),
+            ("not-halted", 3),
+            ("target-down", 3),
             ("rcl-locked", 4),
             ("unreachable", 5),
             ("no-answer", 5),
