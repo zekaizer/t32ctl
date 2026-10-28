@@ -23,7 +23,6 @@ macro_rules! macro_table {
 }
 
 macro_table! {
-    Root  = "t32ctl_root",  "Stage root in `Macro` root mode: `OS.PTD()+\"\\t32ctl\"`, computed by PowerView.";
     Snap  = "t32ctl_snap",  "client -> scripts: snapshot directory.";
     Out   = "t32ctl_out",   "client -> scripts: per-run output directory.";
     Token = "t32ctl_token", "client -> scripts: unique per run; copied into `Done` as the last statement.";

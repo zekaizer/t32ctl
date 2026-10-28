@@ -131,18 +131,19 @@ pub struct Stage {
 }
 
 impl Stage {
-    /// Take the VM: lease, open the journal, resolve the root, declare the macros, ensure the
+    /// Resolve the root, take the VM: lease, open the journal, declare the macros, ensure the
     /// root and subdirectory exist. On failure nothing is undone here: `OpenError::cleanup`
     /// carries what was registered so far.
     pub fn open(session: &mut Session, cfg: StageConfig) -> Result<Self, Box<OpenError>> {
         let exists = cfg.exists;
         let bare = move |error: StageError| Box::new(OpenError { error, cleanup: Ledger::new(exists) });
+        let root = resolve_root(session, &cfg).map_err(bare)?;
         let lease = VmLease::acquire(&cfg.state_dir, cfg.window, &cfg.holder).map_err(|e| bare(e.into()))?;
         let journal = Journal::create(&cfg.state_dir, &cfg.journal_name).map_err(bare)?;
         let ledger = Ledger::journaled(journal, cfg.exists);
         let claimed_end = cfg.window.base();
         let mut stage = Stage {
-            root: StageRoot::Macro,
+            root,
             cfg,
             _lease: lease,
             ledger,
@@ -157,18 +158,8 @@ impl Stage {
     }
 
     fn setup(&mut self, session: &mut Session) -> Result<(), StageError> {
-        self.root = match &self.cfg.root {
-            Some(p) => StageRoot::Literal(p.clone()),
-            None => StageRoot::from_ptd(&session.eval(fnc::PTD)?.into_text(fnc::PTD)?),
-        };
-        if self.root == StageRoot::Macro {
-            for c in cmd::bind_root() {
-                session.cmd(&c)?;
-            }
-        }
-        let ours: Vec<Macro> = Macro::ALL.iter().copied().filter(|m| *m != Macro::Root).collect();
-        self.ledger.push(Undo::ClearMacros(ours.iter().map(|m| m.name()).collect()))?;
-        session.cmd(&cmd::global(&ours))?;
+        self.ledger.push(Undo::ClearMacros(Macro::ALL.iter().map(|m| m.name()).collect()))?;
+        session.cmd(&cmd::global(Macro::ALL))?;
         transfer::ensure_root(session, &self.root)?;
         if let Some(sub) = self.cfg.subdir.clone() {
             let ledger = &mut self.ledger;
@@ -230,7 +221,7 @@ impl Stage {
         session.cmd(&cmd::data_save_binary(&unpack, &script, false))?;
         session.cmd(&cmd::rm(&tmp))?;
 
-        session.cmd(&cmd::bind_path(Macro::Snap, &dir))?;
+        session.macro_set(&Macro::Snap.name(), &dir.text())?;
         let t1 = Instant::now();
         let (outcome, polls) = self.execute(session, &unpack, UNPACK_TIMEOUT)?;
         let unpack_time = t1.elapsed();
@@ -261,12 +252,12 @@ impl Stage {
             let out = self.path(&format!("out-{token}"))?;
             let ledger = &mut self.ledger;
             transfer::ensure_dir(session, &out, |p| ledger.push(Undo::RemoveDir(p.clone())))?;
-            session.cmd(&cmd::bind_path(Macro::Out, &out))?;
+            session.macro_set(&Macro::Out.name(), &out.text())?;
             Some(out)
         } else {
             None
         };
-        session.cmd(&cmd::bind_path(Macro::Snap, &snap.dir))?;
+        session.macro_set(&Macro::Snap.name(), &snap.dir.text())?;
         session.macro_set(&Macro::Entry.name(), req.entry.as_str())?;
         session.macro_set(&Macro::Args.name(), &args)?;
         let runner = snap.dir.join(RUNNER_PATH)?;
@@ -473,6 +464,15 @@ impl Stage {
             }
             return Ok((outcome, watch.stats));
         }
+    }
+}
+
+/// `cfg.root`, or `<OS.PTD()>\t32ctl`. A temp directory that is not ASCII-safe is a
+/// `StageError::Path`; the caller asks for an explicit root.
+fn resolve_root(session: &mut Session, cfg: &StageConfig) -> Result<StageRoot, StageError> {
+    match &cfg.root {
+        Some(p) => Ok(StageRoot::new(p.clone())),
+        None => Ok(StageRoot::from_ptd(&session.eval(fnc::PTD)?.into_text(fnc::PTD)?)?),
     }
 }
 

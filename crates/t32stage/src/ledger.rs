@@ -139,10 +139,7 @@ impl Undo {
 
     /// Journal line, tab separated. `None` for undos that stay in memory.
     fn to_line(&self) -> Option<String> {
-        let path = |p: &StagePath| match p.root() {
-            StageRoot::Literal(r) => format!("L{}\t{}", r.as_str(), p.rel()),
-            StageRoot::Macro => format!("M\t{}", p.rel()),
-        };
+        let path = |p: &StagePath| format!("L{}\t{}", p.root().as_path().as_str(), p.rel());
         match self {
             Undo::RemoveFile(p) => Some(format!("rm-file\t{}", path(p))),
             Undo::RemoveDir(p) => Some(format!("rm-dir\t{}", path(p))),
@@ -158,11 +155,7 @@ impl Undo {
     fn from_line(line: &str) -> Option<Undo> {
         let fields: Vec<&str> = line.split('\t').collect();
         let path = |root: &str, rel: &str| -> Option<StagePath> {
-            let root = match root.strip_prefix('L') {
-                Some(lit) => StageRoot::Literal(PvPath::parse(lit).ok()?),
-                None if root == "M" => StageRoot::Macro,
-                None => return None,
-            };
+            let root = StageRoot::new(PvPath::parse(root.strip_prefix('L')?).ok()?);
             Some(root.path(RelPath::new(rel).ok()?))
         };
         match fields.as_slice() {
@@ -444,7 +437,6 @@ pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsF
         let text = fs::read_to_string(&path).unwrap_or_default();
         let journal = Journal { path: path.clone(), file };
         let mut ledger = Ledger { pending: Vec::new(), journal: Some(journal), exists };
-        let mut needs_root = false;
         for line in text.lines().filter(|l| !l.is_empty()) {
             match Undo::from_line(line) {
                 Some(undo) => match undo.left_for_a_human() {
@@ -453,22 +445,13 @@ pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsF
                         outcome: CleanupOutcome::NotAttempted(why.into()),
                         manual: undo.manual_hint(),
                     }),
-                    None => {
-                        needs_root |=
-                            matches!(&undo, Undo::RemoveFile(p) | Undo::RemoveDir(p) if *p.root() == StageRoot::Macro);
-                        ledger.pending.push(undo);
-                    }
+                    None => ledger.pending.push(undo),
                 },
                 None => report.items.push(CleanupItem {
                     what: format!("journal line {line:?} in {}", path.display()),
                     outcome: CleanupOutcome::NotAttempted("unreadable".into()),
                     manual: None,
                 }),
-            }
-        }
-        if needs_root && session.health() == Health::Live {
-            for c in cmd::bind_root() {
-                let _ = session.cmd(&c);
             }
         }
         report.extend(ledger.run(session));

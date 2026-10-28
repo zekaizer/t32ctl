@@ -56,7 +56,7 @@ fn closed(mut s: Script, unwind: bool) -> Script {
     if unwind {
         s = idle(s, 0);
     }
-    for m in Macro::ALL.iter().filter(|m| **m != Macro::Root) {
+    for m in Macro::ALL {
         s = set(s, *m, "");
     }
     s
@@ -102,13 +102,25 @@ fn a_failed_open_hands_its_cleanup_back_without_running_it() {
 }
 
 #[test]
+fn a_temp_dir_that_is_not_ascii_safe_needs_an_explicit_root() {
+    let s = Script::new().attach().expect_fn("OS.PTD()").reply_text("C:\\Users\\김\\AppData\\Local\\Temp");
+    let mut session = session_with(vec![Ok(s)], |_| {});
+    let cfg = config("stage-open-non-ascii");
+    let state_dir = cfg.state_dir.clone();
+    let failed = Stage::open(&mut session, cfg).unwrap_err();
+    assert!(matches!(failed.error, StageError::Path(PathError::Char { bad: '김', .. })), "{failed}");
+    assert!(failed.cleanup.pending().is_empty());
+    let _ = std::fs::remove_dir_all(state_dir);
+}
+
+#[test]
 fn a_cached_snapshot_costs_one_call_and_a_run_finishes_by_token() {
     let b = bundle();
     let dir = format!("C:\\T\\t32ctl\\{}", b.key());
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "a 0x10");
     s = executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "\"0\"", "7.");
@@ -142,7 +154,7 @@ fn an_operator_script_started_after_our_run_is_never_unwound() {
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "");
     s = executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "0", "");
@@ -173,7 +185,7 @@ fn started(entry: &str) -> (Bundle, String, Script) {
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, entry);
     s = set(s, Macro::Args, "");
     (b, dir, s)
@@ -236,7 +248,7 @@ fn a_busy_stack_is_refused_and_a_dialog_is_stopped_and_unwound() {
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 2);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "");
     s = set(s, Macro::Token, "tok");
@@ -272,7 +284,7 @@ fn a_script_that_outlives_stop_and_end_is_an_unwind_failure_not_busy() {
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "");
     s = set(s, Macro::Token, "tok");
@@ -328,7 +340,7 @@ fn an_uncached_snapshot_is_uploaded_inflated_unpacked_and_verified() {
         ))
         .reply_ok();
     s = s.expect_cmd(&format!("RM \"{tmp}\"")).reply_ok();
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = executed(s, &format!("{dir}\\.t32ctl\\unpack.cmm"), "0", "");
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = s.expect_fn(&format!("OS.FILE.readable(\"{tmp}\")")).reply_bool(false);

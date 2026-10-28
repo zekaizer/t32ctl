@@ -292,7 +292,7 @@ fn the_chunk_ladder_calls_its_own_maximum_a_client_limit_and_a_refusal_not() {
 #[test]
 fn a_corrupt_gzip_powerview_loads_counts_as_accepted() {
     use super::storage::{corrupt_token, unzip_accepted};
-    let f = t32stage::StageRoot::from_ptd("C:\\T").path(t32stage::RelPath::new("c.gz").unwrap());
+    let f = t32stage::StageRoot::from_ptd("C:\\T").unwrap().path(t32stage::RelPath::new("c.gz").unwrap());
     let load = "Data.LOAD.Binary \"C:\\T\\t32ctl\\c.gz\" VM:0x02000000 /UNZIP";
     let s = Script::new().attach().expect_cmd(load).reply_ok().expect_cmd(load).reply_error(90, "bad gzip");
     let mut session = connect(vec![Ok(s)]);
@@ -315,9 +315,6 @@ fn the_macro_probe_falls_back_to_the_ampersand_spelling_and_keeps_it() {
     for _ in 0..14 {
         s = s.expect(t32rcl::testkit::Expect::Any).reply_exp_error(1, "refused");
     }
-    s = s.expect_req(set(a, "v1")).reply_macro("");
-    s = s.expect_cmd("&t32ctl_probe_b=\"[&t32ctl_probe_a]\"").reply_ok().expect_req(get(b)).reply_macro("[v1]");
-    s = s.expect_cmd("&t32ctl_probe_b=OS.PTD()").reply_ok().expect_req(get(b)).reply_macro("C:\\T");
     s = s.expect_req(set(a, "")).reply_macro("").expect_req(set(b, "")).reply_macro("");
     let mut session = connect(vec![Ok(s)]);
     let mut env = test_env("probe-macro-amp");
@@ -331,8 +328,7 @@ fn the_macro_probe_falls_back_to_the_ampersand_spelling_and_keeps_it() {
 
 #[test]
 fn tempdir_picks_the_literal_root_and_the_first_exists_function_that_answers() {
-    let lit = "C:\\T\\t32ctl\\probe-r1-lit";
-    let mac = "&t32ctl_root\\probe-r1-mac";
+    let lit = "C:\\T\\t32ctl\\probe-r1-ptd";
     let yes_no = |s: Script, expr: &str, v: bool| s.expect_fn(expr).reply_bool(v);
     let done = |s: Script, cmd: &str| s.expect_cmd(cmd).reply_ok();
     let save = |s: Script, file: &str| done(s, &format!("Data.SAVE.Binary \"{file}\" VM:0x01000000++0x00000000"));
@@ -346,17 +342,9 @@ fn tempdir_picks_the_literal_root_and_the_first_exists_function_that_answers() {
     };
     let mut s = reads(Script::new().attach().expect_fn("OS.PTD()").reply_text("C:\\T"));
     s = s.expect_req(Request::MemWrite { access: "VM".into(), addr: 0x0100_0000, data: vec![0x5A] }).reply_ok();
-    for (root, dir) in [("C:\\T\\t32ctl", lit), ("&t32ctl_root", mac)] {
-        if root.starts_with('&') {
-            s = done(done(s, "GLOBAL &t32ctl_root"), "&t32ctl_root=OS.PTD()+\"\\t32ctl\"");
-            s = s.expect_req(Request::MacroGet { name: "t32ctl_root".into() }).reply_macro("C:\\T\\t32ctl");
-        }
-        s = done(yes_no(s, &format!("OS.DIR(\"{root}\")"), true), &format!("MKDIR \"{dir}\""));
-        s = save(yes_no(s, &format!("OS.DIR(\"{dir}\")"), true), &format!("{dir}\\one.bin"));
-        s = s.expect_fn(&format!("OS.FILE.SIZE(\"{dir}\\one.bin\")")).reply_decimal(1);
-    }
-    s = done(yes_no(s, "OS.DIR(\"&t32ctl_root\")", true), "EVAL OS.DIR(\"&t32ctl_root\")");
-    s = s.expect_req(Request::EvalString).reply_string("TRUE()");
+    s = done(yes_no(s, "OS.DIR(\"C:\\T\\t32ctl\")", true), &format!("MKDIR \"{lit}\""));
+    s = save(yes_no(s, &format!("OS.DIR(\"{lit}\")"), true), &format!("{lit}\\one.bin"));
+    s = s.expect_fn(&format!("OS.FILE.SIZE(\"{lit}\\one.bin\")")).reply_decimal(1);
     s = yes_no(
         yes_no(s, &format!("OS.FILE.readable(\"{lit}\\one.bin\")"), true),
         &format!("OS.FILE.readable(\"{lit}\\missing.bin\")"),
@@ -378,8 +366,6 @@ fn tempdir_picks_the_literal_root_and_the_first_exists_function_that_answers() {
         format!("OS.DIR(\"{lit}\\with space\")"),
         format!("OS.DIR(\"{lit}\\a\\b\")"),
         format!("OS.DIR(\"{lit}\\a\")"),
-        format!("OS.FILE.readable(\"{mac}\\one.bin\")"),
-        format!("OS.DIR(\"{mac}\")"),
         format!("OS.FILE.readable(\"{lit}\\one.bin\")"),
         format!("OS.DIR(\"{lit}\")"),
     ] {
@@ -395,9 +381,20 @@ fn tempdir_picks_the_literal_root_and_the_first_exists_function_that_answers() {
     let o = &r.outcomes[0];
     assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
     let text = |k: &str| o.lookup(k).cloned();
-    assert_eq!(text(crate::outcome::key::ROOT), Some(Value::Text("literal".into())));
+    assert_eq!(text(crate::outcome::key::ROOT), Some(Value::Text("ptd".into())));
     assert_eq!(text(crate::outcome::key::EXISTS), Some(Value::Text("OS.FILE.readable".into())));
-    assert_eq!(text("macro_fn"), Some(Value::Text("ok".into())));
     assert_eq!(env.learned.exists, Some(t32stage::ExistsFn::OsFileReadable));
     assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+}
+
+#[test]
+fn tempdir_asks_for_a_stage_root_when_the_temp_dir_is_not_ascii_safe() {
+    let s = Script::new().attach().expect_fn("OS.PTD()").reply_text("C:\\Users\\김\\AppData\\Local\\Temp");
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("probe-tempdir-non-ascii");
+    let r = run(&mut env, &mut session, &[ProbeId::Tempdir.def()]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Fail);
+    assert!(o.error.as_ref().is_some_and(|e| e.message.contains("--stage-root")), "{o:?}");
+    assert_eq!(o.lookup("ptd"), Some(&Value::Text("non-ascii".into())));
 }

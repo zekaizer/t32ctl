@@ -69,10 +69,8 @@ pub fn get_file(session: &mut Session, src: &StagePath, region: &VmRegion, len: 
 
 /// Create the root itself if missing. The root is shared and never removed.
 pub fn ensure_root(session: &mut Session, root: &StageRoot) -> Result<(), StageError> {
-    let (text, quoted) = match root {
-        StageRoot::Literal(p) => (p.as_str().to_string(), format!("\"{}\"", p.as_str())),
-        StageRoot::Macro => (crate::macros::Macro::Root.amp(), format!("\"{}\"", crate::macros::Macro::Root.amp())),
-    };
+    let text = root.as_path().as_str().to_string();
+    let quoted = format!("\"{text}\"");
     let expr = format!("OS.DIR({quoted})");
     if !session.eval(&expr)?.into_bool(&expr)? {
         session.cmd(&format!("MKDIR {quoted}"))?;
@@ -122,7 +120,7 @@ mod tests {
 
     #[test]
     fn put_file_writes_saves_and_checks_the_size() {
-        let root = StageRoot::from_ptd("C:\\T");
+        let root = StageRoot::from_ptd("C:\\T").unwrap();
         let dest = root.path(RelPath::new("a.bin").unwrap());
         let region = VmRegion::new(0x0100_0000, std::num::NonZeroU32::new(4096).unwrap()).unwrap();
         let s = Script::new()
@@ -142,7 +140,7 @@ mod tests {
 
     #[test]
     fn ensure_dir_registers_before_each_missing_level() {
-        let root = StageRoot::from_ptd("C:\\T");
+        let root = StageRoot::from_ptd("C:\\T").unwrap();
         let dir = root.path(RelPath::new("a/b").unwrap());
         let s = Script::new()
             .attach()
@@ -163,7 +161,7 @@ mod tests {
 
     #[test]
     fn a_refused_registration_stops_ensure_dir_before_its_mkdir() {
-        let dir = StageRoot::from_ptd("C:\\T").path(RelPath::new("a/b").unwrap());
+        let dir = StageRoot::from_ptd("C:\\T").unwrap().path(RelPath::new("a/b").unwrap());
         let s = Script::new().attach().expect_fn("OS.DIR(\"C:\\T\\t32ctl\\a\")").reply_bool(false);
         let journal_full =
             |_: &StagePath| Err(StageError::Journal { path: "j".into(), source: std::io::Error::other("disk full") });

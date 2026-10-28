@@ -259,7 +259,7 @@ fn a_deadline_inside_stage_open_is_cleaned_up_on_the_revived_connection() {
         .expect(Expect::CommandStarting("GLOBAL &t32ctl_snap".into()))
         .silence(Duration::from_secs(6));
     let mut second = Script::new().attach().expect_fn("TRUE()").reply_bool(true);
-    for m in Macro::ALL.iter().filter(|m| **m != Macro::Root) {
+    for m in Macro::ALL {
         second = second.expect_req(Request::MacroSet { name: m.text().into(), value: String::new() }).reply_macro("");
     }
     let second = cleared(second).expect_fn("TRUE()").reply_bool(true);

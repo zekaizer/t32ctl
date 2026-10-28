@@ -10,7 +10,7 @@ use crate::{
 };
 
 fn root() -> StageRoot {
-    StageRoot::from_ptd("C:\\T")
+    StageRoot::from_ptd("C:\\T").unwrap()
 }
 
 fn file(rel: &str) -> StagePath {
@@ -121,12 +121,10 @@ fn a_crashed_unwind_is_reported_not_executed_on_replay() {
     let dir = temp_dir("journal-unwind");
     let mut ledger = Ledger::journaled(Journal::create(&dir, "crashed").unwrap(), ExistsFn::OsFileReadable);
     ledger.push(Undo::UnwindPractice).unwrap();
-    ledger.push(Undo::RemoveDir(StageRoot::Macro.path(RelPath::new("probe-1").unwrap()))).unwrap();
+    ledger.push(Undo::RemoveDir(file("probe-1"))).unwrap();
     drop(ledger);
 
-    let s = Script::new().attach().expect_cmd("GLOBAL &t32ctl_root").reply_ok();
-    let s = s.expect_cmd("&t32ctl_root=OS.PTD()+\"\\t32ctl\"").reply_ok();
-    let s = s.expect_fn("OS.DIR(\"&t32ctl_root\\probe-1\")").reply_bool(false);
+    let s = Script::new().attach().expect_fn("OS.DIR(\"C:\\T\\t32ctl\\probe-1\")").reply_bool(false);
     let report = replay_leftovers(&mut session(s), &dir, ExistsFn::OsFileReadable);
     let labels: Vec<_> = report.items.iter().map(|i| i.outcome.label()).collect();
     assert!(labels[0].starts_with("not-attempted"), "{labels:?}");
@@ -163,9 +161,18 @@ fn a_withdrawn_unwind_leaves_memory_and_the_journal() {
 }
 
 #[test]
-fn manual_commands_are_typeable_in_both_root_modes() {
-    let mac = StageRoot::Macro.path(RelPath::new("probe-1/x y.bin").unwrap());
-    assert_eq!(Undo::RemoveFile(mac.clone()).manual_hint().as_deref(), Some("RM \"&t32ctl_root\\probe-1\\x y.bin\""));
-    assert_eq!(Undo::RemoveFile(file("x.bin")).manual_hint().as_deref(), Some("RM \"C:\\T\\t32ctl\\x.bin\""));
-    assert_eq!(mac.to_string(), "<OS.PTD()>\\t32ctl\\probe-1\\x y.bin", "descriptions stay readable");
+fn manual_commands_are_typeable() {
+    assert_eq!(Undo::RemoveFile(file("x y.bin")).manual_hint().as_deref(), Some("RM \"C:\\T\\t32ctl\\x y.bin\""));
+}
+
+#[test]
+fn a_macro_root_line_from_an_older_build_is_reported_not_replayed() {
+    let dir = temp_dir("journal-macro-root");
+    let journal = dir.join("journal");
+    fs::create_dir_all(&journal).unwrap();
+    fs::write(journal.join("old.undo"), "rm-dir\tM\tprobe-1\n").unwrap();
+    let report = replay_leftovers(&mut session(Script::new().attach()), &dir, ExistsFn::OsFileReadable);
+    assert_eq!(report.items.len(), 1, "{report:?}");
+    assert_eq!(report.items[0].outcome, CleanupOutcome::NotAttempted("unreadable".into()));
+    let _ = fs::remove_dir_all(dir);
 }
