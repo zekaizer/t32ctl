@@ -318,7 +318,7 @@ pub(crate) fn hs_save() -> Case {
 }
 pub(crate) fn hs_open() -> Case {
     let body = "@a\nOPEN #1 \"{S}\\hs-open.txt\" /Create\nWRITE #1 \"x\"\n@h\nSTOP\nCLOSE #1\n@z\nENDDO";
-    case("hs-open", body, Expect::HaltAfter("h"), 10).outputs(&["hs-open.txt"])
+    case("hs-open", body, Expect::HaltAfter("h"), 10).outputs(&["hs-open.txt"]).keeps_open()
 }
 pub(crate) fn hs_glob() -> Case {
     let body = "@a\nGLOBAL &{q}_hg\n&{q}_hg=\"hg-{run}\"\n@h\nSTOP\n@z\nENDDO";
@@ -457,6 +457,8 @@ fn script_halt_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
         let exists = ctx.exists_fn();
         let gone = !ctx.session.eval(&exists.call(&txt))?.into_bool(exists.name())?;
         open_closed = if removed && gone { "yes" } else { "no" }.to_string();
+        let closed = soft(ctx.session.cmd("CLOSE #1"))?.is_some();
+        ctx.text("open_close", if closed { "ok" } else { "refused" });
         finished.push(rec);
     }
     ctx.text("open_closed", open_closed);

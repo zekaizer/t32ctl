@@ -36,14 +36,16 @@ fn marker(s: Script, id: &str, m: &str, v: bool) -> Script {
     readable(s, TAG, &format!("{id}-{m}.bin"), v)
 }
 
-/// A case that wrote `a` and `z`, then halted: three held samples, diagnostics, one `END`.
-fn halted_after_z(s: Script, case: &Case) -> Script {
+/// A case that wrote `a` and `z`, then halted: three held samples, diagnostics, one `END`, a
+/// `CLOSE` of each buffer it opens.
+fn halted_after_z(s: Script, case: &Case, buffers: &[u32]) -> Script {
     let id = case.id.as_str();
     let s = started(staged(s, TAG, case, ScriptOut::Off), TAG, case);
     let s = marker(marker(sampled(s, 0, 1), id, "a", true), id, "z", true);
     let s = diagnosed(sampled(sampled(s, 0, 1), 0, 1), "unknown command", "#err");
     let s = s.expect_fn(DEPTH).reply_decimal(1).expect_fn(DEPTH).reply_decimal(1);
     let s = s.expect_cmd("END").reply_ok().expect_fn(DEPTH).reply_decimal(0);
+    let s = buffers.iter().fold(s, |s, n| s.expect_cmd(&format!("CLOSE #{n}")).reply_ok());
     marker(s, id, "v", false)
 }
 
@@ -102,8 +104,8 @@ fn script_lab_passes_on_the_file_oracle_alone() {
         s = s.reply_ok();
     }
     let (c1, c2) = (c1(), c2());
-    s = halted_after_z(s, &c1).expect_req(vm_read(R0, 0x100)).reply_mem(&[0xEE; 0x100]);
-    s = readable(halted_after_z(s, &c2), TAG, "c2-w.txt", false);
+    s = halted_after_z(s, &c1, &[]).expect_req(vm_read(R0, 0x100)).reply_mem(&[0xEE; 0x100]);
+    s = readable(halted_after_z(s, &c2, &[8]), TAG, "c2-w.txt", false);
     let mut cases = vec![o0, c1, c2];
     for k in 1..=20 {
         let c = w300(k);
@@ -231,6 +233,7 @@ fn script_halt_records_t32_stop_status_1() {
     s = ended_by_finish(halted_after_h(s, &open), "hs-open", &["z"]);
     let txt = format!("{}\\hs-open.txt", crate::probes::lab::lab_tests::dir(HALT));
     s = readable(s.expect_cmd(&format!("RM \"{txt}\"")).reply_ok(), HALT, "hs-open.txt", false);
+    s = s.expect_cmd("CLOSE #1").reply_error(2, "not open");
     s = ended_by_finish(halted_after_h(s, &glob), "hs-glob", &["z"]);
     s = mark(mark(sampled(begun(s, &read), 0, 0), "hs-read", "a", true), "hs-read", "z", true);
     s = mark(s.expect_fn(DEPTH).reply_decimal(0), "hs-read", "v", true);
@@ -261,6 +264,7 @@ fn script_halt_records_t32_stop_status_1() {
         ("unwind", "done"),
         ("stop_save", "n/a"),
         ("open_closed", "yes"),
+        ("open_close", "refused"),
         ("glob_end", "kept"),
     ] {
         assert_eq!(o.lookup(k), Some(&Value::Text(v.into())), "{k}");

@@ -448,3 +448,35 @@ fn workdir_registers_the_removal_before_mkdir() {
     assert!(o.error.as_ref().is_some_and(|e| e.message.contains("work directory already exists")), "{o:?}");
     assert!(o.cleanup.is_empty(), "an existing directory is never registered: {:?}", o.cleanup);
 }
+
+fn opens_a_file() -> Case {
+    let body = "@a\nOPEN #1 \"{S}\\t2.txt\" /Create\n@h\nSTOP\nCLOSE #1\n@z\nENDDO";
+    Case::new("t2", body, Expect::HaltAfter("h"), Duration::from_secs(5)).outputs(&["t2.txt"])
+}
+
+fn halts_with_a_file_open(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+    let (mut lab, _) = Lab::open(ctx, "lab", LabSizes::default())?;
+    lab.run(ctx, &opens_a_file())?;
+    lab.close(ctx)
+}
+
+#[test]
+fn lab_closes_the_buffers_of_a_script_it_ended() {
+    let case = opens_a_file();
+    let mark = |s: Script, m: &str, v: bool| readable(s, "lab", &format!("t2-{m}.bin"), v);
+    let s = started(staged(opened(Script::new().attach(), "lab"), "lab", &case, ScriptOut::Off), "lab", &case);
+    let s = mark(mark(mark(sampled(s, 0, 1), "a", true), "h", true), "z", false);
+    let s = mark(sampled(mark(sampled(s, 0, 1), "z", false), 0, 1), "z", false);
+    let s = crate::probes::scriptlab::scriptlab_tests::diagnosed(s, "stopped", "");
+    let s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1).expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
+    let s = s.expect_cmd("END").reply_ok().expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
+    let s = mark(s.expect_cmd("CLOSE #1").reply_error(2, "not open"), "z", false);
+    let s = files_removed(listed(s, "lab", &[]), "lab", &case, ScriptOut::Off, &[]);
+    let mut session = connect(vec![Ok(closed_down(s, "lab"))]);
+    let mut env = test_env("lab-close-buffers");
+    let r = run(&mut env, &mut session, &[leak(halts_with_a_file_open)]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
+    assert_eq!(o.lookup("close.t2"), Some(&Value::Text("1:refused".into())));
+    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+}

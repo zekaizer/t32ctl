@@ -118,6 +118,8 @@ pub(crate) struct Case {
     pub dirs: Vec<String>,
     /// Only for the case that measures the `#8` value channel itself.
     pub allow_oracle_buffer: bool,
+    /// The case measures what `END` leaves of its own `OPEN` buffers; the Lab does not close them.
+    pub keeps_open: bool,
 }
 
 impl Case {
@@ -132,6 +134,7 @@ impl Case {
             outputs: Vec::new(),
             dirs: Vec::new(),
             allow_oracle_buffer: false,
+            keeps_open: false,
         }
     }
 
@@ -142,6 +145,11 @@ impl Case {
 
     pub fn oracle_buffer(mut self) -> Self {
         self.allow_oracle_buffer = true;
+        self
+    }
+
+    pub fn keeps_open(mut self) -> Self {
+        self.keeps_open = true;
         self
     }
 
@@ -238,6 +246,8 @@ pub(crate) struct Rendered {
     pub markers: Vec<String>,
     pub asks: Vec<String>,
     pub puts: Vec<u8>,
+    /// `OPEN` buffer numbers of the script and its sub-scripts.
+    pub buffers: BTreeSet<u32>,
 }
 
 impl Rendered {
@@ -349,8 +359,16 @@ pub(crate) fn render(case: &Case, f: &Fill, out: ScriptOut) -> Result<Rendered, 
             other => return Err(format!("{id}: unknown directive @{other}")),
         }
     }
+    r.buffers = lines.iter().filter_map(|l| open_buffer(l)).collect();
     r.text = fill_text(&(lines.join("\n") + "\n"), f, id).map_err(|e| format!("{id}: {e}"))?;
     Ok(r)
+}
+
+/// `n` of an `OPEN #<n> ...` line (practice_ref `OPEN`).
+fn open_buffer(line: &str) -> Option<u32> {
+    let rest = line.trim_start().get(..6).filter(|w| w.eq_ignore_ascii_case("OPEN #"))?;
+    let digits: String = line.trim_start()[rest.len()..].chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
 /// The two oracle files of one `@ask`.
@@ -688,6 +706,8 @@ pub(crate) struct Run {
     pub ka: u32,
     pub ending: Option<(Ending, Duration)>,
     pub diags: Vec<Diag>,
+    /// `Lab::ends` when the script started.
+    ends0: u32,
 }
 
 /// One case as `measure case.<id>` records it.
@@ -790,6 +810,8 @@ pub(crate) struct Lab {
     subs: BTreeMap<String, Rendered>,
     /// A script this Lab started may still be on the stack.
     ours_on_stack: bool,
+    /// `END`s sent so far.
+    ends: u32,
     pub cut: Vec<String>,
     pub records: Vec<CaseRecord>,
 }
@@ -857,6 +879,7 @@ impl Lab {
             staged: BTreeSet::new(),
             subs: BTreeMap::new(),
             ours_on_stack: false,
+            ends: 0,
             cut: Vec::new(),
             records: Vec::new(),
         };
@@ -1020,6 +1043,7 @@ impl Lab {
         sub.markers.extend(rendered.markers);
         sub.asks.extend(rendered.asks);
         sub.puts.extend(rendered.puts);
+        sub.buffers.extend(rendered.buffers);
         Ok(())
     }
 
@@ -1049,6 +1073,10 @@ impl Lab {
             }
             rendered.asks.extend(sub.asks);
             rendered.puts.extend(sub.puts);
+            rendered.buffers.extend(sub.buffers);
+        }
+        if case.keeps_open {
+            rendered.buffers.clear();
         }
         let script = self.path(&script_name)?;
         if soft(transfer::put_file(ctx.session, &self.script, rendered.text.as_bytes(), &script))?.is_none() {
@@ -1109,6 +1137,7 @@ impl Lab {
             ka,
             ending: None,
             diags: Vec::new(),
+            ends0: self.ends,
         }))
     }
 
@@ -1200,9 +1229,24 @@ impl Lab {
             if stack_depth(ctx)? == 0 {
                 return Ok(0);
             }
+            self.ends += 1;
             soft(ctx.session.cmd(cmd::END))?;
         }
         stack_depth(ctx)
+    }
+
+    /// `CLOSE` of every buffer the script opens, once an `END` of this Lab cut it short: whether
+    /// `END` closes them is what script-halt measures. Each answer only as `measure close.<id>`.
+    fn release(&mut self, ctx: &mut ProbeCtx<'_>, run: &Run) -> Result<(), ProbeFail> {
+        let mut answers = Vec::new();
+        for n in &run.rendered.buffers {
+            let ok = soft(ctx.session.cmd(&format!("CLOSE #{n}")))?.is_some();
+            answers.push(format!("{n}:{}", if ok { "ok" } else { "refused" }));
+        }
+        if !answers.is_empty() {
+            ctx.measure(&format!("close.{}", run.id), Value::Text(answers.join(",")));
+        }
+        Ok(())
     }
 
     /// The `ERROR.*` reads of 3.7, each refused one recorded as such, as `measure diag.<label>`.
@@ -1241,6 +1285,9 @@ impl Lab {
         if depth == 0 {
             ctx.ledger.withdraw_unwind()?;
             self.ours_on_stack = false;
+            if self.ends > run.ends0 {
+                self.release(ctx, &run)?;
+            }
         }
         run.watch.close_dip(ctx.session.now());
         for m in run.rendered.markers.clone() {
