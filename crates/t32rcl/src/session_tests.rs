@@ -263,6 +263,24 @@ fn remote_refusals_keep_the_session_live() {
 }
 
 #[test]
+fn stop_practice_returns_status_1_as_ok() {
+    let mut s = session(
+        Script::new()
+            .attach()
+            .expect_req(Request::Stop)
+            .reply_error(1, "")
+            .expect_req(Request::Stop)
+            .reply_ok()
+            .expect_req(Request::Stop)
+            .reply_error(2, ""),
+    );
+    assert_eq!(s.stop_practice().unwrap(), 1);
+    assert_eq!(s.stop_practice().unwrap(), 0);
+    assert_eq!(s.stop_practice().unwrap_err().remote().map(|e| e.code), Some(2));
+    assert_eq!(s.health(), Health::Live);
+}
+
+#[test]
 fn std_failed_on_a_memory_access_is_a_memory_access_refusal() {
     let mut s = session(
         Script::new()

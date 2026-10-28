@@ -233,11 +233,11 @@ impl Session {
     }
 
     /// `T32_Stop`: halt the running PRACTICE script, also out of a dialog wait. The script stays
-    /// on the PRACTICE stack; unwinding it is the caller's decision.
-    pub fn stop_practice(&mut self) -> Result<()> {
+    /// on the PRACTICE stack; unwinding it is the caller's decision. Returns the success status,
+    /// 0 or 1.
+    pub fn stop_practice(&mut self) -> Result<u8> {
         let reply = self.exchange(Op::Stop, &req::stop())?;
-        resp::status(Op::Stop, &reply)?;
-        Ok(())
+        Ok(resp::stop(&reply)?)
     }
 
     pub fn target_state(&mut self) -> Result<TargetState> {

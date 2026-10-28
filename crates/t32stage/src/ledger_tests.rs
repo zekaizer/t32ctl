@@ -161,6 +161,15 @@ fn a_withdrawn_unwind_leaves_memory_and_the_journal() {
 }
 
 #[test]
+fn unwind_proceeds_when_t32_stop_answers_status_1() {
+    let s = Script::new().attach().expect_req(Request::PracticeState).reply_state(1);
+    let s = s.expect_req(Request::Stop).reply_error(1, "");
+    let s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1).expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
+    let s = s.expect_cmd("END").reply_ok().expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
+    assert_eq!(unwind_practice(&mut session(s)).unwrap(), CleanupOutcome::Done);
+}
+
+#[test]
 fn manual_commands_are_typeable() {
     assert_eq!(Undo::RemoveFile(file("x y.bin")).manual_hint().as_deref(), Some("RM \"C:\\T\\t32ctl\\x y.bin\""));
 }
