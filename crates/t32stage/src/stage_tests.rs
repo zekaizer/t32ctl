@@ -7,6 +7,7 @@ use t32rcl::{
 use super::*;
 use crate::{
     bundle::BundleLimits,
+    testkit::{closed, executed, get, idle, opened, outputs_removed, read_back, set, started_do},
     testutil::{session_with, temp_dir},
 };
 
@@ -27,67 +28,6 @@ fn config(tag: &str) -> StageConfig {
     }
 }
 
-fn opened(s: Script) -> Script {
-    s.expect_fn("OS.PTD()")
-        .reply_text("C:\\T")
-        .expect_cmd(
-            "GLOBAL &t32ctl_snap &t32ctl_out &t32ctl_token &t32ctl_entry &t32ctl_args &t32ctl_done &t32ctl_fail \
-             &t32ctl_rc &t32ctl_msg &t32ctl_ret",
-        )
-        .reply_ok()
-        .expect_fn("OS.DIR(\"C:\\T\\t32ctl\")")
-        .reply_bool(true)
-}
-
-fn set(s: Script, m: Macro, v: &str) -> Script {
-    s.expect_req(Request::MacroSet { name: m.amp(), value: v.into() }).reply_macro("")
-}
-
-fn get(s: Script, m: Macro, v: &str) -> Script {
-    s.expect_req(Request::MacroGet { name: m.amp() }).reply_macro(v)
-}
-
-fn idle(s: Script, depth: i64) -> Script {
-    s.expect_req(Request::PracticeState).reply_state(0).expect_fn("PRACTICE.StackDepth()").reply_decimal(depth)
-}
-
-/// Close: the PRACTICE unwind finds an empty stack, then every t32ctl macro is cleared.
-fn closed(mut s: Script, unwind: bool) -> Script {
-    if unwind {
-        s = idle(s, 0);
-    }
-    for m in Macro::ALL {
-        s = set(s, *m, "");
-    }
-    s
-}
-
-/// The token, the result macros emptied, then `ERROR.RESet` and `DO`.
-fn started_do(mut s: Script, script: &str) -> Script {
-    s = set(s, Macro::Token, "tok");
-    for m in [Macro::Done, Macro::Fail, Macro::Rc, Macro::Msg, Macro::Ret] {
-        s = set(s, m, "");
-    }
-    s.expect_cmd("ERROR.RESet").reply_ok().expect_cmd(&format!("DO \"{script}\"")).reply_ok()
-}
-
-/// The `Finished` read-back: what the runner left in `fail`, `rc`, `msg` and `ret`.
-fn read_back(mut s: Script, fail: &str, rc: &str, msg: &str, ret: &str) -> Script {
-    s = get(s, Macro::Fail, fail);
-    s = get(s, Macro::Rc, rc);
-    s = get(s, Macro::Msg, msg);
-    get(s, Macro::Ret, ret)
-}
-
-/// `DO`, polls and the `Finished` read-back.
-fn executed(mut s: Script, script: &str, rc: &str, ret: &str) -> Script {
-    s = started_do(s, script);
-    s = s.expect_req(Request::PracticeState).reply_state(1);
-    s = s.expect_req(Request::PracticeState).reply_state(0);
-    s = get(s, Macro::Done, "tok").expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
-    read_back(s, "", rc, "", ret)
-}
-
 fn bundle() -> Bundle {
     let mut b = Bundle::new(BundleLimits::default());
     b.insert(RelPath::new("main.cmm").unwrap(), b"ENDDO 7.\n".to_vec()).unwrap();
@@ -96,7 +36,7 @@ fn bundle() -> Bundle {
 
 fn stage(session: &mut Session, cfg: StageConfig) -> Stage {
     let mut st = Stage::open(session, cfg).unwrap();
-    st.fixed_token = Some("tok".into());
+    st.set_token(crate::testkit::TOKEN);
     st
 }
 
@@ -700,5 +640,36 @@ fn a_run_is_timed_on_the_session_clock() {
     assert_eq!(report.outcome, RunOutcome::TimedOut { last_state: PracticeState::Running });
     assert_eq!(report.elapsed, Duration::from_millis(1200));
     assert!(st.close(&mut session).is_clean());
+    let _ = std::fs::remove_dir_all(state_dir);
+}
+
+#[test]
+fn outputs_are_archived_downloaded_and_named_below_the_output_directory() {
+    let b = bundle();
+    let files: [(&str, &[u8]); 2] = [("a.txt", b"one"), ("sub/b.bin", &[7; 600])];
+    let mut s = crate::testkit::cached(opened(Script::new().attach()), &b.key());
+    s = crate::testkit::run_started(s, &b.key(), "main.cmm", "", true, &[]);
+    s = read_back(crate::testkit::done(s), "", "", "", "");
+    s = crate::testkit::fetched(s, &files);
+    s = closed(outputs_removed(s, &files), false);
+    let mut session = session_with(vec![Ok(s)], |o| o.tuning = Tuning::new(0x3C00, 0x3C00).unwrap());
+
+    let cfg = config("stage-fetch");
+    let state_dir = cfg.state_dir.clone();
+    let mut st = stage(&mut session, cfg);
+    let snap = st.ensure_snapshot(&mut session, &b).unwrap();
+    let req = RunRequest {
+        entry: RelPath::new("main.cmm").unwrap(),
+        args: vec![],
+        timeout: Duration::from_secs(5),
+        collect_outputs: true,
+        params: vec![],
+    };
+    let report = st.run(&mut session, &snap, &req).unwrap();
+    let outputs = st.fetch_outputs(&mut session, &report).unwrap();
+    let got: Vec<(&str, &[u8])> = outputs.files.iter().map(|f| (f.name.as_str(), f.data.as_slice())).collect();
+    assert_eq!(got, files);
+    let cleanup = st.close(&mut session);
+    assert!(cleanup.is_clean(), "{cleanup:?}");
     let _ = std::fs::remove_dir_all(state_dir);
 }

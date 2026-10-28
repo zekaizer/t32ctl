@@ -24,6 +24,8 @@ mod tar;
 pub mod transfer;
 mod vm;
 
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;
 #[cfg(test)]
 mod testutil;
 

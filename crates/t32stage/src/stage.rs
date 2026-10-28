@@ -136,8 +136,8 @@ pub struct Stage {
     _lease: VmLease,
     ledger: Ledger,
     claimed_end: u32,
-    #[cfg(test)]
-    pub(crate) fixed_token: Option<String>,
+    #[cfg(any(test, feature = "testkit"))]
+    fixed_token: Option<String>,
 }
 
 impl Stage {
@@ -158,7 +158,7 @@ impl Stage {
             _lease: lease,
             ledger,
             claimed_end,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testkit"))]
             fixed_token: None,
         };
         match stage.setup(session) {
@@ -474,8 +474,15 @@ impl Stage {
         }
     }
 
+    /// Every token, run directory and upload directory of this stage uses `token`, so a scripted
+    /// conversation can name them (`testkit`).
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn set_token(&mut self, token: impl Into<String>) {
+        self.fixed_token = Some(token.into());
+    }
+
     fn token(&self) -> String {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "testkit"))]
         if let Some(t) = &self.fixed_token {
             return t.clone();
         }

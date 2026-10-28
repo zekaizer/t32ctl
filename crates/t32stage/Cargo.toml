@@ -10,6 +10,10 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Script builders for scripted stage conversations. Enable from dev-dependencies only.
+testkit = ["t32rcl/testkit"]
+
 [dependencies]
 t32rcl.workspace = true
 flate2.workspace = true
