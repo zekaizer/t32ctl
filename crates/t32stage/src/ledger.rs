@@ -299,7 +299,7 @@ pub enum CleanupOutcome {
     Failed(String),
     /// The step did not run: no connection, or a journal entry left for a human.
     NotAttempted(String),
-    /// A dead call's journal was kept for a later call: its script may still run.
+    /// Kept in the journal for a later call: a script t32ctl started may still run.
     Deferred(String),
 }
 
@@ -482,11 +482,23 @@ impl Ledger {
     /// Run every undo newest first. Never stops at a failure. A dead session gets one revive
     /// attempt (the session enforces one per poisoning); if that fails the remaining undos are
     /// `NotAttempted` and stay in the journal for the next run.
+    ///
+    /// Once an `UnwindPractice` does not end clean, the older undos of a kind the journal holds
+    /// name the files, macros and target that script may still use: none is applied. Journaled,
+    /// they stay for the replay that waits for an empty stack (one `Deferred` item); in memory,
+    /// one `NotAttempted` item names their commands. `RestoreVm` and `Revert` still run.
     pub fn run(self, session: &mut Session) -> CleanupReport {
         let Ledger { pending, journal, exists } = self;
         let mut report = CleanupReport::default();
         let mut left: Vec<String> = Vec::new();
+        let mut stuck = false;
+        let mut held: Vec<Undo> = Vec::new();
         for undo in pending.into_iter().rev() {
+            if stuck && let Some(line) = undo.to_line() {
+                left.push(line);
+                held.push(undo);
+                continue;
+            }
             let (outcome, manual) = if session.health() != Health::Live
                 && let Err(e) = session.try_revive()
             {
@@ -499,7 +511,11 @@ impl Ledger {
             {
                 left.push(line);
             }
+            stuck |= matches!(undo, Undo::UnwindPractice) && !outcome.is_clean();
             report.items.push(CleanupItem { what: undo.describe(), manual, outcome });
+        }
+        if !held.is_empty() {
+            report.items.push(held_item(&held, journal.is_some()));
         }
         if let Some(mut j) = journal {
             let result = if left.is_empty() {
@@ -524,6 +540,22 @@ impl Ledger {
         if let Some(j) = self.journal {
             let _ = j.remove();
         }
+    }
+}
+
+/// The one item for the undos `Ledger::run` held back beneath a script it could not unwind.
+fn held_item(held: &[Undo], journaled: bool) -> CleanupItem {
+    let steps = if held.len() == 1 { "step" } else { "steps" };
+    let what = format!("cleanup under the script t32ctl started ({} {steps})", held.len());
+    if journaled {
+        let why = "kept until the PRACTICE stack is empty; a later call cleans up after it";
+        return CleanupItem { what, outcome: CleanupOutcome::Deferred(why.into()), manual: None };
+    }
+    let commands: Vec<String> = held.iter().filter_map(Undo::manual_hint).collect();
+    CleanupItem {
+        what,
+        outcome: CleanupOutcome::NotAttempted("only once that script is off the stack".into()),
+        manual: (!commands.is_empty()).then(|| commands.join("\n")),
     }
 }
 

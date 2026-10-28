@@ -554,7 +554,7 @@ fn our_script_left_on_the_stack_after_cleanup_is_residue_and_overrides_exit_0() 
         s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1).expect_cmd("END").reply_ok();
     }
     s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
-    let s = stopped_header(tk::closed(tk::outputs_removed(s, &[]), false));
+    let s = stopped_header(s);
     let out = call("t32ctl run proc attach", &deps(w.env(), vec![Ok(s)]));
     let end = "in PowerView type: END (END also closes every dialog and OPEN file)";
     assert_eq!(
@@ -562,6 +562,8 @@ fn our_script_left_on_the_stack_after_cleanup_is_residue_and_overrides_exit_0() 
         format!(
             "stopped core=0 pc=0x40083e10\n\
              ! residue: unwind PRACTICE stack; {end}\n\
+             ! cleanup under the script t32ctl started (2 steps): deferred: kept until the PRACTICE stack is \
+             empty; a later call cleans up after it\n\
              proc attach (profile={}, 4 files, cached)\n\
              result: finished rc=0 after 0ms\n\
              outputs: none\n\

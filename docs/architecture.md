@@ -83,7 +83,9 @@ command. For the same reason the client sets every macro a script reads over EXP
 
 Every side effect registers its undo before it happens. Undos are a closed enum, not closures,
 because a cleanup that cannot run must still print the exact command to type into PowerView.
-The ledger runs newest first, never stops at a failure, and revives a dead connection once.
+The ledger runs newest first, never stops at a failure, and revives a dead connection once. Once
+its own unwind fails, the journaled undos older than it stay in the journal unapplied: they name
+what the script it could not end may still use.
 Undos that name PowerView files, directories, macros or the PRACTICE stack are written to a
 locked journal on the WSL side before they are registered; the next run replays journals left
 by dead processes. A journal that names the PRACTICE stack replays only while PowerView is idle

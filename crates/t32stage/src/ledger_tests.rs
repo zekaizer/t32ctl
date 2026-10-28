@@ -189,6 +189,54 @@ fn a_deferred_journal_is_replayed_by_a_later_call_once_the_script_is_gone() {
     let _ = fs::remove_dir_all(dir);
 }
 
+/// `unwind_practice` that finds an idle stack of depth 1 and leaves it there.
+fn unwind_stuck(s: Script) -> Script {
+    let mut s = practice(s, 0, 1);
+    for _ in 0..3 {
+        s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1).expect_cmd("END").reply_ok();
+    }
+    s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1)
+}
+
+#[test]
+fn undos_beneath_a_script_that_was_not_unwound_stay_journaled_for_a_later_call() {
+    let dir = temp_dir("journal-unwind-stuck");
+    let mut ledger = Ledger::journaled(Journal::create(&dir, "run").unwrap(), ExistsFn::OsFileReadable);
+    ledger.push(Undo::RemoveRunDir(file("out-tok"))).unwrap();
+    ledger.push(Undo::ClearMacros(vec![MacroName::new("t32ctl_p_image").unwrap()])).unwrap();
+    ledger.push(revert("area", &["AREA.Delete T32PQ1A2B"])).unwrap();
+    ledger.push(Undo::UnwindPractice).unwrap();
+    let s = unwind_stuck(Script::new().attach()).expect_cmd("AREA.Delete T32PQ1A2B").reply_ok();
+    let report = ledger.run(&mut session(s));
+
+    let labels: Vec<_> = report.items.iter().map(|i| i.outcome.label()).collect();
+    assert!(labels[0].starts_with("failed: "), "{report:?}");
+    assert_eq!(labels[1], "done", "{report:?}");
+    assert_eq!(report.items.len(), 3, "{report:?}");
+    let held = &report.items[2];
+    assert_eq!(held.what, "cleanup under the script t32ctl started (2 steps)");
+    assert!(matches!(held.outcome, CleanupOutcome::Deferred(_)), "{held:?}");
+    assert_eq!(held.manual, None);
+    assert_eq!(
+        fs::read_to_string(dir.join("journal/run.undo")).unwrap(),
+        "unwind\nclear-macros\tt32ctl_p_image\nrm-run-dir\tLC:\\T\\t32ctl\tout-tok\n"
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn without_a_journal_undos_beneath_a_stuck_script_are_left_with_their_commands() {
+    let mut ledger = Ledger::new(ExistsFn::OsFileReadable);
+    ledger.push(Undo::RemoveFile(file("in/image.bin"))).unwrap();
+    ledger.push(Undo::UnwindPractice).unwrap();
+    let report = ledger.run(&mut session(unwind_stuck(Script::new().attach())));
+    assert_eq!(report.items.len(), 2, "{report:?}");
+    let held = &report.items[1];
+    assert_eq!(held.what, "cleanup under the script t32ctl started (1 step)");
+    assert!(matches!(&held.outcome, CleanupOutcome::NotAttempted(why) if why.contains("off the stack")), "{held:?}");
+    assert_eq!(held.manual.as_deref(), Some("RM \"C:\\T\\t32ctl\\in\\image.bin\""));
+}
+
 #[test]
 fn a_crashed_break_is_reported_not_executed_on_replay() {
     let dir = temp_dir("journal-break");

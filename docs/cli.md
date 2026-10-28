@@ -499,6 +499,7 @@ comes from the call that prints it:
 |---|---|
 | Journals replayed at connect | `! cleaned up after an interrupted call: 2 steps` |
 | Residue, after a replay or this call | `! residue: unwind PRACTICE stack; in PowerView type: END (END also closes every dialog and OPEN file)` |
+| Cleanup kept under this call's own script, which could not be unwound | `! cleanup under the script t32ctl started (2 steps): deferred: kept until the PRACTICE stack is empty; a later call cleans up after it` |
 | Replay deferred: an interrupted call's script may still run | `! cleanup left by an earlier run: deferred: its script may still be running (PRACTICE Running, stack depth 1); a later call cleans up after it` |
 | CPU mismatch (only `read status`; every other command refuses) | `! connected CPU CortexA72 is not the profile's CortexA53: every other command refuses` |
 | A script left on the stack by `raw cmd` | `! a PRACTICE script is on the stack after this command (depth 1, running); proc and raw script calls wait for it` |
@@ -507,7 +508,9 @@ A residue notice names one PowerView command per line, for what cleanup could no
 cleanup did not attempt keeps why before its command, the condition for typing it:
 `! residue: break target (left by an earlier run): only if t32ctl left the target running; in
 PowerView type: Break`. A deferred replay names nothing to type: the next call that finds
-PowerView idle with an empty PRACTICE stack replays the journal.
+PowerView idle with an empty PRACTICE stack replays the journal. Neither does cleanup kept under
+a script this call could not unwind: the call's `residue` error names `END`, and the next call
+after it replays the journal.
 
 Planned with the state file: notices that stay until a call acknowledges them. Every call prints
 the notices not yet acknowledged, and a call allowed to acknowledge a notice is the last to print
@@ -683,7 +686,8 @@ the same rule, so both tools share the `VM:` lock and replay each other's journa
   journal of a call that died, and its notices say what it cleaned up and what it could not. A
   call that died while its script ran (a flash after `kill -9`) may leave that script running:
   until PowerView is idle with an empty PRACTICE stack, replay leaves its journal alone, since
-  the script may still write under the files and macros it names. A replay never types `END`.
+  the script may still write under the files and macros it names. A replay never types `END`. A
+  call that cannot unwind its own script leaves the cleanup under it journaled the same way.
 - **Current core.** Commands look at PowerView's selected core (`CORE()`), which the header
   prints. No command selects a core, so parallel callers cannot move it under each other.
 - **An interrupted `burn`.** Its report says that the storage may hold a partial image. No record
