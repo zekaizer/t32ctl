@@ -2,7 +2,7 @@
 //! Probes about PRACTICE scripts: macro, bundle, script-error.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
 
@@ -385,7 +385,8 @@ pub(crate) const ERR_SUBS: [(&str, bool, &str); 8] = [
 
 /// `DO`es one of `ERR_SUBS` under `ON ERROR JUMPTO`. `failed` is the handler's first line after
 /// the reset; the depth and message reads come after `@z`. A halt inside the `DO` cannot be
-/// declared (no `DO` after a halt marker), so it ends by the case timeout.
+/// declared (no `DO` after a halt marker), so it ends by the case timeout, kept short so that
+/// every runner timing out still fits the Lab.
 const RUNNER: &str = "@a\nON ERROR JUMPTO t32p_failed\nDO \"{S}\\<case>.cmm\"\n@mark d\nON ERROR inherit\n\
                       @mark ok\n@z\nENDDO\nt32p_failed:\nON ERROR inherit\n@mark failed\n@z\n\
                       @ask d1 PRACTICE.StackDepth() == 1.\nPRIVATE &m\n&m=ERROR.MESSAGE()\n@put 0 \"[&m]\"\n@v\nENDDO";
@@ -398,7 +399,7 @@ const IG: &str = "@a\nIF 1==1\n  GOTO t32p_l1\n@mark fell\nt32p_l1:\n@mark jumpe
 /// The runner case of `ERR_SUBS[i]`: id `r-<name>` with `_` turned into `-`.
 pub(crate) fn err_case(name: &str) -> Case {
     let id = format!("r-{}", name.replace('_', "-"));
-    Case::new(id, RUNNER.replace("<case>", name), Expect::HaltAfter("d"), Duration::from_secs(20))
+    Case::new(id, RUNNER.replace("<case>", name), Expect::HaltAfter("d"), Duration::from_secs(5))
 }
 
 pub(crate) fn es_case() -> Case {
@@ -407,6 +408,11 @@ pub(crate) fn es_case() -> Case {
 
 pub(crate) fn ig_case() -> Case {
     Case::new("ig", IG, Expect::End, Duration::from_secs(10))
+}
+
+/// `es` and `ig` first: runners halted inside their `DO` can only time out.
+pub(crate) fn run_order() -> Vec<Case> {
+    [es_case(), ig_case()].into_iter().chain(ERR_SUBS.iter().map(|(n, _, _)| err_case(n))).collect()
 }
 
 /// What the script-error cases showed, as report tokens.
@@ -425,18 +431,24 @@ pub(crate) struct ErrTokens {
 
 impl ErrTokens {
     /// `runs` pairs each `ERR_SUBS` name and its must-fail flag with its runner's record.
-    /// `created`: the file `err_save` and `es` must not create exists.
+    /// `created`: the file `err_save` and `es` must not create exists. A case that never ran
+    /// is `-`, and `caught` counts only the must-fail runners that ran.
     pub fn of(runs: &[(&str, bool, CaseRecord)], es: &CaseRecord, ig: &CaseRecord, created: bool) -> Self {
-        let must: Vec<&(&str, bool, CaseRecord)> = runs.iter().filter(|(_, m, _)| *m).collect();
+        let must: Vec<&(&str, bool, CaseRecord)> = runs.iter().filter(|(_, m, r)| *m && r.ran()).collect();
         let caught = must.iter().filter(|(_, _, r)| r.has("failed")).count();
         let false_ok: Vec<&str> = must.iter().filter(|(_, _, r)| r.has("ok")).map(|(n, _, _)| *n).collect();
-        let rec = |name: &str| runs.iter().find(|(n, _, _)| *n == name).map(|(_, _, r)| r);
+        let rec = |name: &str| runs.iter().find(|(n, _, r)| *n == name && r.ran()).map(|(_, _, r)| r);
         let stop = match rec("stop") {
+            None => "-",
             Some(r) if r.has("failed") => "caught",
             Some(r) if r.has("ok") => "ok",
             _ => "halted",
         };
-        let ok_false = if rec("ok_false").is_some_and(|r| r.has("ok")) { "ok" } else { "FAIL" };
+        let ok_false = match rec("ok_false") {
+            None => "-",
+            Some(r) if r.has("ok") => "ok",
+            Some(_) => "FAIL",
+        };
         let hdepth = match runs.iter().find(|(_, _, r)| r.has("failed")).map(|(_, _, r)| r.answer("d1")) {
             Some(Answer::Yes) => "1",
             Some(Answer::No) => "other",
@@ -446,6 +458,8 @@ impl ErrTokens {
         let msg = runs.iter().flat_map(|(_, _, r)| &r.puts).any(|(_, s)| matches!(s, Slot::Text(_)));
         let save_err = if created {
             "created"
+        } else if !es.ran() {
+            "-"
         } else if es.has("caught") {
             "caught"
         } else {
@@ -461,7 +475,11 @@ impl ErrTokens {
             after: if deepest == 0 { "clean".into() } else { format!("depth{deepest}") },
             msg: if msg { "slot" } else { "none" },
             save_err,
-            ifgoto: if ig_ok { "ok" } else { "FAIL" },
+            ifgoto: match () {
+                _ if !ig.ran() => "-",
+                _ if ig_ok => "ok",
+                _ => "FAIL",
+            },
         }
     }
 }
@@ -482,12 +500,15 @@ fn script_error_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
     for (name, _, body) in ERR_SUBS {
         lab.stage_file(ctx, &format!("{name}.cmm"), body)?;
     }
-    let mut runs = Vec::new();
-    for (name, must_fail, _) in ERR_SUBS {
-        runs.push((name, must_fail, lab.run(ctx, &err_case(name))?));
+    let mut recs = BTreeMap::new();
+    for c in run_order() {
+        let rec = lab.run(ctx, &c)?;
+        recs.insert(c.id, rec);
     }
-    let es = lab.run(ctx, &es_case())?;
-    let ig = lab.run(ctx, &ig_case())?;
+    let mut take = |id: &str| recs.remove(id).expect("run_order runs every case once");
+    let (es, ig) = (take("es"), take("ig"));
+    let runs: Vec<(&str, bool, CaseRecord)> =
+        ERR_SUBS.iter().map(|&(name, must_fail, _)| (name, must_fail, take(&err_case(name).id))).collect();
     let created = lab.readable(ctx, "no_such_dir/x.bin")?;
     let dir = lab.dir_exists(ctx, "no_such_dir")?;
     ctx.measure("no_such_dir", Value::Text(format!("dir={dir} file={created}")));

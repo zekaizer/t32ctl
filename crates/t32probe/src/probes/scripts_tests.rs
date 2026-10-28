@@ -70,3 +70,28 @@ fn script_error_tokens_never_call_a_failing_script_a_success() {
     let t = ErrTokens::of(&runs, &rec(&["a", "notcaught", "z"], 0), &rec(&["a", "fell", "z"], 0), true);
     assert_eq!((t.save_err, t.ifgoto), ("created", "FAIL"));
 }
+
+#[test]
+fn script_error_tokens_report_cases_that_never_ran_as_dash() {
+    let cut = |id: &str| CaseRecord { id: id.into(), status: "cut", ..CaseRecord::default() };
+    let failed = rec(&["a", "failed", "z"], 0);
+    let mut runs: Vec<(&str, bool, CaseRecord)> =
+        ERR_SUBS.iter().filter(|(_, m, _)| *m).map(|(n, _, _)| (*n, true, failed.clone())).collect();
+    runs[5].2 = cut("r-err-save");
+    runs.push(("stop", false, cut("r-stop")));
+    runs.push(("ok_false", false, cut("r-ok-false")));
+    let t = ErrTokens::of(&runs, &cut("es"), &cut("ig"), false);
+    assert_eq!(t.caught, "5/5");
+    assert_eq!((t.stop, t.ok_false, t.save_err, t.ifgoto), ("-", "-", "-", "-"));
+}
+
+#[test]
+fn script_error_runs_es_and_ig_first_and_fits_its_deadline() {
+    let order = run_order();
+    let ids: Vec<&str> = order.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(&ids[..2], ["es", "ig"]);
+    assert_eq!(ids.len(), 2 + ERR_SUBS.len());
+    let worst: Duration = order.iter().map(|c| c.timeout).sum();
+    let budget = crate::registry::ProbeId::ScriptError.def().deadline - crate::probes::lab::LAB_RESERVE;
+    assert!(worst <= budget, "every case timing out takes {worst:?}, the Lab has {budget:?}");
+}
