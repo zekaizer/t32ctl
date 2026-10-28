@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use t32rcl::{MacroName, MacroSpelling};
 use t32stage::{RunOutcome, Undo, practice::fnc, transfer};
 
-use super::{bundle_of, ok, pattern, run_entry, soft};
+use super::{bundle_of, exp_as, hex, macro_prefix, ok, pattern, run_entry, soft};
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
     outcome::{Value, key},
@@ -17,7 +17,9 @@ fn name(s: &str) -> MacroName {
 }
 
 /// EXP 2 global macros: the wire spelling, whether `GLOBAL` must come first, redeclaration,
-/// value size, and characters that survive.
+/// value size, and characters that survive. Then, never deciding the verdict: whether the two
+/// spellings name one macro, empty and undeclared names, command-line assignment, and values over
+/// 4 KiB.
 pub fn macro_probe(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let (a, b) = (name("t32ctl_probe_a"), name("t32ctl_probe_b"));
     ctx.push(Undo::ClearMacros(vec![a.clone(), b.clone()]))?;
@@ -75,6 +77,126 @@ pub fn macro_probe(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     }
     ctx.measure("charset_bad_full", Value::Text(bad.clone()));
     ctx.text("charset_bad", if bad.is_empty() { "none".to_string() } else { bad.escape_default().to_string() });
+    macro_names(ctx)
+}
+
+/// The steps after the round trip, under the learned spelling unless named.
+fn macro_names(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+    use MacroSpelling::{Ampersand as Amp, Bare};
+    let run = ctx.env.cfg.run_id.clone();
+    let q = macro_prefix(&run);
+    let n = |x: &str| MacroName::new(&format!("{q}_{x}"));
+    let [x1, x2, x3, x4, x5, z, g, big] = ["x1", "x2", "x3", "x4", "x5", "z", "g", "big"].map(n);
+    let [x1, x2, x3, x4, x5, z, g, big] = [x1?, x2?, x3?, x4?, x5?, z?, g?, big?];
+    let never = n("never")?;
+    ctx.push(Undo::ClearMacros(vec![
+        x1.clone(),
+        x2.clone(),
+        x3.clone(),
+        x4.clone(),
+        x5.clone(),
+        z.clone(),
+        g.clone(),
+        big.clone(),
+    ]))?;
+    let learned = ctx.session.tuning().macro_spelling();
+    let get = |ctx: &mut ProbeCtx<'_>, m: &MacroName, s| exp_as(ctx, s, |x| x.macro_get(m));
+    let shown = |r: &Result<String, String>| r.as_ref().map_or_else(Clone::clone, |v| format!("{v:?}"));
+
+    let (bare_v, amp_v) = (format!("bare-{run}"), format!("amp-{run}"));
+    let set1 = exp_as(ctx, Bare, |x| x.macro_set(&x1, &bare_v))?;
+    let from_bare = get(ctx, &x1, Amp)?;
+    let set2 = exp_as(ctx, Amp, |x| x.macro_set(&x2, &amp_v))?;
+    let (from_amp, amp_amp) = (get(ctx, &x2, Bare)?, get(ctx, &x2, Amp)?);
+    ctx.measure(
+        "xspell_raw",
+        Value::Text(format!(
+            "set_bare={} get_amp={} set_amp={} get_bare={} get_amp={}",
+            set1.is_ok(),
+            shown(&from_bare),
+            set2.is_ok(),
+            shown(&from_amp),
+            shown(&amp_amp)
+        )),
+    );
+    let xspell = match (from_bare.as_deref() == Ok(&*bare_v), from_amp.as_deref() == Ok(&*amp_v)) {
+        (true, true) => "same",
+        (true, false) => "bare-only",
+        (false, true) => "amp-only",
+        (false, false) => "split",
+    };
+    ctx.text("xspell", xspell);
+
+    let empty = exp_as(ctx, Bare, |x| x.macro_set(&z, ""))?;
+    let payload = exp_as(ctx, Bare, |x| x.macro_get_payload(&z))?;
+    ctx.measure("empty_payload", Value::Text(payload.map_or_else(|e| e, |p| hex(&p))));
+    ctx.text("empty", empty.map_or_else(|e| e, |()| "ok".into()));
+
+    let mut never_token = String::new();
+    for s in [Bare, Amp] {
+        let r = get(ctx, &never, s)?;
+        ctx.measure(&format!("never_{}", s.tag()), Value::Text(shown(&r)));
+        if s == learned {
+            never_token = match r {
+                Ok(v) if v.is_empty() => "empty".into(),
+                Ok(_) => "value".into(),
+                Err(e) => e,
+            };
+        }
+    }
+    ctx.text("never", never_token);
+
+    soft(ctx.session.cmd(&format!("GLOBAL {}", g.amp())))?;
+    for s in [Bare, Amp] {
+        let p = exp_as(ctx, s, |x| x.macro_get_payload(&g))?;
+        ctx.measure(&format!("declared_{}", s.tag()), Value::Text(p.map_or_else(|e| e, |p| hex(&p))));
+    }
+
+    let cmd_v = format!("cmd-{run}");
+    soft(ctx.session.cmd(&format!("GLOBAL {}", x3.amp())))?;
+    let assigned = soft(ctx.session.cmd(&format!("{}=\"{cmd_v}\"", x3.amp())))?.is_some();
+    let (b, a) = (get(ctx, &x3, Bare)?, get(ctx, &x3, Amp)?);
+    ctx.measure("cmdasgn_raw", Value::Text(format!("cmd={assigned} bare={} amp={}", shown(&b), shown(&a))));
+    let cmdasgn = match (b.as_deref() == Ok(&*cmd_v), a.as_deref() == Ok(&*cmd_v)) {
+        (true, true) => "both",
+        (true, false) => "bare",
+        (false, true) => "amp",
+        (false, false) => "none",
+    };
+    ctx.text("cmdasgn", cmdasgn);
+    soft(ctx.session.cmd(&format!("{}=\"cmd4-{run}\"", x4.amp())))?;
+    let undeclared = get(ctx, &x4, learned)?;
+    ctx.measure("cmdasgn_undeclared", Value::Text(shown(&undeclared)));
+    soft(ctx.session.cmd(&format!("GLOBAL {}", x5.amp())))?;
+    soft(ctx.session.cmd(&format!("{}=\"a;b\"", x5.amp())))?;
+    let semi = match get(ctx, &x5, learned)? {
+        Ok(v) if v == "a;b" => "kept",
+        Ok(v) if v == "a" => "cut",
+        _ => "none",
+    };
+    ctx.text("semi", semi);
+
+    let mut worst = "kept";
+    for len in [4096usize, 4097, 8192] {
+        let v: String = pattern(len as u64, len).iter().map(|b| char::from(b'a' + b % 26)).collect();
+        let set = exp_as(ctx, learned, |x| x.macro_set(&big, &v))?;
+        let got = if set.is_ok() { Some(get(ctx, &big, learned)?) } else { None };
+        let (glen, prefix) = match &got {
+            Some(Ok(g)) => (g.len().to_string(), v.starts_with(g.as_str())),
+            Some(Err(e)) => (e.clone(), false),
+            None => ("-".into(), false),
+        };
+        ctx.measure(&format!("big.{len}"), Value::Text(format!("set={} len={glen} prefix={prefix}", set.is_ok())));
+        let class = match &got {
+            None => "refused",
+            Some(Ok(g)) if *g == v => "kept",
+            Some(_) => "truncated",
+        };
+        if len > 4096 && (class == "refused" || (class == "truncated" && worst == "kept")) {
+            worst = class;
+        }
+    }
+    ctx.text("big", worst);
     Ok(())
 }
 

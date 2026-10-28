@@ -20,7 +20,7 @@ pub mod transport;
 
 use std::time::Duration;
 
-use t32rcl::{CallBudget, ErrorClass, Session};
+use t32rcl::{CallBudget, ErrorClass, MacroSpelling, RemoteError, Session};
 use t32stage::{
     Bundle, BundleLimits, RelPath, RunReport, RunRequest, Snapshot, Stage, StageError, StagePath, StageRoot, Undo,
     VmRegion, VmSnapshot,
@@ -161,6 +161,38 @@ pub(crate) fn soft<T, E: Into<StageError>>(r: Result<T, E>) -> Result<Option<T>,
         }
         Err(StageError::Journal { path, source }) => Err(ProbeFail::Stage(StageError::Journal { path, source })),
         Err(_) => Ok(None),
+    }
+}
+
+/// Prefix of the macros a probe creates: `t32ctl_q<run>`. Their values carry the run id too, so
+/// an earlier run's leftovers never answer for this one.
+pub(crate) fn macro_prefix(run: &str) -> String {
+    format!("t32ctl_q{}", run.to_ascii_lowercase())
+}
+
+/// The `EC` code of a refused EXP call, else the status byte.
+fn exp_code(r: &RemoteError) -> String {
+    let ec = r.message.as_deref().and_then(|m| m.rsplit_once("EXP code ")).map(|(_, c)| c.trim_end_matches(')'));
+    ec.map_or_else(|| r.code.to_string(), str::to_string)
+}
+
+/// An EXP call under `spelling`, the tuning restored after it. A refusal is `Err("err<code>")`;
+/// a connection-fatal error aborts the probe.
+pub(crate) fn exp_as<T>(
+    ctx: &mut ProbeCtx<'_>,
+    spelling: MacroSpelling,
+    call: impl FnOnce(&mut Session) -> Result<T, t32rcl::Error>,
+) -> Result<Result<T, String>, ProbeFail> {
+    let base = ctx.session.tuning();
+    ctx.session.set_tuning(base.with_macro_spelling(spelling));
+    let r = call(ctx.session);
+    ctx.session.set_tuning(base);
+    match r {
+        Ok(v) => Ok(Ok(v)),
+        Err(e) => match e.remote() {
+            Some(remote) => Ok(Err(format!("err{}", exp_code(remote)))),
+            None => soft(Err::<T, _>(e)).map(|_| Err("err?".into())),
+        },
     }
 }
 

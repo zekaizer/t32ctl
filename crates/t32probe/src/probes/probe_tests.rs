@@ -315,6 +315,7 @@ fn the_macro_probe_falls_back_to_the_ampersand_spelling_and_keeps_it() {
     for _ in 0..14 {
         s = s.expect(t32rcl::testkit::Expect::Any).reply_exp_error(1, "refused");
     }
+    s = macro_names_refused(s);
     s = s.expect_req(set(a, "")).reply_macro("").expect_req(set(b, "")).reply_macro("");
     let mut session = connect(vec![Ok(s)]);
     let mut env = test_env("probe-macro-amp");
@@ -397,4 +398,100 @@ fn tempdir_asks_for_a_stage_root_when_the_temp_dir_is_not_ascii_safe() {
     assert_eq!(o.verdict, Verdict::Fail);
     assert!(o.error.as_ref().is_some_and(|e| e.message.contains("--stage-root")), "{o:?}");
     assert_eq!(o.lookup("ptd"), Some(&Value::Text("non-ascii".into())));
+}
+
+fn set_req(name: &str, value: &str) -> Request {
+    Request::MacroSet { name: name.into(), value: value.into() }
+}
+
+fn get_req(name: &str) -> Request {
+    Request::MacroGet { name: name.into() }
+}
+
+/// The steps after the round trip on run `r1`, Bare learned: nothing crosses spellings, the empty
+/// set works, `never` is refused, command-line assignment reaches both spellings, `;` cuts and
+/// only 4096 B survive.
+fn macro_names(mut s: Script) -> Script {
+    let q = |x: &str| format!("t32ctl_qr1_{x}");
+    let amp = |x: &str| format!("&t32ctl_qr1_{x}");
+    s = s.expect_req(set_req(&q("x1"), "bare-r1")).reply_macro("");
+    s = s.expect_req(get_req(&amp("x1"))).reply_exp_error(1, "unknown macro");
+    s = s.expect_req(set_req(&amp("x2"), "amp-r1")).reply_macro("");
+    s = s.expect_req(get_req(&q("x2"))).reply_exp_error(1, "unknown macro");
+    s = s.expect_req(get_req(&amp("x2"))).reply_macro("amp-r1");
+    s = s.expect_req(set_req(&q("z"), "")).reply_macro("").expect_req(get_req(&q("z"))).reply_macro("");
+    s = s.expect_req(get_req(&q("never"))).reply_exp_error(7, "unknown macro");
+    s = s.expect_req(get_req(&amp("never"))).reply_exp_error(7, "unknown macro");
+    s = s.expect_cmd("GLOBAL &t32ctl_qr1_g").reply_ok();
+    s = s.expect_req(get_req(&q("g"))).reply_macro("").expect_req(get_req(&amp("g"))).reply_macro("");
+    s = s.expect_cmd("GLOBAL &t32ctl_qr1_x3").reply_ok().expect_cmd("&t32ctl_qr1_x3=\"cmd-r1\"").reply_ok();
+    s = s.expect_req(get_req(&q("x3"))).reply_macro("cmd-r1").expect_req(get_req(&amp("x3"))).reply_macro("cmd-r1");
+    s = s.expect_cmd("&t32ctl_qr1_x4=\"cmd4-r1\"").reply_ok().expect_req(get_req(&q("x4"))).reply_macro("");
+    s = s.expect_cmd("GLOBAL &t32ctl_qr1_x5").reply_ok().expect_cmd("&t32ctl_qr1_x5=\"a;b\"").reply_ok();
+    s = s.expect_req(get_req(&q("x5"))).reply_macro("a");
+    for len in [4096usize, 4097, 8192] {
+        let v: String = super::pattern(len as u64, len).iter().map(|b| char::from(b'a' + b % 26)).collect();
+        s = s.expect_req(set_req(&q("big"), &v));
+        s = if len == 4096 {
+            s.reply_macro("").expect_req(get_req(&q("big"))).reply_macro(&v)
+        } else {
+            s.reply_exp_error(3, "too long")
+        };
+    }
+    for x in ["x1", "x2", "x3", "x4", "x5", "z", "g", "big"] {
+        s = s.expect_req(set_req(&q(x), "")).reply_macro("");
+    }
+    s
+}
+
+/// The steps after the round trip with every EXP call and command refused, Amp learned.
+fn macro_names_refused(mut s: Script) -> Script {
+    let exp =
+        |s: Script, n: usize| (0..n).fold(s, |s, _| s.expect(t32rcl::testkit::Expect::Any).reply_exp_error(1, "no"));
+    s = exp(s, 9);
+    s = exp(s.expect_cmd("GLOBAL &t32ctl_qr1_g").reply_error(90, "no"), 2);
+    s = s.expect_cmd("GLOBAL &t32ctl_qr1_x3").reply_error(90, "no");
+    s = exp(s.expect_cmd("&t32ctl_qr1_x3=\"cmd-r1\"").reply_error(90, "no"), 2);
+    s = exp(s.expect_cmd("&t32ctl_qr1_x4=\"cmd4-r1\"").reply_error(90, "no"), 1);
+    s = s.expect_cmd("GLOBAL &t32ctl_qr1_x5").reply_error(90, "no");
+    s = exp(s.expect_cmd("&t32ctl_qr1_x5=\"a;b\"").reply_error(90, "no"), 4);
+    for x in ["x1", "x2", "x3", "x4", "x5", "z", "g", "big"] {
+        s = s.expect_req(set_req(&format!("&t32ctl_qr1_{x}"), "")).reply_macro("");
+    }
+    s
+}
+
+#[test]
+fn macro_cross_spelling_reads_split_when_neither_side_sees_the_other() {
+    let mut s = Script::new().attach().expect_req(set_req("t32ctl_probe_a", "v1")).reply_macro("");
+    s = s.expect_req(get_req("t32ctl_probe_a")).reply_macro("v1");
+    s = s.expect_req(set_req("t32ctl_probe_a", "keep")).reply_macro("").expect_cmd("GLOBAL &t32ctl_probe_a").reply_ok();
+    s = s.expect_req(get_req("t32ctl_probe_a")).reply_macro("keep");
+    s = s.expect(t32rcl::testkit::Expect::Any).reply_macro("").expect_req(get_req("t32ctl_probe_b")).reply_macro("no");
+    for _ in 0..14 {
+        s = s.expect(t32rcl::testkit::Expect::Any).reply_exp_error(1, "refused");
+    }
+    s = macro_names(s);
+    s = s
+        .expect_req(set_req("t32ctl_probe_a", ""))
+        .reply_macro("")
+        .expect_req(set_req("t32ctl_probe_b", ""))
+        .reply_macro("");
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("probe-macro-names");
+    let r = run(&mut env, &mut session, &[ProbeId::Macro.def()]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
+    for (k, v) in [
+        ("spelling", "bare"),
+        ("xspell", "split"),
+        ("empty", "ok"),
+        ("never", "err7"),
+        ("cmdasgn", "both"),
+        ("semi", "cut"),
+        ("big", "refused"),
+    ] {
+        assert_eq!(o.lookup(k), Some(&Value::Text(v.into())), "{k}");
+    }
+    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
 }

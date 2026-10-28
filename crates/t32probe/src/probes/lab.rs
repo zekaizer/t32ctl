@@ -189,7 +189,7 @@ impl Fill {
 
     /// Prefix of the macros a probe creates: `t32ctl_q<run>`.
     pub fn q(&self) -> String {
-        format!("t32ctl_q{}", self.run.to_ascii_lowercase())
+        super::macro_prefix(&self.run)
     }
 }
 
