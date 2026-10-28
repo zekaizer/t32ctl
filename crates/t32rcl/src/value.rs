@@ -242,25 +242,33 @@ impl AccessClass {
     }
 }
 
-/// Address with its access class. Width, core and space id stay unset, as in the reference clients.
+/// Address with its access class and an optional access width in bytes. Core and space id stay
+/// unset, as in the reference clients.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MemAddr {
     pub access: AccessClass,
     pub addr: u64,
+    /// Bus access width of every access, as `T32_SetAddressObjWidth` sets it; `None` leaves the
+    /// width to PowerView.
+    pub width: Option<u16>,
 }
 
 impl MemAddr {
     pub fn new(access: AccessClass, addr: u64) -> Self {
-        Self { access, addr }
+        Self { access, addr, width: None }
     }
 
     pub fn vm(addr: u64) -> Self {
-        Self { access: AccessClass::vm(), addr }
+        Self { access: AccessClass::vm(), addr, width: None }
     }
 
-    /// Same class, address moved by `delta` bytes. `None` on overflow.
+    pub fn with_width(self, width: u16) -> Self {
+        Self { width: Some(width), ..self }
+    }
+
+    /// Same class and width, address moved by `delta` bytes. `None` on overflow.
     pub fn offset(&self, delta: u64) -> Option<Self> {
-        Some(Self { access: self.access.clone(), addr: self.addr.checked_add(delta)? })
+        Some(Self { access: self.access.clone(), addr: self.addr.checked_add(delta)?, width: self.width })
     }
 }
 

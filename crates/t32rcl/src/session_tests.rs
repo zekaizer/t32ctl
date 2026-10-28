@@ -9,7 +9,7 @@ use std::{
 
 use super::*;
 use crate::{
-    CancelReason, LostCause, MacroSpelling, RemoteError, RemoteKind, TimeoutKind, Violation,
+    AccessClass, CancelReason, LostCause, MacroSpelling, RemoteError, RemoteKind, TimeoutKind, Violation,
     testkit::{ConnectFailure, Expect, ManualClock, Request, Script, ScriptedConnector},
 };
 
@@ -234,6 +234,21 @@ fn memory_transfers_split_at_the_chunk_boundaries() {
         |o| o.tuning = Tuning::new(8, 8).unwrap(),
     );
     s.mem_write(&MemAddr::vm(0x200), &data).unwrap();
+}
+
+#[test]
+fn a_read_with_an_access_width_keeps_it_on_every_chunk_and_cuts_chunks_at_whole_accesses() {
+    let a = |addr| Request::MemReadWidth { access: "A".into(), addr, len: 8, width: 4 };
+    let script = Script::new()
+        .attach()
+        .expect_req(a(0x0900_0000))
+        .reply_mem(&[1; 8])
+        .expect_req(a(0x0900_0008))
+        .reply_mem(&[2; 8]);
+    let mut s = with(vec![Ok(script)], |o| o.tuning = Tuning::new(10, 8).unwrap());
+    let at = MemAddr::new(AccessClass::parse("A").unwrap(), 0x0900_0000).with_width(4);
+    assert_eq!(s.mem_read(&at, 16).unwrap(), [[1; 8], [2; 8]].concat());
+    assert_eq!(at.offset(8).map(|m| m.width), Some(Some(4)));
 }
 
 #[test]

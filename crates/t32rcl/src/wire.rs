@@ -29,7 +29,7 @@
 //! | Exp | 0x74 | 0xFE | u16 exp cmd, exp payload | EXP blocks | `t32_exp` |
 //!
 //! Address object: `u16 3` (A64), `u64 addr`, `"AC"`, `u16 n`, access class NUL-padded to even
-//! `n`, `"XX"` (_address.py `serialize`).
+//! `n`, then `"WI"`, `u16 width` when a width is set, `"XX"` (_address.py `serialize`).
 //!
 //! # Responses
 //!
@@ -146,13 +146,17 @@ fn check_text(text: &str) -> Result<(), LocalError> {
 fn addr_object(a: &MemAddr) -> Vec<u8> {
     let ac = a.access.as_str().as_bytes();
     let padded = (ac.len() + 1).next_multiple_of(2);
-    let mut v = Vec::with_capacity(2 + 8 + 4 + padded + 2);
+    let mut v = Vec::with_capacity(2 + 8 + 4 + padded + 4 + 2);
     v.extend_from_slice(&3u16.to_le_bytes());
     v.extend_from_slice(&a.addr.to_le_bytes());
     v.extend_from_slice(b"AC");
     v.extend_from_slice(&(padded as u16).to_le_bytes());
     v.extend_from_slice(ac);
     v.resize(v.len() + (padded - ac.len()), 0);
+    if let Some(w) = a.width {
+        v.extend_from_slice(b"WI");
+        v.extend_from_slice(&w.to_le_bytes());
+    }
     v.extend_from_slice(b"XX");
     v
 }
@@ -522,6 +526,13 @@ mod golden {
         let at = MemAddr::new(AccessClass::parse("E").expect("valid"), 0x1000);
         let msg = seal(req::mem_read(&at, 256), 7);
         assert_eq!(msg, hex("18 74 35 07 00 01 03 00 00 10 00 00 00 00 00 00 41 43 02 00 45 00 58 58"));
+    }
+
+    #[test]
+    fn mem_read_with_an_access_width_appends_wi_after_the_class() {
+        let at = MemAddr::new(AccessClass::parse("A").expect("valid"), 0x0900_0000).with_width(4);
+        let msg = seal(req::mem_read(&at, 16), 7);
+        assert_eq!(msg, hex("1c 74 35 07 10 00 03 00 00 00 00 09 00 00 00 00 41 43 02 00 41 00 57 49 04 00 58 58"));
     }
 
     #[test]

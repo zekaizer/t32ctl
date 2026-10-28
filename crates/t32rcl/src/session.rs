@@ -257,10 +257,15 @@ impl Session {
         resp::target_state(result).map_err(|v| self.violation(Op::TargetState, v))
     }
 
-    /// Read `len` bytes in `tuning().read_chunk()` requests. Any access class.
+    /// Read `len` bytes in `tuning().read_chunk()` requests. Any access class. With an access
+    /// width, each request is cut down to whole accesses.
     pub fn mem_read(&mut self, at: &MemAddr, len: usize) -> Result<Vec<u8>> {
         at.offset(len as u64).ok_or(LocalError::AddressOverflow)?;
         let chunk = self.opts.tuning.read_chunk();
+        let chunk = match at.width.map(usize::from) {
+            Some(w) if w > 0 && chunk >= w => chunk - chunk % w,
+            _ => chunk,
+        };
         let mut out = Vec::with_capacity(len);
         while out.len() < len {
             let n = chunk.min(len - out.len());

@@ -44,7 +44,8 @@ impl Clock for ManualClock {
     }
 }
 
-/// A request as the scripted peer decoded it.
+/// A request as the scripted peer decoded it. `MemReadWidth` is a memory read whose address object
+/// carries an access width (`WI`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Attach,
@@ -55,6 +56,7 @@ pub enum Request {
     TargetState,
     EvalString,
     MemRead { access: String, addr: u64, len: u16 },
+    MemReadWidth { access: String, addr: u64, len: u16, width: u16 },
     MemWrite { access: String, addr: u64, data: Vec<u8> },
     MacroGet { name: String },
     MacroSet { name: String, value: String },
@@ -312,8 +314,12 @@ fn decode_request(bytes: &[u8]) -> (u8, Request) {
         assert_eq!(&p[12..14], b"AC");
         let n = le16(p, 14) as usize;
         let access = cstr(&p[16..16 + n]);
-        assert_eq!(&p[16 + n..18 + n], b"XX");
-        (access, addr, 18 + n)
+        let (width, end) = match &p[16 + n..18 + n] {
+            b"WI" => (Some(le16(p, 18 + n)), 20 + n),
+            _ => (None, 16 + n),
+        };
+        assert_eq!(&p[end..end + 2], b"XX");
+        (access, addr, width, end + 2)
     };
     let req = match (cmd, opt) {
         (0x71, _) => Request::Attach,
@@ -323,13 +329,14 @@ fn decode_request(bytes: &[u8]) -> (u8, Request) {
         (0x72, 0x00) => Request::Stop,
         (0x74, 0x10) => Request::TargetState,
         (0x74, 0x17) => Request::EvalString,
-        (0x74, 0x35) => {
-            let (access, addr, _) = addr(p);
-            Request::MemRead { access, addr, len: le16(p, 0) }
-        }
+        (0x74, 0x35) => match addr(p) {
+            (access, addr, None, _) => Request::MemRead { access, addr, len: le16(p, 0) },
+            (access, addr, Some(width), _) => Request::MemReadWidth { access, addr, len: le16(p, 0), width },
+        },
         (0x74, 0x36) => {
             let n = le16(p, 0) as usize;
-            let (access, addr, end) = addr(p);
+            let (access, addr, width, end) = addr(p);
+            assert_eq!(width, None, "memory writes with an access width are not scripted");
             Request::MemWrite { access, addr, data: p[end..end + n].to_vec() }
         }
         (0x74, 0xFE) => {
