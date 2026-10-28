@@ -667,3 +667,18 @@ fn macro_suffixes_never_collide_across_probes() {
         }
     }
 }
+
+#[test]
+fn a_listing_leaves_out_the_dot_entries_firstfile_returns() {
+    let dir = "C:\\T\\t32ctl\\d";
+    let mut s = Script::new().attach().expect_fn(&format!("OS.FIRSTFILE(\"{dir}\\*\")")).reply_text(".");
+    for next in ["..", "a.bin", ""] {
+        s = s.expect_fn("OS.NEXTFILE()").reply_text(next);
+    }
+    let mut session = connect(vec![Ok(s)]);
+    let d = t32stage::StageRoot::from_ptd("C:\\T").unwrap().path(t32stage::RelPath::new("d").unwrap());
+    match super::list_dir(&mut session, &d).unwrap() {
+        super::Listing::Names { names, .. } => assert_eq!(names, ["a.bin"]),
+        other => panic!("{other:?}"),
+    }
+}
