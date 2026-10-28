@@ -215,10 +215,13 @@ fn rmdir_verified(session: &mut Session, p: &StagePath) -> Result<(), StageError
 
 /// Names `Undo::RemoveRunDir` lists per directory and pass.
 const RUN_DIR_LIST_MAX: usize = 1000;
+/// Passes `Undo::RemoveRunDir` makes over one directory.
+const RUN_DIR_PASSES: usize = 10;
 
 /// `Undo::RemoveRunDir`: what `dir` holds, then `dir`. A failed removal does not stop the rest;
-/// the hint names what is left in removal order, the directory's `RMDIR` last. A failed listing
-/// gives no hint, since what is left is unknown; the journal keeps the step for the next run.
+/// the hint names what is left in removal order, the directory's `RMDIR` last. A failed listing,
+/// or an entry the hint cannot name, gives no hint, since what is left is unknown; the journal
+/// keeps the step for the next run.
 fn remove_run_dir(session: &mut Session, dir: &StagePath, exists: ExistsFn) -> (CleanupOutcome, Option<String>) {
     let mut left = Vec::new();
     let emptied = match dir_present(session, dir) {
@@ -226,11 +229,15 @@ fn remove_run_dir(session: &mut Session, dir: &StagePath, exists: ExistsFn) -> (
         Ok(true) => empty_dir(session, dir, exists, &mut left),
         Err(e) => Err(e),
     };
-    if let Err(e) = emptied {
-        return (CleanupOutcome::Failed(e.to_string()), None);
-    }
+    let named = match emptied {
+        Ok(named) => named,
+        Err(e) => return (CleanupOutcome::Failed(e.to_string()), None),
+    };
     match rmdir_verified(session, dir) {
         Ok(()) => (CleanupOutcome::Done, None),
+        Err(e) if !named => {
+            (CleanupOutcome::Failed(format!("{e}; it keeps entries t32ctl cannot name or did not list")), None)
+        }
         Err(e) => {
             left.push(cmd::rmdir(dir));
             (CleanupOutcome::Failed(e.to_string()), Some(left.join("\n")))
@@ -239,27 +246,47 @@ fn remove_run_dir(session: &mut Session, dir: &StagePath, exists: ExistsFn) -> (
 }
 
 /// Remove what `dir` holds, contents before their directory, past a failed removal; the commands
-/// for what stays go to `left`. A failed listing or `OS.DIR` stops it. A name that is not a `RelPath` stays.
+/// for what stays go to `left`. A pass lists at most `RUN_DIR_LIST_MAX` names; a full one that
+/// removed something is followed by another. `Ok(false)` when an entry may stay that `left` does
+/// not name: a name that is not a `RelPath`, or a listing still full after the last pass or after
+/// a pass that removed nothing. A failed listing or `OS.DIR` stops it.
 /// ASSUMED(fs-semantics): `OS.FIRSTFILE` lists subdirectories too.
 fn empty_dir(
     session: &mut Session,
     dir: &StagePath,
     exists: ExistsFn,
     left: &mut Vec<String>,
-) -> Result<(), StageError> {
-    for name in transfer::list_dir(session, dir, RUN_DIR_LIST_MAX)? {
-        let Ok(p) = dir.join(&name) else { continue };
-        let undo = if dir_present(session, &p)? {
-            empty_dir(session, &p, exists, left)?;
-            Undo::RemoveDir(p)
-        } else {
-            Undo::RemoveFile(p)
-        };
-        if !undo.apply(session, exists).is_ok_and(|o| o.is_clean()) {
-            left.extend(undo.manual_hint());
+) -> Result<bool, StageError> {
+    for _ in 0..RUN_DIR_PASSES {
+        let names = transfer::list_dir(session, dir, RUN_DIR_LIST_MAX)?;
+        let full = names.len() >= RUN_DIR_LIST_MAX;
+        let (mut named, mut removed, mut kept) = (true, false, Vec::new());
+        for name in names {
+            let Ok(p) = dir.join(&name) else {
+                named = false;
+                continue;
+            };
+            let undo = if dir_present(session, &p)? {
+                named &= empty_dir(session, &p, exists, &mut kept)?;
+                Undo::RemoveDir(p)
+            } else {
+                Undo::RemoveFile(p)
+            };
+            if undo.apply(session, exists).is_ok_and(|o| o.is_clean()) {
+                removed = true;
+            } else {
+                kept.extend(undo.manual_hint());
+            }
+        }
+        if !full {
+            left.extend(kept);
+            return Ok(named);
+        }
+        if !removed {
+            return Ok(false);
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// `T32_Stop` if a script runs, then `END` until the stack is empty. Only for callers that saw an

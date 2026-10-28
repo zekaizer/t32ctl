@@ -96,8 +96,10 @@ read back and compared, and a unit that was never initialized is cleared alone.
 A run's output directory (`out-<token>`) is the one undo that removes what it holds. Its script
 writes files no undo names in advance, and a run that fails or is interrupted fetches none, so
 cleanup lists the directory (`OS.FIRSTFILE`), removes each entry, contents before their
-directory, then the directory. Removals past a failure go on; the manual commands name each entry
-left, then the `RMDIR`.
+directory, then the directory. A listing stops at 1000 names; a full one that removed something
+is listed again. Removals past a failure go on; the manual commands name each entry left, then the
+`RMDIR`. When an entry may stay that no command can name (a name outside the stage's path
+characters, or a listing still full), cleanup prints no command: what is left is unknown.
 
 ## t32probe
 

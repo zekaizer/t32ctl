@@ -388,6 +388,72 @@ fn what_a_run_dir_keeps_is_named_in_the_hint_before_its_rmdir_and_stays_journale
 }
 
 #[test]
+fn a_run_dir_entry_no_command_can_name_leaves_no_hint() {
+    let mut s = listed(is_dir(Script::new().attach(), "out-tok", true), "out-tok", &["core#0.log", "a.log"]);
+    s = is_dir(s, "out-tok/a.log", false);
+    s = readable(s, "out-tok/a.log", true).expect_cmd("RM \"C:\\T\\t32ctl\\out-tok\\a.log\"").reply_error(90, "in use");
+    s = s.expect_cmd("RMDIR \"C:\\T\\t32ctl\\out-tok\"").reply_error(90, "critical error accessing file");
+
+    let mut ledger = Ledger::new(ExistsFn::OsFileReadable);
+    ledger.push(Undo::RemoveRunDir(file("out-tok"))).unwrap();
+    let report = ledger.run(&mut session(s));
+    assert!(matches!(report.items[0].outcome, CleanupOutcome::Failed(_)), "{report:?}");
+    assert_eq!(report.items[0].manual, None, "{report:?}");
+}
+
+#[test]
+fn a_run_dir_with_more_names_than_one_listing_is_listed_again() {
+    let names: Vec<String> = (0..=RUN_DIR_LIST_MAX).map(|i| format!("f{i}.log")).collect();
+    let dir = "C:\\T\\t32ctl\\out-tok";
+    let mut s = is_dir(Script::new().attach(), "out-tok", true);
+    s = s.expect_fn(&format!("OS.FIRSTFILE(\"{dir}\\*\")")).reply_text(&format!("{dir}\\."));
+    for n in std::iter::once("..").chain(names[..RUN_DIR_LIST_MAX].iter().map(String::as_str)) {
+        s = s.expect_fn("OS.NEXTFILE()").reply_text(n);
+    }
+    let removed = |mut s: Script, n: &str| {
+        let rel = format!("out-tok/{n}");
+        s = is_dir(s, &rel, false);
+        s = readable(s, &rel, true).expect_cmd(&format!("RM \"{dir}\\{n}\"")).reply_ok();
+        readable(s, &rel, false)
+    };
+    for n in &names[..RUN_DIR_LIST_MAX] {
+        s = removed(s, n);
+    }
+    s = listed(s, "out-tok", &[&names[RUN_DIR_LIST_MAX]]);
+    s = removed(s, &names[RUN_DIR_LIST_MAX]);
+    s = s.expect_cmd(&format!("RMDIR \"{dir}\"")).reply_ok();
+    s = is_dir(s, "out-tok", false);
+
+    let mut ledger = Ledger::new(ExistsFn::OsFileReadable);
+    ledger.push(Undo::RemoveRunDir(file("out-tok"))).unwrap();
+    let report = ledger.run(&mut session(s));
+    assert!(report.is_clean(), "{report:?}");
+}
+
+#[test]
+fn a_run_dir_still_full_after_a_pass_that_removed_nothing_leaves_no_hint() {
+    let names: Vec<String> = (0..RUN_DIR_LIST_MAX).map(|i| format!("f{i}.log")).collect();
+    let dir = "C:\\T\\t32ctl\\out-tok";
+    let mut s = is_dir(Script::new().attach(), "out-tok", true);
+    s = s.expect_fn(&format!("OS.FIRSTFILE(\"{dir}\\*\")")).reply_text(&format!("{dir}\\."));
+    for n in std::iter::once("..").chain(names.iter().map(String::as_str)) {
+        s = s.expect_fn("OS.NEXTFILE()").reply_text(n);
+    }
+    for n in &names {
+        let rel = format!("out-tok/{n}");
+        s = readable(is_dir(s, &rel, false), &rel, true);
+        s = s.expect_cmd(&format!("RM \"{dir}\\{n}\"")).reply_error(90, "in use");
+    }
+    s = s.expect_cmd(&format!("RMDIR \"{dir}\"")).reply_error(90, "critical error accessing file");
+
+    let mut ledger = Ledger::new(ExistsFn::OsFileReadable);
+    ledger.push(Undo::RemoveRunDir(file("out-tok"))).unwrap();
+    let report = ledger.run(&mut session(s));
+    assert!(matches!(report.items[0].outcome, CleanupOutcome::Failed(_)), "{report:?}");
+    assert_eq!(report.items[0].manual, None, "{report:?}");
+}
+
+#[test]
 fn manual_commands_are_typeable() {
     assert_eq!(Undo::RemoveFile(file("x y.bin")).manual_hint().as_deref(), Some("RM \"C:\\T\\t32ctl\\x y.bin\""));
 }
