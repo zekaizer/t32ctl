@@ -1,44 +1,51 @@
 ---
 name: t32ctl
 description: >
-  Debug a Zephyr target (Cortex-A53, possibly SMP) through a TRACE32 PowerView with the t32ctl
-  CLI: crash triage on a halted target, breakpoints and stepping, reading and writing memory,
-  registers and variables, symbol questions, board procedures (attach, reset, flash), team .cmm
-  scripts, and sharing one debugger with other agents. Use whenever the task involves the
-  TRACE32 debugger or the live target.
+  Work with a Zephyr target (Cortex-A53, possibly SMP) through a TRACE32 PowerView with the
+  t32ctl CLI: debugger and target status, target memory and registers, board procedures
+  (attach, reset, flash, self-tests), team .cmm scripts, and single PRACTICE commands. Use
+  whenever the task involves the TRACE32 debugger or the live target.
 ---
 
-# Debugging a target with t32ctl
+# Working with a target through t32ctl
 
 This skill is about how to work, not about syntax. For syntax ask the tool:
-`t32ctl <grade> <command> --help` shows examples, `t32ctl read describe` is the full schema,
-`t32ctl read procs` lists this board's procedures, and `t32ctl read window --list` lists the
-windows you may read. Never read `.cmm` files or profile files to learn how to call something.
+`t32ctl <grade> <command> --help` shows examples, `t32ctl read describe` is the full schema, and
+`t32ctl read procs` lists this board's procedures. Never read `.cmm` files or profile files to
+learn how to call something.
 
 The skill needs schema `t32ctl.describe/1` and `t32ctl.report/1` or a later compatible version.
 `t32ctl read describe` and every `--json` report name their schema.
 
+## What this t32ctl does
+
+It reads the debugger's and the target's status, target memory, and registers; runs the board's
+procedures and the team's scripts; and sends PowerView single PRACTICE commands. The table at the
+end lists every command it has. Run control, breakpoints and stepping, symbols and source lines,
+variables and the stack, memory and register writes, code loading, PowerView windows, and the
+lease are planned: they are not in this binary, so do not look for them. When a task needs one of
+them, tell your human; do not build it from `raw`.
+
 ## Start every session the same way
 
 Run `t32ctl read status`. It tells you whether PowerView answers, whether the connected CPU is
-the board's, which ELF is loaded and whether it matches the build, where every core is, why the
-target last stopped, which breakpoints exist, and who holds the lease. Decide what to do from
-that, not from what you remember of an earlier session.
+the board's, whether the target is stopped, running, or down, which board profile is in use, and
+whether a PRACTICE script runs in PowerView. Decide what to do from that, not from what you
+remember of an earlier session.
 
 ## Reading the output
 
 - The first word after `t32ctl` is the grade. `read` and `run` run without asking. `write`,
   `sys`, `burn` and `raw` ask your human. `admin` is the operator's, never yours.
-- Line 1 of the output is the header. `e<n>` is the epoch: it goes up whenever the target
-  changes. The rest is where the target is, in the same notation every argument takes. Copy
-  tokens as printed (`0x40080b1c`, `worker_loop+0x84`, `src/worker.c:61`, `b3`, frame `4`,
-  core `2`, sizes such as `4K`, durations such as `41.3s`); never convert or reformat them.
-- Lines starting with `!` are notices: something changed that you did not do, an earlier call was
-  interrupted, a flash did not complete, PowerView lost its instance marker, a lease event. Read
-  them before anything else.
-- `next:` lines are suggestions derived from the state, complete and runnable as printed. Use them
-  when they fit; ignore them when you know better.
-- A cut body says how to get the rest. Ask for the rest only if you need it.
+- Line 1 of a call that connects is the header: `stopped core=0 pc=0x40083e10`,
+  `running cores=0-3`, or `down`. The core is the one PowerView has selected. A call that does
+  not connect (`read procs`, `read describe`, an error found before connecting) has no header.
+- Copy tokens as printed (`0x40107e40`, `@sp`, `x0`, sizes such as `4K`, durations such as
+  `2.4s`); never convert or reformat them. Every printed value pastes back as an argument.
+- Lines starting with `!` are notices: an earlier call was interrupted and has been cleaned up, a
+  cleanup left something only a human can undo, the CPU is not the profile's, or a PRACTICE
+  script was left on the stack. Read them before anything else.
+- `next:` lines are complete commands, runnable as printed. Use them when they fit.
 
 ## What the exit code tells you to do
 
@@ -62,139 +69,100 @@ effect through another grade either: if `write` was refused, `raw` is not the wa
 
 ### Observe, then act
 
-Base a write on a fresh read. If a write refuses with exit 3, the target moved since you looked:
-re-read the value or location the write depended on and reconsider before running it again. A
-refused write does not acknowledge the change, so running it again blind is refused again. A
-`read` or `run` command proceeds after a change, prints the notice, and acknowledges the change;
-after that, writes go through again.
+t32ctl does not notice changes made outside it: the operator in the PowerView GUI, another tool,
+or the target itself may have moved the target since your last call. Run `t32ctl read status`
+right before a command that asks your human, so the approval is not wasted on an exit 3 or 4 and
+the human approves against the target as it is.
 
-The guard protects one caller. Without a lease, another caller's read acknowledges a change for
-everyone, and your next write goes through on a stale observation. When other agents or your
-subagents share the debugger, take a lease before a write sequence.
+If a notice says an earlier call was interrupted, that call has been cleaned up; look at the
+target again before you continue. If a notice names a PowerView command to type, stop and tell
+your human: only a human can clear that residue, and `END` also closes every dialog and `OPEN`
+file in PowerView.
 
-Run `t32ctl read status` right before a command that asks your human. An exit 3 after the
-approval wastes the approval.
+This t32ctl serves one agent per PowerView. Do not run two of your calls against the same
+debugger at once, and do not let subagents use it beside you. A call that finds the staging
+window or PowerView's script engine busy is exit 4: wait once or do other work, never loop.
 
-If a notice says an earlier call was interrupted, that call died halfway; the notice says what it
-had started. Look at the target again before you continue.
+### Memory and registers
 
-### Run control
-
-Every run command waits for the stop and reports it, so you never poll. Choose the bound to fit
-the question: seconds to reach `main`, longer for a rare condition. Your command has its own
-timeout, two minutes unless you raised it, so keep `--wait` at or under 90 seconds. When a wait
-ends with the target still running (exit 1), decide: halt to see where it is, or run `run go`
-again to keep waiting; on a running target it only waits. Use `--detach` only when you want the
-target to keep running, for example when you hand it back or resume a hung system after
-inspecting it. Run control acts on all cores together; inspection looks at the core that last
-stopped unless you pass `--core`. `run step out` reports the function's return value, typed and
-signed as declared.
-
-### Breakpoints
-
-Breakpoints are named by tags (`b1`, `b2`, or your `--tag`). Setting the same breakpoint again
-(same place, kind, length, condition, and count) is harmless and returns the same tag, so you
-need not check first. Prefer a condition (`--if 'item == 0'`) or a hit count to stopping
-on every hit and inspecting by hand; `--count N` counts the hits where the condition is true.
-
-An exec breakpoint and a `run go` target must be code. To catch an access to data, set a
-watchpoint with `--on write`, `read`, or `access`; `not-code` means you forgot that. Watchpoints
-use the core's few on-chip units: `no-hw-resource` means you must clear one first. A watchpoint
-stops just after the access, so the reported location is the instruction after the writer, and
-it never sees a DMA writer.
-
-Clear breakpoints you no longer need, by tag; the next agent sees yours too. `run bp clear --all`
-clears every t32ctl breakpoint, other agents' included, so use it only when you hand the target
-back.
-
-### Crash triage
-
-Start from the stop report: reason, fault registers (decoded), and the faulting location. Then
-the backtrace; the frame marked `fault` is where the exception happened. Read that frame's
-arguments and locals, then only the memory and types that explain the fault address. Form one
-hypothesis, check it with the fewest reads, and report what you found with the evidence lines.
-Do not reset or reload code into a crashed target before you have read what you need; the state
-is gone afterwards. If the header shows `elf=stale`, load symbols only with `run symbols`.
-
-### Writes, loads, and approval
-
-`write`, `sys`, `burn` and `raw` commands ask your human. Before such a command, say in one
-sentence what you will change and why, so the approval is informed. Make one change per
-hypothesis, then observe. Every write reads back; if the read-back differs, the location may be
-read-only or volatile.
-
-After you rebuild, the header shows `elf=stale` and the hint is `run symbols`: line numbers in
-your edited source do not match the target until symbols are loaded. Load code with `write load`
-only when you mean to replace the code in the target. When the board boots from flash, flash it
-instead.
-
-### Memory policy
+`read mem` reads only what the board profile's memory map allows. Give the address as `0x...`
+(the profile's default class, usually `D`), with a class (`A:0x...` for a physical address), or
+relative to a register (`@sp`, `@x1+0x10`). Without `--len` it reads one cell, so a device
+register is read alone; give `--len` for more. At most `4K` prints as text; for more, write a file
+with `--to NAME` and read the file the report names. A device (`mmio`) region has its own access
+width, and the default follows it.
 
 A `memory-policy` refusal means the board profile does not allow that access: the address is
 outside the map, reading it has side effects (a FIFO, a clear-on-read register), the width does
 not match the device, or the access class is not one the profile accepts. Do not edit the profile
 to get around it, and do not use `raw`. If you need the access, tell your human why.
 
-### Sharing the debugger: when to take the lease
+`read reg` without names reads the general-purpose set (`x0` to `x30`, `sp`, `pc`, `cpsr`); name
+system registers explicitly (`read reg esr_el1 far_el1`). Registers and memory need a stopped
+target: exit 3 says the target runs (`not-halted`) or the debug port is down (`target-down`). On
+a running target, `read mem` works only in regions the profile marks readable while running.
+This t32ctl cannot stop or start the target except through a board procedure; if you need the
+target stopped and no procedure does it, tell your human.
 
-Most of the time nobody holds a lease, and then you need none: run, step, and write as usual.
-Take a lease when the target must stay where you left it across several calls: you halted it at
-a breakpoint and will inspect and step; you write based on a read while other agents or
-subagents share the debugger; you run a sequence (flash, reset, load, run to `main`) that must
-not interleave with anyone else; a board procedure says it requires one.
-
-Hold the lease across a sequence that needs approvals, and tell your human up front that the
-sequence will ask for several prompt approvals. The idle timeout (10 minutes by default) leaves
-time for each approval.
-
-While you hold it, pass `--lease <token>` on every call; that also keeps it alive. It ends after
-a stretch without a call from you and at its cap, and an ended lease never comes back. When the
-header says `contended`, someone is waiting: finish the step you are on and release it. Release
-it when you are done, and tell your human the state you left the target in.
-
-If someone else holds the lease (exit 4), wait once: take the lease with your purpose and
-`--wait` of at most 90 seconds. Or do something that does not need the target; short reads still
-work. Never retry in a loop. If exit 3 says your own lease ended, someone may have moved the
-target: run `t32ctl read status` before anything else, then take a new lease if you still need
-one.
-
-A subagent that only reads needs nothing. Give your token to a subagent only if it must run or
-write inside your lease, and tell it when you release.
-
-### Board procedures, team scripts, and flashing
+### Board procedures
 
 Find procedures with `read procs`, and their parameters with `read procs <name>`. `attach`,
 `reset`, and `flash` are well-known names; `read procs` shows which ones this board has. If a
-bring-up or flash flow needs `reset` and the board has none, ask your human; do not build one
-from `raw`. Invoke a procedure under the grade `read procs` prints. If you get `grade-mismatch`,
-use the command the report suggests even though it asks your human: the approval is the point.
-Never edit the profile or its scripts to make a refusal go away.
+flow needs `reset` and the board has none, ask your human; do not build one from `raw`. Invoke a
+procedure under the grade `read procs` prints. If you get `grade-mismatch`, use the command the
+report suggests even though it asks your human: the approval is the point. Never edit the profile
+or its scripts to make a refusal go away.
+
+If the debug port is down (exit 3 `target-down`), the report suggests the board's `attach`
+procedure when it has one; run it, then repeat what you wanted.
+
+The `result:` line says how the procedure ended. `finished rc=0` is success; any other rc, a
+PRACTICE error, a timeout, or a missing declared output is exit 1. Read the output files the
+report lists before changing anything.
+
+### Team scripts and raw PRACTICE
 
 For a `.cmm` set from the repository use `raw script`; it always asks. Before you run it, say in
 one sentence what the script does and what it changes. You may read the script to describe it to
 your human; never read scripts to learn how to call them. If it fails (exit 1), read the output
 files it lists before changing anything.
 
+When you describe such a script, tell your human if it breaks a rule PowerView imposes, because
+the run will go wrong (the t32ctl profiles document lists them all under "Writing procedure
+scripts"):
+
+- Results travel only through `&t32ctl_rc`, assigned as a string (`&t32ctl_rc="0"`), and
+  `&t32ctl_msg`; t32ctl does not read an `ENDDO` value.
+- Outputs go into the directory `&t32ctl_out`, each file written once: PowerView keeps a `.bak`
+  of an overwritten file, and it comes back as an output.
+- A path is built into a macro first and passed quoted (`OPEN #1 "&log" /Create`); never a
+  relative path, never a concatenation in a file argument.
+- No `END`: it ends t32ctl's runner too (exit 5) and closes your human's dialogs and files.
+- `MKDIR`, `RM`, and `RMDIR` come after a check: each fails when there is nothing to do.
+
+`raw cmd` and `raw eval` send one PRACTICE command or function exactly as you typed it: PowerView
+expands no `&macro` in it, and a function takes a literal file name. Never send a command that
+waits (`WAIT`): it keeps every other client out of PowerView until it ends. Put waits in a
+script. Use `raw` only when no command does what you need, tell your human which command was
+missing, and never use it to work around a refusal.
+
+### Flashing
+
 Flashing is a `burn` procedure and cannot be undone. Confirm the image and the partition with
-your human first, hold the lease for the whole sequence (flash, reset, load symbols, run to
-`main`), and release it at the end. If a notice says a flash did not complete, do not boot from
-that storage; tell your human.
+your human first, run `read status` right before the flash, run the flash in the background
+(below), and reset the board with its `reset` procedure afterwards. A flash that ends without
+`rc=0` did not confirm its verification: do not boot from that storage. If the flash call was
+interrupted, its report says the storage may hold a partial image, and no later call repeats it:
+tell your human at once.
 
 ### Long calls
 
 A flash, a script, or a large transfer can outlast your command timeout, and a call killed
 halfway leaves work half done. Run such a call with the shell tool's background mode or with a
 command timeout above the call's own bound. The t32ctl process blocks until the work is done, and
-its exit code is the result. Calls with long bounds: a procedure or script (its timeout, shown by
-`read procs <name>`), and the transfers `read mem --to`, `write mem --from`, `write load`, and
-`run symbols` (10 minutes by default, at most an hour). If you hold the lease, the running call
-keeps it.
-
-### Windows and the raw escape hatch
-
-`read window` shows only the views `read window --list` prints. Any other window, and any
-PRACTICE text you write, is `raw`. Use `raw` only when no command or view does what you need, and
-tell your human which command was missing. Never use it to work around a refusal.
+its exit code is the result. Calls with long bounds: a procedure (its timeout, shown by
+`read procs <name>`), `raw script` (`--timeout`, 5 minutes by default), and `read mem --to` and
+a procedure's file upload (10 minutes by default, at most an hour).
 
 ### Never
 
@@ -202,7 +170,7 @@ tell your human which command was missing. Never use it to work around a refusal
   `~/.config/t32ctl/`, or the state directory `~/.local/state/t32ctl/`.
 - Run `t32ctl admin`; it is for the operator.
 - Retry an exit 4 in a loop, or an exit 2 unchanged.
-- Leave the target running into code you just wrote to memory without saying so.
+- Send a command that waits with `raw cmd`.
 
 ## Commands
 
