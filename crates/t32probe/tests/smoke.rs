@@ -159,3 +159,51 @@ fn interrupt_during_attach(sig: &str) {
         "SIG{sig}: {text}"
     );
 }
+
+/// Started with SIGHUP ignored (`nohup`), a closed terminal does not stop the run; SIGTERM still
+/// does.
+#[test]
+fn an_ignored_sighup_stays_ignored() {
+    let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = l.local_addr().expect("addr").port();
+    let state = std::env::temp_dir().join(format!("t32probe-smoke-nohup-{}", std::process::id()));
+    let mut child = Command::new("nohup")
+        .arg(bin())
+        .args(["--host", "127.0.0.1", "--port", &port.to_string(), "--only", "connect", "--timeout", "30"])
+        .arg("--state-dir")
+        .arg(&state)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("nohup t32probe starts");
+    let (mut peer, _) = l.accept().expect("t32probe connects");
+    let mut attach = [0u8; 64];
+    let _ = peer.read(&mut attach);
+    let pid = child.id().to_string();
+    let kill = |sig: &str| {
+        let sent = Command::new("kill").args([&format!("-{sig}"), &pid]).status().expect("kill runs");
+        assert!(sent.success());
+    };
+    kill("HUP");
+    thread::sleep(Duration::from_millis(500));
+    let alive = child.try_wait().expect("wait").is_none();
+    if alive {
+        kill("TERM");
+    }
+    let give_up = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait") {
+            break status;
+        }
+        if Instant::now() > give_up {
+            let _ = child.kill();
+            panic!("t32probe still runs 10 s after SIGTERM");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let mut text = String::new();
+    child.stdout.take().expect("piped").read_to_string(&mut text).expect("utf-8 report");
+    let _ = std::fs::remove_dir_all(&state);
+    assert!(alive, "SIGHUP stopped the run: {text}");
+    assert_eq!(status.code(), Some(130), "{text}");
+}

@@ -79,13 +79,23 @@ fn run_id() -> String {
     format!("{:04x}", (nanos ^ std::process::id().rotate_left(16)) & 0xFFFF)
 }
 
+/// Whether this process started with SIGHUP ignored: bit `SIGHUP - 1` of `SigIgn` in
+/// `/proc/self/status`. An unreadable mask counts as not ignored.
+fn sighup_ignored() -> bool {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let mask =
+        status.lines().find_map(|l| l.strip_prefix("SigIgn:")).and_then(|m| u64::from_str_radix(m.trim(), 16).ok());
+    mask.is_some_and(|m| m & (1 << (SIGHUP - 1)) != 0)
+}
+
 fn run(args: &Args) -> Result<u8, String> {
     let started = Instant::now();
     // First Ctrl-C, SIGTERM or SIGHUP (a closed terminal) sets the flag: the current probe stops,
     // its cleanup runs, the partial report prints. A second one exits at once with 130; the JSON
-    // written so far stays valid.
+    // written so far stays valid. A SIGHUP the caller ignored (`nohup`) stays ignored.
     let flag = Arc::new(AtomicBool::new(false));
-    for sig in [SIGINT, SIGTERM, SIGHUP] {
+    let hup = (!sighup_ignored()).then_some(SIGHUP);
+    for sig in [SIGINT, SIGTERM].into_iter().chain(hup) {
         signal_hook::flag::register_conditional_shutdown(sig, 130, Arc::clone(&flag)).map_err(|e| e.to_string())?;
         signal_hook::flag::register(sig, Arc::clone(&flag)).map_err(|e| e.to_string())?;
     }
