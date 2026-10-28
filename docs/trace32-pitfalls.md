@@ -98,13 +98,31 @@ alpha.4 `unpack-literal` probe turned them into the path `u1/.` and failed.
 
 Rule: listings drop `.` and `..`.
 
+### A file argument is a name, not an expression
+
+`OS.FILE.SIZE(OS.PresentPracticeDirectory()+"\deep\data.bin")` answered 0, without an error, for
+a 4097-byte file that `OS.FILE.SIZE("<literal path>")` and the client both read correctly (alpha.7
+`bundle`). Building the same path into a macro first and passing `OS.FILE.SIZE("&p")` works
+(alpha.8). The directory part was right (`OS.PresentPracticeDirectory()` returned the script's
+directory), so the file argument is taken as a file name rather than evaluated; inferred from the
+contrast, not from the manual.
+
+Rule: give `OS.FILE.*`, `OS.DIR()` and file commands a quoted literal, or a quoted macro that holds
+the path (`"&p"`), never a concatenation.
+
+### `TAR` stores full paths
+
+`TAR <archive> <dir>\*` stores each file under its full path minus the drive
+(`Users/<user>/AppData/Local/Temp/.../o/a.txt`), in ustar format (`tar-download`:
+`names=prefixed`). `ZIP` produces gzip.
+
+Rule: `Stage::fetch_outputs` strips the archived directory from each name (`tar::below`).
+
 ### Other file facts
 
 - `OS.FILE.readable()` answers; use it as the existence test (`tempdir`).
 - `~~~` resolves to `OS.PTD()`; `~~~~` to the running script's directory (`channel-in`).
 - `WRITE` writes CRLF line ends (`channel-out`, `script-lab`).
-- `TAR` stores ustar names with the full path minus the drive (`Users/.../a.txt`), and `ZIP`
-  produces gzip (`tar-download`).
 
 ## Memory
 
