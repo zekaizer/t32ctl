@@ -313,6 +313,26 @@ fn a_journal_whose_script_may_still_run_is_kept_and_no_notice_says_end() {
 }
 
 #[test]
+fn a_residue_left_for_a_human_keeps_its_condition_in_the_notice() {
+    let w = World::new("replay-break");
+    w.write("home/.local/state/t32ctl/pv/auto-20000/journal/t32ctl-1-1.undo", "break\n");
+    let s = Script::new().attach();
+    let s = s.expect_req(Request::TargetState).reply_state(2).expect_fn("SYStem.CPU()").reply_text("CortexA53");
+    let s = pv(cores(s), Some(1), 0, 0);
+    let out = call("t32ctl read status", &deps(w.env(), vec![Ok(stopped_header(s))]));
+    assert_eq!(
+        out.text,
+        format!(
+            "stopped core=0 pc=0x40083e10\n\
+             ! residue: break target (left by an earlier run): only if t32ctl left the target running; \
+             in PowerView type: Break\n\
+             {TARGET}pv      build=168999 clients=1 practice=idle\n"
+        )
+    );
+    assert_eq!(out.code, 0);
+}
+
+#[test]
 fn a_refused_read_is_exit_2_and_the_header_still_prints() {
     let w = World::new("refused");
     let s = cores(connected(2))

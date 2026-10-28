@@ -286,6 +286,11 @@ fn residue_notices(report: &CleanupReport) -> Vec<Notice> {
             v.push(Notice::new(format!("{}: {}", item.what, item.outcome.label())));
             continue;
         }
+        // Why a step was not attempted qualifies its command: a condition, or the lost connection.
+        let condition = match &item.outcome {
+            CleanupOutcome::NotAttempted(why) => format!(": {why}"),
+            _ => String::new(),
+        };
         match &item.manual {
             Some(commands) => v.extend(commands.lines().map(|c| {
                 let end = if c == t32stage::practice::cmd::END {
@@ -293,7 +298,7 @@ fn residue_notices(report: &CleanupReport) -> Vec<Notice> {
                 } else {
                     ""
                 };
-                Notice::new(format!("residue: {}; in PowerView type: {c}{end}", item.what))
+                Notice::new(format!("residue: {}{condition}; in PowerView type: {c}{end}", item.what))
             })),
             None => v.push(Notice::new(format!("residue: {}: {}", item.what, item.outcome.label()))),
         }

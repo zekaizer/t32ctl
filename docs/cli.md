@@ -501,9 +501,11 @@ comes from the call that prints it:
 | CPU mismatch (only `read status`; every other command refuses) | `! connected CPU CortexA72 is not the profile's CortexA53: every other command refuses` |
 | A script left on the stack by `raw cmd` | `! a PRACTICE script is on the stack after this command (depth 1, running); proc and raw script calls wait for it` |
 
-A residue notice names one PowerView command per line, for what cleanup could not undo. A deferred
-replay names nothing to type: the next call that finds PowerView idle with an empty PRACTICE stack
-replays the journal.
+A residue notice names one PowerView command per line, for what cleanup could not undo. A step
+cleanup did not attempt keeps why before its command, the condition for typing it:
+`! residue: break target (left by an earlier run): only if t32ctl left the target running; in
+PowerView type: Break`. A deferred replay names nothing to type: the next call that finds
+PowerView idle with an empty PRACTICE stack replays the journal.
 
 Planned with the state file: notices that stay until a call acknowledges them. Every call prints
 the notices not yet acknowledged, and a call allowed to acknowledge a notice is the last to print

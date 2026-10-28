@@ -156,11 +156,11 @@ impl Undo {
         }
     }
 
-    /// Why a human decides this undo when a dead run left it: replaying it would act on a state
-    /// the operator may have created since (a target they started).
+    /// When a human applies this undo's manual hint, if a dead run left it: replaying it would act
+    /// on a state the operator may have created since (a target they started).
     fn left_for_a_human(&self) -> Option<&'static str> {
         match self {
-            Undo::BreakTarget => Some("check the target; type Break if t32ctl left it running"),
+            Undo::BreakTarget => Some("only if t32ctl left the target running"),
             _ => None,
         }
     }
