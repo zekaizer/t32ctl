@@ -331,8 +331,8 @@ fn a_busy_powerview_refuses_the_run_without_starting_anything() {
     assert_eq!(
         out.text.lines().nth(1),
         Some(
-            "error[pv-script-halted]: the run: a PRACTICE script t32ctl did not start has halted on the stack (depth \
-             2); someone must end it in PowerView"
+            "error[pv-script-halted]: the run: a PRACTICE script this call did not start has halted on the stack \
+             (depth 2); someone must end it in PowerView"
         )
     );
 }

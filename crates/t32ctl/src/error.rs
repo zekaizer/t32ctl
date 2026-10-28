@@ -257,7 +257,7 @@ impl ErrorKind {
                  PRACTICE stack."
             }
             ErrorKind::PvScriptHalted => {
-                "A PRACTICE script t32ctl did not start has halted on the stack; someone must end it in PowerView."
+                "A PRACTICE script this call did not start has halted on the stack; someone must end it in PowerView."
             }
             ErrorKind::CpuMismatch => "The connected CPU is not the profile's CPU: wrong board or wrong profile.",
             ErrorKind::ProfileInvalid => {
@@ -414,7 +414,7 @@ pub fn from_stage(e: &StageError, step: &str) -> CtlError {
         }
         StageError::Busy { depth } => {
             let message = format!(
-                "{step}: a PRACTICE script t32ctl did not start has halted on the stack (depth {depth}); someone \
+                "{step}: a PRACTICE script this call did not start has halted on the stack (depth {depth}); someone \
                  must end it in PowerView"
             );
             return CtlError::new(ErrorKind::PvScriptHalted, message);

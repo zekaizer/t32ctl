@@ -83,15 +83,16 @@ command. For the same reason the client sets every macro a script reads over EXP
 
 Every side effect registers its undo before it happens. Undos are a closed enum, not closures,
 because a cleanup that cannot run must still print the exact command to type into PowerView.
-The ledger runs newest first, never stops at a failure, and revives a dead connection once. Once
-its own unwind fails, the journaled undos older than it stay in the journal unapplied: they name
-what the script it could not end may still use.
-Undos that name PowerView files, directories, macros or the PRACTICE stack are written to a
-locked journal on the WSL side before they are registered; the next run replays journals left
-by dead processes. A journal that names the PRACTICE stack replays only while PowerView is idle
-with an empty stack; otherwise the dead process's script may still run, and the journal waits for
-a later run. `VM:` restores stay in memory: they are captured per 4 KiB unit, written back,
-read back and compared, and a unit that was never initialized is cleared alone.
+The ledger runs newest first, never stops at a failure, and revives a dead connection once. Once its
+own unwind fails, the journaled undos older than it stay in the journal unapplied: they name what
+the script it could not end may still use. Undos that name PowerView files, directories, macros or
+the PRACTICE stack are written to a locked journal on the WSL side before they are registered; the
+next run replays journals left by dead processes. A journal that names the PRACTICE stack replays
+only while PowerView is idle with an empty stack; otherwise the dead process's script may still run,
+and the journal waits for a later run. A halted script, or one in a dialog, never ends by itself, so
+that report also names `END`, for a human to type only if the script is t32ctl's. `VM:` restores
+stay in memory: they are captured per 4 KiB unit, written back, read back and compared, and a unit
+that was never initialized is cleared alone.
 
 A run's output directory (`out-<token>`) is the one undo that removes what it holds. Its script
 writes files no undo names in advance, and a run that fails or is interrupted fetches none, so

@@ -147,8 +147,6 @@ fn a_crashed_unwind_is_moot_once_powerview_is_idle_with_an_empty_stack() {
 fn a_journal_with_an_unwind_is_kept_whole_while_its_script_may_run() {
     for (tag, s) in [
         ("journal-defer-running", practice(Script::new().attach(), 1, 1)),
-        ("journal-defer-dialog", practice(Script::new().attach(), 2, 1)),
-        ("journal-defer-halted", practice(Script::new().attach(), 0, 1)),
         (
             "journal-defer-unread",
             Script::new()
@@ -170,6 +168,47 @@ fn a_journal_with_an_unwind_is_kept_whole_while_its_script_may_run() {
         );
         assert!(item.outcome.label().starts_with("deferred: "), "{tag}: {item:?}");
         assert_eq!(item.manual, None, "{tag}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), before, "{tag}");
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
+fn a_deferral_names_what_it_saw_in_the_contract_words() {
+    let (dir, _) = crashed_with_unwind("journal-defer-words");
+    let report = replay_leftovers(&mut session(practice(Script::new().attach(), 1, 1)), &dir, ExistsFn::OsFileReadable);
+    assert_eq!(
+        report.items[0].outcome.label(),
+        "deferred: its script may still be running (practice=running, depth 1); a later call cleans up after it"
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_journal_whose_script_halted_or_waits_in_a_dialog_is_kept_and_names_end_for_a_human() {
+    for (tag, state, seen, which) in [
+        ("journal-defer-halted", 0, "has halted (practice=halted, depth 1)", "halted"),
+        ("journal-defer-dialog", 2, "waits in a dialog (practice=dialog, depth 1)", "dialog"),
+    ] {
+        let (dir, path) = crashed_with_unwind(tag);
+        let before = fs::read_to_string(&path).unwrap();
+        let report =
+            replay_leftovers(&mut session(practice(Script::new().attach(), state, 1)), &dir, ExistsFn::OsFileReadable);
+        assert_eq!(report.items.len(), 2, "{tag}: {report:?}");
+        assert_eq!(
+            report.items[0].outcome.label(),
+            format!("deferred: its script {seen}; a later call cleans up after it once the stack is empty"),
+            "{tag}"
+        );
+        assert_eq!(report.items[0].manual, None, "{tag}");
+        let end = &report.items[1];
+        assert_eq!(end.what, "unwind PRACTICE stack (left by an earlier run)", "{tag}");
+        let condition = match which {
+            "halted" => "only if the halted script is t32ctl's",
+            _ => "only if the script in the dialog is t32ctl's",
+        };
+        assert_eq!(end.outcome, CleanupOutcome::NotAttempted(condition.into()), "{tag}");
+        assert_eq!(end.manual.as_deref(), Some("END"), "{tag}");
         assert_eq!(fs::read_to_string(&path).unwrap(), before, "{tag}");
         let _ = fs::remove_dir_all(dir);
     }

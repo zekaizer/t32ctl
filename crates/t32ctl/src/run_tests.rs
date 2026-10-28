@@ -303,9 +303,35 @@ fn a_journal_whose_script_may_still_run_is_kept_and_no_notice_says_end() {
         out.text,
         format!(
             "stopped core=0 pc=0x40083e10\n\
-             ! cleanup left by an earlier run: deferred: its script may still be running (PRACTICE Running, \
-             stack depth 1); a later call cleans up after it\n\
+             ! cleanup left by an earlier run: deferred: its script may still be running (practice=running, \
+             depth 1); a later call cleans up after it\n\
              {TARGET}pv      build=168999 clients=1 practice=running (depth 1)\n"
+        )
+    );
+    assert_eq!(out.code, 0);
+    let kept = std::fs::read_to_string(w.pv_dir().join("journal/t32ctl-1-1.undo")).unwrap();
+    assert_eq!(kept, journal);
+}
+
+#[test]
+fn a_journal_whose_script_halted_is_kept_and_names_end_for_a_human() {
+    let w = World::new("replay-halted");
+    let journal = "rm-file\tLC:\\T\\t32ctl\tk/a.bin\nunwind\n";
+    w.write("home/.local/state/t32ctl/pv/auto-20000/journal/t32ctl-1-1.undo", journal);
+    let s = Script::new().attach().expect_req(Request::PracticeState).reply_state(0);
+    let s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
+    let s = s.expect_req(Request::TargetState).reply_state(2).expect_fn("SYStem.CPU()").reply_text("CortexA53");
+    let s = pv(cores(s), Some(1), 0, 1);
+    let out = call("t32ctl read status", &deps(w.env(), vec![Ok(stopped_header(s))]));
+    assert_eq!(
+        out.text,
+        format!(
+            "stopped core=0 pc=0x40083e10\n\
+             ! cleanup left by an earlier run: deferred: its script has halted (practice=halted, depth 1); a later \
+             call cleans up after it once the stack is empty\n\
+             ! residue: unwind PRACTICE stack (left by an earlier run): only if the halted script is t32ctl's; in \
+             PowerView type: END (END also closes every dialog and OPEN file)\n\
+             {TARGET}pv      build=168999 clients=1 practice=halted (depth 1)\n"
         )
     );
     assert_eq!(out.code, 0);

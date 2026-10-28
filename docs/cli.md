@@ -500,15 +500,18 @@ comes from the call that prints it:
 | Journals replayed at connect | `! cleaned up after an interrupted call: 2 steps` |
 | Residue, after a replay or this call | `! residue: unwind PRACTICE stack; in PowerView type: END (END also closes every dialog and OPEN file)` |
 | Cleanup kept under this call's own script, which could not be unwound | `! cleanup under the script t32ctl started (2 steps): deferred: kept until the PRACTICE stack is empty; a later call cleans up after it` |
-| Replay deferred: an interrupted call's script may still run | `! cleanup left by an earlier run: deferred: its script may still be running (PRACTICE Running, stack depth 1); a later call cleans up after it` |
+| Replay deferred: an interrupted call's script may still run | `! cleanup left by an earlier run: deferred: its script may still be running (practice=running, depth 1); a later call cleans up after it` |
+| Replay deferred: an interrupted call's script has halted, or waits in a dialog | `! cleanup left by an earlier run: deferred: its script has halted (practice=halted, depth 1); a later call cleans up after it once the stack is empty`, then `! residue: unwind PRACTICE stack (left by an earlier run): only if the halted script is t32ctl's; in PowerView type: END (END also closes every dialog and OPEN file)` |
 | CPU mismatch (only `read status`; every other command refuses) | `! connected CPU CortexA72 is not the profile's CortexA53: every other command refuses` |
 | A script left on the stack by `raw cmd` | `! a PRACTICE script is on the stack after this command (depth 1, running); proc and raw script calls wait for it` |
 
 A residue notice names one PowerView command per line, for what cleanup could not undo. A step
 cleanup did not attempt keeps why before its command, the condition for typing it:
 `! residue: break target (left by an earlier run): only if t32ctl left the target running; in
-PowerView type: Break`. A deferred replay names nothing to type: the next call that finds
-PowerView idle with an empty PRACTICE stack replays the journal. Neither does cleanup kept under
+PowerView type: Break`. A deferred replay names nothing to type while the script may still run:
+the next call that finds PowerView idle with an empty PRACTICE stack replays the journal. A halted
+script, or one in a dialog, never ends by itself: the deferral also names `END`, for a human to
+type only if that script is t32ctl's. Neither does cleanup kept under
 a script this call could not unwind: the call's `residue` error names `END`, and the next call
 after it replays the journal.
 
@@ -637,7 +640,7 @@ Each error carries a stable tag:
 | `no-answer` | 5 | PowerView accepted TCP but does not answer: a modal dialog, or a blocking command. |
 | `dialog` | 5 | A script opened a dialog; it was stopped, and the window may still be open. |
 | `script-vanished` | 5 | A script run ended without the runner reaching its end: something outside t32ctl cleared the PRACTICE stack. |
-| `pv-script-halted` | 5 | A PRACTICE script t32ctl did not start has halted on the stack; someone must end it in PowerView. |
+| `pv-script-halted` | 5 | A PRACTICE script this call did not start has halted on the stack; someone must end it in PowerView. |
 | `cpu-mismatch` | 5 | The connected CPU is not the profile's CPU: wrong board or wrong profile. |
 | `profile-invalid` | 5 | A profile, binding, or config file has an error; file, line, and column are shown. |
 | `no-profile` | 5 | No target profile was found for this build; the search path is shown. |
@@ -680,7 +683,7 @@ the same rule, so both tools share the `VM:` lock and replay each other's journa
 - **Exclusion.** The MVP serves one caller per PowerView, with its background calls. Two staged
   calls (procedures, `raw script`) cannot share the `VM:` window (exit 4 `vm-busy`), and a run
   starts only on an empty PRACTICE stack (exit 4 `pv-script-running`, or exit 5
-  `pv-script-halted` for a halted script that t32ctl did not start). Reads take no lock.
+  `pv-script-halted` for a halted script that the call did not start). Reads take no lock.
 - **Interrupted calls.** A call journals every PowerView side effect before it makes it and
   cleans up after itself, also after Ctrl-C. The next call on the same PowerView replays the
   journal of a call that died, and its notices say what it cleaned up and what it could not. A

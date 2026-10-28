@@ -591,8 +591,9 @@ fn held_item(held: &[Undo], journaled: bool) -> CleanupItem {
 /// stack may hold the operator's own scripts. A journal holding it replays only while PRACTICE is
 /// idle with an empty stack, the unwind moot; otherwise the dead call's script may still run and
 /// write under the files and macros the journal names, so the journal stays untouched for a later
-/// call (`Deferred`). `BreakTarget` is reported, never executed: the target may run because the
-/// operator started it.
+/// call (`Deferred`). A halted script, or one in a dialog, never ends by itself: the deferral also
+/// reports the unwind `NotAttempted`, its `END` qualified by the script being t32ctl's.
+/// `BreakTarget` is reported, never executed: the target may run because the operator started it.
 pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsFn) -> CleanupReport {
     let mut report = CleanupReport::default();
     let Ok(entries) = fs::read_dir(state_dir.join(JOURNAL_DIR)) else { return report };
@@ -613,13 +614,30 @@ pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsF
         if text.lines().any(|l| Some(l) == unwind.as_deref())
             && let Err(seen) = practice_gone(session)
         {
-            report.items.push(CleanupItem {
-                what: "cleanup left by an earlier run".into(),
-                outcome: CleanupOutcome::Deferred(format!(
-                    "its script may still be running ({seen}); a later call cleans up after it"
-                )),
-                manual: None,
-            });
+            let what = "cleanup left by an earlier run".to_string();
+            match seen {
+                Seen::Running(seen) => report.items.push(CleanupItem {
+                    what,
+                    outcome: CleanupOutcome::Deferred(format!(
+                        "its script may still be running ({seen}); a later call cleans up after it"
+                    )),
+                    manual: None,
+                }),
+                Seen::Stuck { seen, condition } => report.items.extend([
+                    CleanupItem {
+                        what,
+                        outcome: CleanupOutcome::Deferred(format!(
+                            "its script {seen}; a later call cleans up after it once the stack is empty"
+                        )),
+                        manual: None,
+                    },
+                    CleanupItem {
+                        what: format!("{} (left by an earlier run)", Undo::UnwindPractice.describe()),
+                        outcome: CleanupOutcome::NotAttempted(condition.into()),
+                        manual: Undo::UnwindPractice.manual_hint(),
+                    },
+                ]),
+            }
             continue;
         }
         let journal = Journal { path: path.clone(), file };
@@ -651,13 +669,32 @@ pub fn replay_leftovers(session: &mut Session, state_dir: &Path, exists: ExistsF
     report
 }
 
+/// What `practice_gone` saw instead of an idle, empty PRACTICE stack, in the header's words.
+enum Seen {
+    /// A script may still run and end by itself, or the state is unknown.
+    Running(String),
+    /// A script that never ends by itself: halted, or waiting in a dialog. `condition` qualifies
+    /// the `END` a human types: the script may be the operator's.
+    Stuck { seen: String, condition: &'static str },
+}
+
 /// `Ok` when PRACTICE is idle with an empty stack; else what was seen, or why it is unknown.
-fn practice_gone(session: &mut Session) -> Result<(), String> {
-    let state = session.practice_state().map_err(|e| format!("PRACTICE state unknown: {e}"))?;
-    let depth = stack_depth(session).map_err(|e| format!("PRACTICE stack depth unknown: {e}"))?;
+fn practice_gone(session: &mut Session) -> Result<(), Seen> {
+    let state = session.practice_state().map_err(|e| Seen::Running(format!("PRACTICE state unknown: {e}")))?;
+    let depth = stack_depth(session).map_err(|e| Seen::Running(format!("PRACTICE stack depth unknown: {e}")))?;
+    let words = |word: &str| format!("practice={word}, depth {depth}");
     match (state, depth) {
         (PracticeState::Idle, 0) => Ok(()),
-        (state, depth) => Err(format!("PRACTICE {state:?}, stack depth {depth}")),
+        (PracticeState::Idle, _) => Err(Seen::Stuck {
+            seen: format!("has halted ({})", words("halted")),
+            condition: "only if the halted script is t32ctl's",
+        }),
+        (PracticeState::Dialog, _) => Err(Seen::Stuck {
+            seen: format!("waits in a dialog ({})", words("dialog")),
+            condition: "only if the script in the dialog is t32ctl's",
+        }),
+        (PracticeState::Running, _) => Err(Seen::Running(words("running"))),
+        (PracticeState::Other(n), _) => Err(Seen::Running(words(&format!("state{n}")))),
     }
 }
 
