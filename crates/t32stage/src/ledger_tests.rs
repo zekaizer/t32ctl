@@ -169,6 +169,56 @@ fn unwind_proceeds_when_t32_stop_answers_status_1() {
     assert_eq!(unwind_practice(&mut session(s)).unwrap(), CleanupOutcome::Done);
 }
 
+fn revert(what: &str, commands: &[&str]) -> Undo {
+    Undo::Revert { what: what.into(), commands: commands.iter().map(|c| c.to_string()).collect() }
+}
+
+#[test]
+fn revert_is_never_journaled_and_runs_newest_first() {
+    let dir = temp_dir("journal-revert");
+    let mut ledger = Ledger::journaled(Journal::create(&dir, "run").unwrap(), ExistsFn::OsFileReadable);
+    ledger.push(revert("core", &["CORE.select 0", "SYStem.Mode Attach"])).unwrap();
+    ledger.push(revert("area", &["AREA.Delete T32PQ1A2B"])).unwrap();
+    assert_eq!(fs::read_to_string(dir.join("journal/run.undo")).unwrap(), "");
+
+    let s = Script::new().attach().expect_cmd("AREA.Delete T32PQ1A2B").reply_ok();
+    let s = s.expect_cmd("CORE.select 0").reply_ok().expect_cmd("SYStem.Mode Attach").reply_ok();
+    let report = ledger.run(&mut session(s));
+    assert!(report.is_clean(), "{report:?}");
+    let what: Vec<_> = report.items.iter().map(|i| i.what.as_str()).collect();
+    assert_eq!(what, ["revert area", "revert core"]);
+    assert!(!dir.join("journal/run.undo").exists());
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_failed_revert_prints_its_commands_as_the_manual_hint() {
+    let mut ledger = Ledger::new(ExistsFn::OsFileReadable);
+    ledger.push(revert("bp", &["Break.Delete main", "Break.Delete sub"])).unwrap();
+    let s = Script::new().attach().expect_cmd("Break.Delete main").reply_error(90, "no breakpoint");
+    let report = ledger.run(&mut session(s));
+    assert!(matches!(report.items[0].outcome, CleanupOutcome::Failed(_)), "{report:?}");
+    assert_eq!(report.items[0].manual.as_deref(), Some("Break.Delete main\nBreak.Delete sub"));
+}
+
+#[test]
+fn revert_now_applies_and_removes_only_that_undo() {
+    let mut ledger = Ledger::new(ExistsFn::OsFileReadable);
+    ledger.push(Undo::RemoveFile(file("x.bin"))).unwrap();
+    ledger.push(revert("a", &["A.old"])).unwrap();
+    ledger.push(revert("a", &["A.new"])).unwrap();
+    ledger.push(revert("b", &["B"])).unwrap();
+    let s = Script::new().attach().expect_cmd("A.new").reply_ok().expect_cmd("A.old").reply_error(90, "refused");
+    let mut session = session(s);
+
+    assert_eq!(ledger.revert_now(&mut session, "a"), CleanupOutcome::Done);
+    assert!(matches!(ledger.revert_now(&mut session, "a"), CleanupOutcome::Failed(_)));
+    assert_eq!(ledger.revert_now(&mut session, "a"), CleanupOutcome::AlreadyClean);
+    let left: Vec<_> = ledger.pending().iter().map(Undo::describe).collect();
+    assert_eq!(left, ["remove file C:\\T\\t32ctl\\x.bin", "revert b"]);
+    ledger.discard();
+}
+
 #[test]
 fn manual_commands_are_typeable() {
     assert_eq!(Undo::RemoveFile(file("x y.bin")).manual_hint().as_deref(), Some("RM \"C:\\T\\t32ctl\\x y.bin\""));
