@@ -29,8 +29,9 @@ macro_table! {
     Entry = "t32ctl_entry", "client -> runner: entry script, relative to the snapshot directory.";
     Args  = "t32ctl_args",  "client -> runner: unquoted argument text appended to the DO line.";
     Done  = "t32ctl_done",  "scripts -> client: equals `Token` once the script finished, success or failure.";
-    Rc    = "t32ctl_rc",    "scripts -> client: 0 success, 1 PRACTICE error caught.";
-    Msg   = "t32ctl_msg",   "scripts -> client: error text when `Rc` is not 0.";
+    Fail  = "t32ctl_fail",  "runner -> client: `1` when the runner caught a PRACTICE error; empty otherwise.";
+    Rc    = "t32ctl_rc",    "entry script -> client: its result code; empty when it set none.";
+    Msg   = "t32ctl_msg",   "scripts -> client: one line for the report; the caught error's message after a catch.";
     Ret   = "t32ctl_ret",   "scripts -> client: what the entry script returned with ENDDO.";
 }
 

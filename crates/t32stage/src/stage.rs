@@ -32,7 +32,8 @@ use crate::{
     macros::Macro,
     practice::{ExistsFn, PvPath, RelPath, StagePath, StageRoot, cmd, fnc, render_args},
     runner::{
-        IdleVerdict, Next, PollSchedule, PollStats, PracticeErrorInfo, RunOutcome, RunReport, RunRequest, ScriptWatch,
+        IdleVerdict, Next, PollSchedule, PollStats, PracticeErrorInfo, RunOutcome, RunReport, RunRequest, ScriptRc,
+        ScriptWatch,
     },
     tar::{self, TarDiag, TarEntry},
     transfer::{self, Put},
@@ -434,7 +435,9 @@ impl Stage {
         token: &str,
     ) -> Result<(RunOutcome, PollStats), StageError> {
         session.macro_set(&Macro::Token.name(), token)?;
-        session.macro_set(&Macro::Done.name(), "")?;
+        for m in [Macro::Done, Macro::Fail, Macro::Rc, Macro::Msg, Macro::Ret] {
+            session.macro_set(&m.name(), "")?;
+        }
         session.cmd(cmd::ERROR_RESET)?;
         self.ledger.push(Undo::UnwindPractice)?;
         // ASSUMED(script-lab): `DO` over ExecuteCommand returns while the script runs; if it returns
@@ -500,13 +503,9 @@ fn unquote(s: &str) -> &str {
 
 fn finished(session: &mut Session) -> Result<RunOutcome, StageError> {
     let mut get = |m: Macro| session.macro_get(&m.name()).map(|v| unquote(&v).to_string());
-    let rc_text = get(Macro::Rc)?;
-    let rc = rc_text
-        .trim()
-        .trim_end_matches('.')
-        .parse()
-        .map_err(|_| StageError::BadReply { what: "t32ctl_rc", text: rc_text })?;
-    Ok(RunOutcome::Finished { rc, message: get(Macro::Msg)?, ret: get(Macro::Ret)? })
+    let caught = !get(Macro::Fail)?.trim().is_empty();
+    let rc = ScriptRc::parse(&get(Macro::Rc)?);
+    Ok(RunOutcome::Finished { caught, rc, message: get(Macro::Msg)?, ret: get(Macro::Ret)? })
 }
 
 /// Best effort: a halt is reported even when the error text cannot be read.

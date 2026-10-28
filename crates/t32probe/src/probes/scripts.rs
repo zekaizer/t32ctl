@@ -324,7 +324,7 @@ pub fn bundle(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     ctx.text("repair", ok(repaired));
     ctx.text("sizes", ok(sizes_ok));
     ctx.measure("outcome", Value::Text(format!("{:?}", report.outcome)));
-    let nested = matches!(&report.outcome, RunOutcome::Finished { rc: 0, ret, .. } if ret.contains("chain-ok"));
+    let nested = matches!(&report.outcome, RunOutcome::Finished { caught: false, ret, .. } if ret.contains("chain-ok"));
     ctx.text("nested_do", ok(nested && deep_ran));
     ctx.measure("deep_macro", Value::Text(format!("{deep:?}")));
     ctx.headline("idle_dips", Value::Count(report.polls.idle_after_running.into()));

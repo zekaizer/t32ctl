@@ -8,49 +8,57 @@
 //! `&t32ctl_done` as the last statement of both its success and its error path, and the client
 //! compares.
 //!
+//! The entry script owns `&t32ctl_rc` and `&t32ctl_msg`; the runner writes only `&t32ctl_fail`
+//! and the caught error's message, so a script can report a failure through its result code.
+//!
 //! ```text
 //! client                                   PowerView
 //! require PRACTICE idle and stack depth 0
-//! set t32ctl_token, _entry, _args, _done; bind t32ctl_snap, _out
+//! set t32ctl_entry, _args; bind t32ctl_snap, _out
+//! set t32ctl_token; empty _done, _fail, _rc, _msg, _ret
 //! ERROR.RESet; DO "<snap>\.t32ctl\runner.cmm"
 //! loop GetPracticeState  ------------->    1 running | 2 dialog | 0 idle
 //!   2 -> T32_Stop, unwind                             DialogAborted
-//!   0 -> t32ctl_done == token ?  Finished: read rc, msg, ret
+//!   0 -> t32ctl_done == token ?  Finished: read fail, rc, msg, ret
 //!        else depth > 0          Halted: read ERROR.*, unwind
 //!        else after start grace  Vanished
 //! ```
 
-use std::time::{Duration, Instant};
+use std::{
+    fmt,
+    time::{Duration, Instant},
+};
 
 use t32rcl::PracticeState;
 
 use crate::{macros::Macro, practice::RelPath};
 
 /// Part of every bundle key through `runner_cmm()`.
-pub const RUNNER_VERSION: u32 = 1;
+pub const RUNNER_VERSION: u32 = 2;
 
-/// PRACTICE text of `.t32ctl/runner.cmm`.
+/// PRACTICE text of `.t32ctl/runner.cmm`. The client empties the result macros before `DO`
+/// (`Stage::execute_with`), so the runner sets only what it learns.
 ///
-/// ASSUMED(script-error): `ON ERROR JUMPTO` in the runner catches errors raised inside nested
-/// `DO` files and unwinds them; `ERROR.MESSAGE()` is assignable. ASSUMED(channel-out):
-/// `ENTRY %LINE` after `DO` yields the callee's `ENDDO` value. Syntax per practice_ref (`DO`, `ENTRY`, `ON`).
+/// `ON ERROR JUMPTO` catches errors raised inside nested `DO` files (`script-error`), and
+/// `ENTRY %LINE` receives the callee's `ENDDO` text with its quotes (`channel-out`).
+/// ASSUMED(script-error): `ERROR.MESSAGE()` is assignable in the handler. Syntax per practice_ref
+/// (`DO`, `ENTRY`, `ON`).
 pub fn runner_cmm() -> String {
     let m = |x: Macro| x.amp();
     format!(
         "; t32ctl runner v{RUNNER_VERSION}\n\
-         {done}=\"\"\n{rc}=\"\"\n{msg}=\"\"\n{ret}=\"\"\n\
          ON ERROR JUMPTO t32ctl_failed\n\
          DO \"{snap}\\{entry}\" {args}\n\
          ENTRY %LINE {ret}\n\
          ON ERROR inherit\n\
-         {rc}=\"0\"\n{done}=\"{token}\"\n\
+         {done}=\"{token}\"\n\
          ENDDO\n\
          t32ctl_failed:\n\
          ON ERROR inherit\n\
-         {rc}=\"1\"\n{msg}=ERROR.MESSAGE()\n{done}=\"{token}\"\n\
+         {fail}=\"1\"\n{msg}=ERROR.MESSAGE()\n{done}=\"{token}\"\n\
          ENDDO\n",
         done = m(Macro::Done),
-        rc = m(Macro::Rc),
+        fail = m(Macro::Fail),
         msg = m(Macro::Msg),
         ret = m(Macro::Ret),
         snap = m(Macro::Snap),
@@ -114,11 +122,58 @@ pub struct PracticeErrorInfo {
     pub cmdline: String,
 }
 
+/// What the entry script left in `&t32ctl_rc`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScriptRc {
+    /// Empty: the script set no result code.
+    Unset,
+    Int(i64),
+    /// A value that is not an integer, without its quotes.
+    Text(String),
+}
+
+impl ScriptRc {
+    /// One pair of quotes stripped and blanks trimmed. Empty is `Unset`; `-?[0-9]+.?` (PRACTICE's
+    /// decimal dot) and `0x<hex>` within 64 bits are integers; anything else is text.
+    pub fn parse(text: &str) -> Self {
+        let t = text.trim();
+        let t = t.strip_prefix('"').and_then(|u| u.strip_suffix('"')).unwrap_or(t).trim();
+        if t.is_empty() {
+            return ScriptRc::Unset;
+        }
+        let int = match t.strip_prefix("0x") {
+            Some(hex) if !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                u64::from_str_radix(hex, 16).ok().and_then(|v| i64::try_from(v).ok())
+            }
+            Some(_) => None,
+            None => {
+                let body = t.strip_suffix('.').unwrap_or(t);
+                let digits = body.strip_prefix('-').unwrap_or(body);
+                let decimal = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+                decimal.then(|| body.parse().ok()).flatten()
+            }
+        };
+        int.map_or_else(|| ScriptRc::Text(t.to_string()), ScriptRc::Int)
+    }
+}
+
+impl fmt::Display for ScriptRc {
+    /// An integer in decimal, text in double quotes, `Unset` as nothing.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ScriptRc::Unset => Ok(()),
+            ScriptRc::Int(n) => write!(f, "{n}"),
+            ScriptRc::Text(t) => write!(f, "\"{t}\""),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RunOutcome {
-    /// The runner reached its last statement. `rc != 0`: the runner caught a PRACTICE error.
-    Finished { rc: i32, message: String, ret: String },
+    /// The runner reached its last statement. `caught`: the runner caught a PRACTICE error and
+    /// `message` holds its text; `rc` is what the entry script set.
+    Finished { caught: bool, rc: ScriptRc, message: String, ret: String },
     /// Idle with scripts on the stack and no token: an uncaught error or `STOP`. Unwound.
     Halted { error: Option<PracticeErrorInfo> },
     /// State 2 seen; `T32_Stop` sent; unwound.
@@ -130,8 +185,10 @@ pub enum RunOutcome {
 }
 
 impl RunOutcome {
+    /// The runner reached its end without catching an error. The result code is the caller's to
+    /// judge.
     pub fn is_success(&self) -> bool {
-        matches!(self, RunOutcome::Finished { rc: 0, .. })
+        matches!(self, RunOutcome::Finished { caught: false, .. })
     }
 }
 
@@ -306,6 +363,42 @@ mod tests {
         assert_eq!(w.on_state(t0 + ms(400), PracticeState::Idle), Next::NeedIdleDetail);
         assert_eq!(w.on_idle_detail(t0 + ms(400), false, 0), IdleVerdict::PollAfter(ms(10)));
         assert_eq!(w.on_idle_detail(t0 + ms(500), false, 0), IdleVerdict::Vanished);
+    }
+
+    #[test]
+    fn a_result_code_is_unset_an_integer_in_any_spelling_or_text() {
+        for (text, want) in [
+            ("", ScriptRc::Unset),
+            ("\"\"", ScriptRc::Unset),
+            ("\"0\"", ScriptRc::Int(0)),
+            ("0", ScriptRc::Int(0)),
+            ("0.", ScriptRc::Int(0)),
+            ("0x0", ScriptRc::Int(0)),
+            ("0x3", ScriptRc::Int(3)),
+            ("3.", ScriptRc::Int(3)),
+            ("-1.", ScriptRc::Int(-1)),
+            (" 7 ", ScriptRc::Int(7)),
+            ("busy", ScriptRc::Text("busy".into())),
+            ("\"no flash\"", ScriptRc::Text("no flash".into())),
+            ("0x", ScriptRc::Text("0x".into())),
+            ("1.5", ScriptRc::Text("1.5".into())),
+            ("0x8000000000000000", ScriptRc::Text("0x8000000000000000".into())),
+        ] {
+            assert_eq!(ScriptRc::parse(text), want, "{text:?}");
+        }
+        let shown = [ScriptRc::Unset, ScriptRc::Int(-1), ScriptRc::Text("busy".into())].map(|r| r.to_string());
+        assert_eq!(shown, ["", "-1", "\"busy\""]);
+    }
+
+    #[test]
+    fn the_entry_script_owns_rc_and_only_the_error_path_sets_fail() {
+        let text = runner_cmm();
+        assert!(text.starts_with("; t32ctl runner v2\n"), "{text}");
+        assert!(!text.contains("&t32ctl_rc="), "the runner never writes the entry script's rc: {text}");
+        let (success, failure) = text.split_once("t32ctl_failed:\n").expect("the error label");
+        assert!(!success.contains("&t32ctl_fail="), "{success}");
+        assert!(failure.contains("&t32ctl_fail=\"1\"\n&t32ctl_msg=ERROR.MESSAGE()\n"), "{failure}");
+        assert!(text.lines().next_back() == Some("ENDDO"));
     }
 
     #[test]

@@ -195,7 +195,7 @@ fn dir_removed(s: Script, rel: &str) -> Script {
 /// `Stage::close` after everything below `probe-r1` is gone: the directory, then the macros.
 fn stage_closed(s: Script) -> Script {
     let mut s = dir_removed(s, "");
-    for _ in 0..9 {
+    for _ in t32stage::Macro::ALL {
         s = s.expect(t32rcl::testkit::Expect::Any).reply_macro("");
     }
     s

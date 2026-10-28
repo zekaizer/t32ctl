@@ -264,7 +264,7 @@ fn snap(path: &str) -> String {
 /// one would put every file in PowerView's working directory.
 /// ASSUMED(unpack-literal): `OS.FILE.ABSPATH` returns an absolute path unchanged.
 fn render_unpack(key: &SnapshotKey, layout: &Layout, b_start: u32) -> String {
-    let (rc, msg, done, token) = (Macro::Rc.amp(), Macro::Msg.amp(), Macro::Done.amp(), Macro::Token.amp());
+    let (fail, msg, done, token) = (Macro::Fail.amp(), Macro::Msg.amp(), Macro::Done.amp(), Macro::Token.amp());
     let snap_dir = Macro::Snap.amp();
     let mut s = format!("; t32ctl unpack v{FORMAT_VERSION} key={key}\nON ERROR JUMPTO t32ctl_unpack_failed\n");
     s += &format!("IF \"{snap_dir}\"==\"\"\n  GOTO t32ctl_unpack_nosnap\n");
@@ -281,13 +281,13 @@ fn render_unpack(key: &SnapshotKey, layout: &Layout, b_start: u32) -> String {
         s += &format!("Data.SAVE.Binary {p} VM:0x{:08X}++0x{:08X}\n", b_start + e.offset, e.len - 1);
         s += &format!("IF OS.FILE.SIZE({p})!=0x{:08X}\n  GOTO t32ctl_unpack_badsize\n", e.len);
     }
-    s += &format!("ON ERROR inherit\n{rc}=\"0\"\n{done}=\"{token}\"\nENDDO\n");
+    s += &format!("ON ERROR inherit\n{done}=\"{token}\"\nENDDO\n");
     s += &format!(
         "t32ctl_unpack_nosnap:\n{msg}=\"unpack: snapshot directory is empty or not absolute\"\nGOTO t32ctl_unpack_end\n"
     );
     s += &format!("t32ctl_unpack_badsize:\n{msg}=\"unpack: size check failed\"\nGOTO t32ctl_unpack_end\n");
     s += &format!("t32ctl_unpack_failed:\n{msg}=\"unpack: PRACTICE error\"\n");
-    s += &format!("t32ctl_unpack_end:\nON ERROR inherit\n{rc}=\"1\"\n{done}=\"{token}\"\nENDDO\n");
+    s += &format!("t32ctl_unpack_end:\nON ERROR inherit\n{fail}=\"1\"\n{done}=\"{token}\"\nENDDO\n");
     s
 }
 
@@ -345,12 +345,13 @@ mod tests {
     }
 
     #[test]
-    fn unpack_traps_errors_and_both_failure_paths_end_with_rc_1_and_the_token() {
+    fn unpack_traps_errors_and_both_failure_paths_end_with_fail_and_the_token() {
         let text = sample(&FILES).pack(0x0200_0000).unpack_text;
+        assert!(!text.contains("&t32ctl_rc="), "the unpack script reports through t32ctl_fail only");
         let handler = text.lines().nth(1).and_then(|l| l.strip_prefix("ON ERROR JUMPTO ")).expect("handler first");
         for label in [handler, "t32ctl_unpack_badsize"] {
             let path = path_from(&text, label);
-            assert!(path.contains(&"&t32ctl_rc=\"1\""), "{label}: {path:?}");
+            assert!(path.contains(&"&t32ctl_fail=\"1\""), "{label}: {path:?}");
             assert_eq!(path.last(), Some(&"&t32ctl_done=\"&t32ctl_token\""), "{label}: {path:?}");
         }
         assert!(text.lines().filter(|l| l.starts_with("IF OS.FILE.SIZE(")).count() >= FILES.len());
@@ -377,11 +378,11 @@ mod tests {
     }
 
     #[test]
-    fn the_nosnap_path_ends_with_rc_1_and_the_token() {
+    fn the_nosnap_path_ends_with_fail_and_the_token() {
         let text = sample(&FILES).pack(0x0200_0000).unpack_text;
         let path = path_from(&text, "t32ctl_unpack_nosnap");
         assert!(path.iter().any(|l| l.starts_with("&t32ctl_msg=\"unpack: snapshot directory")), "{path:?}");
-        assert!(path.contains(&"&t32ctl_rc=\"1\""), "{path:?}");
+        assert!(path.contains(&"&t32ctl_fail=\"1\""), "{path:?}");
         assert_eq!(path.last(), Some(&"&t32ctl_done=\"&t32ctl_token\""), "{path:?}");
     }
 

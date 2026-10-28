@@ -31,8 +31,8 @@ fn opened(s: Script) -> Script {
     s.expect_fn("OS.PTD()")
         .reply_text("C:\\T")
         .expect_cmd(
-            "GLOBAL &t32ctl_snap &t32ctl_out &t32ctl_token &t32ctl_entry &t32ctl_args &t32ctl_done &t32ctl_rc \
-             &t32ctl_msg &t32ctl_ret",
+            "GLOBAL &t32ctl_snap &t32ctl_out &t32ctl_token &t32ctl_entry &t32ctl_args &t32ctl_done &t32ctl_fail \
+             &t32ctl_rc &t32ctl_msg &t32ctl_ret",
         )
         .reply_ok()
         .expect_fn("OS.DIR(\"C:\\T\\t32ctl\")")
@@ -62,17 +62,30 @@ fn closed(mut s: Script, unwind: bool) -> Script {
     s
 }
 
-/// Token, `DO`, polls and the `Finished` read-back.
-fn executed(mut s: Script, script: &str, rc: &str, ret: &str) -> Script {
+/// The token, the result macros emptied, then `ERROR.RESet` and `DO`.
+fn started_do(mut s: Script, script: &str) -> Script {
     s = set(s, Macro::Token, "tok");
-    s = set(s, Macro::Done, "");
-    s = s.expect_cmd("ERROR.RESet").reply_ok().expect_cmd(&format!("DO \"{script}\"")).reply_ok();
+    for m in [Macro::Done, Macro::Fail, Macro::Rc, Macro::Msg, Macro::Ret] {
+        s = set(s, m, "");
+    }
+    s.expect_cmd("ERROR.RESet").reply_ok().expect_cmd(&format!("DO \"{script}\"")).reply_ok()
+}
+
+/// The `Finished` read-back: what the runner left in `fail`, `rc`, `msg` and `ret`.
+fn read_back(mut s: Script, fail: &str, rc: &str, msg: &str, ret: &str) -> Script {
+    s = get(s, Macro::Fail, fail);
+    s = get(s, Macro::Rc, rc);
+    s = get(s, Macro::Msg, msg);
+    get(s, Macro::Ret, ret)
+}
+
+/// `DO`, polls and the `Finished` read-back.
+fn executed(mut s: Script, script: &str, rc: &str, ret: &str) -> Script {
+    s = started_do(s, script);
     s = s.expect_req(Request::PracticeState).reply_state(1);
     s = s.expect_req(Request::PracticeState).reply_state(0);
     s = get(s, Macro::Done, "tok").expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
-    s = get(s, Macro::Rc, rc);
-    s = get(s, Macro::Msg, "");
-    get(s, Macro::Ret, ret)
+    read_back(s, "", rc, "", ret)
 }
 
 fn bundle() -> Bundle {
@@ -139,7 +152,10 @@ fn a_cached_snapshot_costs_one_call_and_a_run_finishes_by_token() {
         collect_outputs: false,
     };
     let report = st.run(&mut session, &snap, &req).unwrap();
-    assert_eq!(report.outcome, RunOutcome::Finished { rc: 0, message: String::new(), ret: "7.".into() });
+    assert_eq!(
+        report.outcome,
+        RunOutcome::Finished { caught: false, rc: ScriptRc::Int(0), message: String::new(), ret: "7.".into() }
+    );
     assert_eq!(report.polls.running, 1);
     let cleanup = st.close(&mut session);
     assert!(cleanup.is_clean(), "{cleanup:?}");
@@ -211,10 +227,8 @@ fn run_once(tag: &str, b: &Bundle, s: Script) -> RunOutcome {
 
 #[test]
 fn a_script_halted_with_an_error_is_a_failure_with_the_error_text() {
-    let (b, dir, mut s) = started("main.cmm");
-    s = set(s, Macro::Token, "tok");
-    s = set(s, Macro::Done, "");
-    s = s.expect_cmd("ERROR.RESet").reply_ok().expect_cmd(&format!("DO \"{dir}\\.t32ctl\\runner.cmm\"")).reply_ok();
+    let (b, dir, s) = started("main.cmm");
+    let mut s = started_do(s, &format!("{dir}\\.t32ctl\\runner.cmm"));
     for _ in 0..2 {
         s = s.expect_req(Request::PracticeState).reply_state(0);
         s = get(s, Macro::Done, "").expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
@@ -231,13 +245,41 @@ fn a_script_halted_with_an_error_is_a_failure_with_the_error_text() {
     assert!(!outcome.is_success());
 }
 
-#[test]
-fn a_runner_that_caught_an_error_finishes_with_rc_1_and_is_a_failure() {
+/// A run that finishes by token after one running sample, with `fail`, `rc` and `msg` read back.
+fn finished_with(tag: &str, fail: &str, rc: &str, msg: &str) -> RunOutcome {
     let (b, dir, s) = started("main.cmm");
-    let s = closed(executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "\"1\"", ""), false);
-    let outcome = run_once("stage-rc1", &b, s);
-    assert_eq!(outcome, RunOutcome::Finished { rc: 1, message: String::new(), ret: String::new() });
+    let mut s = started_do(s, &format!("{dir}\\.t32ctl\\runner.cmm"));
+    s = s.expect_req(Request::PracticeState).reply_state(0);
+    s = get(s, Macro::Done, "tok").expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
+    let s = closed(read_back(s, fail, rc, msg, ""), false);
+    run_once(tag, &b, s)
+}
+
+#[test]
+fn a_runner_that_caught_an_error_is_a_failure_with_its_message_whatever_rc_holds() {
+    let outcome = finished_with("stage-caught", "1", "", "unknown command");
+    let want = RunOutcome::Finished {
+        caught: true,
+        rc: ScriptRc::Unset,
+        message: "unknown command".into(),
+        ret: String::new(),
+    };
+    assert_eq!(outcome, want);
     assert!(!outcome.is_success());
+}
+
+#[test]
+fn the_entry_scripts_rc_and_message_come_back_as_it_set_them() {
+    let outcome = finished_with("stage-rc3", "", "\"3\"", "pmic not ready");
+    let want = RunOutcome::Finished {
+        caught: false,
+        rc: ScriptRc::Int(3),
+        message: "pmic not ready".into(),
+        ret: String::new(),
+    };
+    assert_eq!(outcome, want);
+    assert!(outcome.is_success(), "the runner ended normally; rc is the caller's to judge");
+    assert!(matches!(finished_with("stage-rc-unset", "", "", ""), RunOutcome::Finished { rc: ScriptRc::Unset, .. }));
 }
 
 #[test]
@@ -252,7 +294,9 @@ fn a_busy_stack_is_refused_and_a_dialog_is_stopped_and_unwound() {
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "");
     s = set(s, Macro::Token, "tok");
-    s = set(s, Macro::Done, "");
+    for m in [Macro::Done, Macro::Fail, Macro::Rc, Macro::Msg, Macro::Ret] {
+        s = set(s, m, "");
+    }
     s = s.expect_cmd("ERROR.RESet").reply_ok().expect(Expect::CommandStarting("DO ".into())).reply_ok();
     s = s.expect_req(Request::PracticeState).reply_state(2);
     s = s.expect_req(Request::PracticeState).reply_state(2).expect_req(Request::Stop).reply_ok();
@@ -288,7 +332,9 @@ fn a_script_that_outlives_stop_and_end_is_an_unwind_failure_not_busy() {
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "");
     s = set(s, Macro::Token, "tok");
-    s = set(s, Macro::Done, "");
+    for m in [Macro::Done, Macro::Fail, Macro::Rc, Macro::Msg, Macro::Ret] {
+        s = set(s, m, "");
+    }
     s = s.expect_cmd("ERROR.RESet").reply_ok().expect(Expect::CommandStarting("DO ".into())).reply_ok();
     s = s.expect_req(Request::PracticeState).reply_state(1).expect_req(Request::PracticeState).reply_state(1);
     s = s.expect_req(Request::Stop).reply_ok().expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
