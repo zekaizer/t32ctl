@@ -4,8 +4,61 @@
 
 use std::{borrow::Cow, fmt, str::FromStr, time::Duration};
 
+use serde::Serialize;
 use t32rcl::AccessClass;
 use t32stage::{RegName, RelPath};
+
+/// One notation form, as `read describe` lists it.
+#[derive(Debug, Serialize)]
+pub struct Form {
+    pub form: &'static str,
+    pub examples: &'static [&'static str],
+    pub meaning: &'static str,
+}
+
+/// The forms this t32ctl parses. Symbol and source-line places are planned.
+pub const FORMS: &[Form] = &[
+    Form {
+        form: "hex address",
+        examples: &["0x40080a98"],
+        meaning: "`0x` is required; a bare number is never an address",
+    },
+    Form {
+        form: "access class",
+        examples: &["A:0x40000000"],
+        meaning: "one of the profile's classes before `:`; without one, the profile's default class",
+    },
+    Form {
+        form: "register-relative",
+        examples: &["@sp", "@x1+0x10", "@x1-0x8"],
+        meaning: "the register's current value, with an optional `0x` offset",
+    },
+    Form {
+        form: "size",
+        examples: &["24", "0x40", "4K", "64M", "1G"],
+        meaning: "bytes; `K`, `M` and `G` are KiB, MiB and GiB",
+    },
+    Form {
+        form: "duration",
+        examples: &["500ms", "30s", "41.3s", "5m", "2m40s", "1h30m"],
+        meaning: "each duration has its range; a value outside it is refused, never clamped",
+    },
+    Form {
+        form: "integer",
+        examples: &["42", "0x2a", "-1"],
+        meaning: "decimal or `0x` hex, 64-bit signed; printed in decimal",
+    },
+    Form {
+        form: "output name",
+        examples: &["ddr.bin"],
+        meaning: "a plain file name without `/`, not starting with `.`",
+    },
+    Form {
+        form: "PRACTICE text",
+        examples: &["'OS.PTD()'"],
+        meaning: "one line of 1 to 2037 bytes, sent literally: PowerView expands no macros in it",
+    },
+];
 
 /// An argument outside t32ctl notation or its bound. The message names the accepted forms.
 #[derive(Clone, Debug, PartialEq, Eq)]

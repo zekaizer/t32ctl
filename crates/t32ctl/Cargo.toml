@@ -1,6 +1,6 @@
 [package]
 name = "t32ctl"
-description = "Agent-facing TRACE32 CLI over RCL (skeleton: status only)"
+description = "Agent-facing TRACE32 CLI over RCL: the Phase 1 grade-first command line"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,7 @@ t32stage.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+signal-hook.workspace = true
 toml.workspace = true
 
 [dev-dependencies]

@@ -1,7 +1,7 @@
 # t32rcl    RCL client over NETTCP. Protocol only, std only, reusable outside the CLI.
 # t32stage  Staging over RCL: VM: transfer, self-extracting bundles, script runner, cleanup.
 # t32probe  Phase 0 measurement binary.
-# t32ctl    Phase 1 CLI skeleton (`status` only).
+# t32ctl    Phase 1 CLI.
 #
 # Dependency direction: t32ctl, t32probe -> t32stage -> t32rcl.
 
