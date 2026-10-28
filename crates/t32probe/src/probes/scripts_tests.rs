@@ -97,15 +97,19 @@ fn script_error_runs_es_and_ig_first_and_fits_its_deadline() {
 }
 
 #[test]
-fn the_nested_size_check_returns_evaluated_values() {
+fn the_nested_size_check_names_the_file_through_a_macro() {
     let lines: Vec<&str> = SUB_B.lines().collect();
     assert_eq!(
         lines,
         [
-            "&ppd=OS.PresentPracticeDirectory()",
-            "&size=OS.FILE.SIZE(OS.PresentPracticeDirectory()+\"\\deep\\data.bin\")",
+            "&p=OS.PresentPracticeDirectory()+\"\\deep\\data.bin\"",
+            "&size=OS.FILE.SIZE(\"&p\")",
             "IF &size!=4097.",
-            "  ENDDO \"size-mismatch ppd=&ppd size=&size\"",
+            "(",
+            "  &tilde=OS.FILE.SIZE(\"~~~~\\deep\\data.bin\")",
+            "  &expr=OS.FILE.SIZE(OS.PresentPracticeDirectory()+\"\\deep\\data.bin\")",
+            "  ENDDO \"size-mismatch p=&p size=&size tilde=&tilde expr=&expr\"",
+            ")",
             "WAIT 1.s",
             "DO \"~~~~/deep/c.cmm\"",
             "ENDDO \"chain-ok\"",
