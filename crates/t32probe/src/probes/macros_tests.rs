@@ -32,9 +32,11 @@ fn global(s: Script, x: &str) -> Script {
     s.expect_cmd(&format!("GLOBAL &{}", q(x))).reply_ok()
 }
 
-/// macro-visibility where every script sees the client's values; `rd1-v1` answers `val` only
-/// when `v1_seen`.
-fn visibility(v1_seen: bool) -> Script {
+/// macro-visibility where every script sees the client's values, except that the case Stage
+/// reproduces (`v1` bare, `v3` amp) answers `val` only when `seen`.
+fn visibility(amp: bool, seen: bool) -> Script {
+    let learned = |x: &str| if amp { format!("&{}", q(x)) } else { q(x) };
+    let stage_case = if amp { "v3" } else { "v1" };
     let mut s = opened(Script::new().attach(), VIS_TAG);
     for x in VIS {
         let v = format!("{x}-r1");
@@ -54,7 +56,7 @@ fn visibility(v1_seen: bool) -> Script {
         s = gets(s, x, if x == "u1" || x == "e1" { "" } else { &v });
     }
     for x in VIS {
-        let val: &[&str] = if x != "v1" || v1_seen { &["val"] } else { &[] };
+        let val: &[&str] = if x != stage_case || seen { &["val"] } else { &[] };
         s = ran(s, VIS_TAG, &rd1(x), val, None);
         s = ran(ran(s, VIS_TAG, &ex(x), &[], None), VIS_TAG, &rd2(x), &["w"], None);
         s = gets(s, x, &format!("w-{x}-r1"));
@@ -65,7 +67,7 @@ fn visibility(v1_seen: bool) -> Script {
     s = ran(s, VIS_TAG, &ref_u1(), &["any"], None);
     s = sub_staged(s, VIS_TAG, "im", "im-sub.cmm", IM_SUB);
     s = ran(s, VIS_TAG, &im(), &["seen"], Some(IM_SUB));
-    s = s.expect_req(Request::MacroGet { name: q("im") }).reply_macro("im-r1");
+    s = s.expect_req(Request::MacroGet { name: learned("im") }).reply_macro("im-r1");
     s = listed(s, VIS_TAG, &[]);
     s = files_removed(s, VIS_TAG, &im(), ScriptOut::Off, &[]);
     s = files_removed(sub_removed(s, VIS_TAG, "im", "im-sub.cmm", IM_SUB), VIS_TAG, &ref_u1(), ScriptOut::Off, &[]);
@@ -78,21 +80,28 @@ fn visibility(v1_seen: bool) -> Script {
         }
     }
     for x in ["v1", "v2", "v3", "v4", "c1", "c2", "e1", "im"] {
-        s = s.expect_req(Request::MacroSet { name: q(x), value: String::new() }).reply_macro("");
+        s = s.expect_req(Request::MacroSet { name: learned(x), value: String::new() }).reply_macro("");
     }
     closed_down(s, VIS_TAG)
 }
 
 #[test]
-fn macro_visibility_learns_exp_to_script_from_rd1_v1() {
-    for v1_seen in [true, false] {
-        let mut session = connect(vec![Ok(visibility(v1_seen))]);
-        let mut env = test_env(&format!("macro-visibility-{v1_seen}"));
+fn macro_visibility_learns_exp_to_script_from_the_case_stage_reproduces() {
+    for (amp, seen) in [(false, true), (false, false), (true, true), (true, false)] {
+        let mut session = connect(vec![Ok(visibility(amp, seen))]);
+        let mut env = test_env(&format!("macro-visibility-{amp}-{seen}"));
+        if amp {
+            session.set_tuning(session.tuning().with_macro_spelling(t32rcl::MacroSpelling::Ampersand));
+            env.learned.macro_spelling = Some(t32rcl::MacroSpelling::Ampersand);
+        }
         let r = run(&mut env, &mut session, &[ProbeId::MacroVisibility.def()]);
         let o = &r.outcomes[0];
         assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
-        assert_eq!(env.learned.exp_to_script, Some(v1_seen));
-        let rd1 = if v1_seen { "val" } else { "other" };
+        assert_eq!(env.learned.exp_to_script, Some(seen), "amp={amp}");
+        if amp {
+            continue;
+        }
+        let rd1 = if seen { "val" } else { "other" };
         for (k, v) in [
             ("v1", format!("{rd1}/ok/w/b:w-v1-r1,a:err1")),
             ("redeclare", "keeps".into()),

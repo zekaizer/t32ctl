@@ -82,7 +82,7 @@ gzip         FAIL  up=6.0MB/s unzip_max=8MiB corrupt=ACCEPTED(crc)
   why: /UNZIP accepted corrupt gzip: crc
 skipped(1) prereq gzip FAIL: bundle
 not run (opt-in): dialog multi-client run-control target-read load-code elf-unzip
-config      read_chunk=15360 write_chunk=15360 macro=bare keepalive=1.00s exists=OS.FILE.readable …
+config      read_chunk=15360 write_chunk=15360 macro=amp keepalive=1.00s exists=OS.FILE.readable …
 summary: pass=10 fail=1 unsup=0 skip=1 intr=0 | cleanup=clean | 38.2s | exit=1
 ```
 

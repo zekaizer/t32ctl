@@ -40,11 +40,11 @@ fn opened(s: Script) -> Script {
 }
 
 fn set(s: Script, m: Macro, v: &str) -> Script {
-    s.expect_req(Request::MacroSet { name: m.text().into(), value: v.into() }).reply_macro("")
+    s.expect_req(Request::MacroSet { name: m.amp(), value: v.into() }).reply_macro("")
 }
 
 fn get(s: Script, m: Macro, v: &str) -> Script {
-    s.expect_req(Request::MacroGet { name: m.text().into() }).reply_macro(v)
+    s.expect_req(Request::MacroGet { name: m.amp() }).reply_macro(v)
 }
 
 fn idle(s: Script, depth: i64) -> Script {

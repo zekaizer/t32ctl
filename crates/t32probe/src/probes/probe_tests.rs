@@ -154,8 +154,8 @@ fn version_never_fails_on_an_old_build_number() {
 #[test]
 fn a_macro_probe_that_dies_mid_trial_leaves_no_trial_spelling_behind() {
     let set = |name: &str, value: &str| Request::MacroSet { name: name.into(), value: value.into() };
-    let first = Script::new().attach().expect_req(set("t32ctl_probe_a", "v1")).reply_exp_error(1, "unknown macro");
-    let first = first.expect_req(set("&t32ctl_probe_a", "v1")).silence(Duration::from_millis(1100));
+    let first = Script::new().attach().expect_req(set("&t32ctl_probe_a", "v1")).reply_exp_error(1, "unknown macro");
+    let first = first.expect_req(set("t32ctl_probe_a", "v1")).silence(Duration::from_millis(1100));
     let second = Script::new().attach().expect_fn("TRUE()").reply_bool(true);
     let second = second.expect_req(set("t32ctl_probe_a", "")).reply_macro("");
     let second = second.expect_req(set("t32ctl_probe_b", "")).reply_macro("");
@@ -313,12 +313,11 @@ fn the_gzip_ceiling_unzips_under_a_data_budget() {
 }
 
 #[test]
-fn the_macro_probe_falls_back_to_the_ampersand_spelling_and_keeps_it() {
+fn the_macro_probe_tries_the_ampersand_spelling_first_and_keeps_it() {
     let set = |name: &str, value: &str| Request::MacroSet { name: name.into(), value: value.into() };
     let get = |name: &str| Request::MacroGet { name: name.into() };
     let (a, b) = ("&t32ctl_probe_a", "&t32ctl_probe_b");
-    let mut s = Script::new().attach().expect_req(set("t32ctl_probe_a", "v1")).reply_exp_error(1, "unknown macro");
-    s = s.expect_req(set(a, "v1")).reply_macro("").expect_req(get(a)).reply_macro("v1");
+    let mut s = Script::new().attach().expect_req(set(a, "v1")).reply_macro("").expect_req(get(a)).reply_macro("v1");
     s = s.expect_req(set(a, "keep")).reply_macro("").expect_cmd("GLOBAL &t32ctl_probe_a").reply_ok();
     s = s.expect_req(get(a)).reply_macro("keep");
     s = s.expect(t32rcl::testkit::Expect::Any).reply_macro("").expect_req(get(b)).reply_macro("not it");
@@ -473,8 +472,12 @@ fn macro_names_refused(mut s: Script) -> Script {
 
 #[test]
 fn macro_cross_spelling_reads_split_when_neither_side_sees_the_other() {
-    let mut s = Script::new().attach().expect_req(set_req("t32ctl_probe_a", "v1")).reply_macro("");
-    s = s.expect_req(get_req("t32ctl_probe_a")).reply_macro("v1");
+    let mut s = Script::new().attach().expect_req(set_req("&t32ctl_probe_a", "v1")).reply_exp_error(1, "unknown macro");
+    s = s
+        .expect_req(set_req("t32ctl_probe_a", "v1"))
+        .reply_macro("")
+        .expect_req(get_req("t32ctl_probe_a"))
+        .reply_macro("v1");
     s = s.expect_req(set_req("t32ctl_probe_a", "keep")).reply_macro("").expect_cmd("GLOBAL &t32ctl_probe_a").reply_ok();
     s = s.expect_req(get_req("t32ctl_probe_a")).reply_macro("keep");
     s = s.expect(t32rcl::testkit::Expect::Any).reply_macro("").expect_req(get_req("t32ctl_probe_b")).reply_macro("no");
