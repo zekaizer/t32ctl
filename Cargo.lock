@@ -389,6 +389,8 @@ name = "t32ctl"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "serde",
+ "serde_json",
  "t32rcl",
  "t32stage",
 ]
