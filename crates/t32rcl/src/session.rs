@@ -219,6 +219,12 @@ impl Session {
     /// functions (`_functions.py` `error_message`).
     pub fn eval_string(&mut self, expr: &str) -> Result<String> {
         self.cmd(&format!("EVAL {expr}"))?;
+        self.eval_last_string()
+    }
+
+    /// `T32_EvalGetString` alone: the string slot as the last evaluation left it, with no `EVAL`
+    /// sent first.
+    pub fn eval_last_string(&mut self) -> Result<String> {
         let reply = self.exchange(Op::EvalString, &req::eval_get_string())?;
         let result = resp::status(Op::EvalString, &reply)?;
         let (text, lossy) = wire::text(result);
@@ -277,7 +283,7 @@ impl Session {
     }
 
     pub fn macro_get(&mut self, name: &MacroName) -> Result<String> {
-        let payload = self.exp(Op::MacroGet, req::macro_get(name, self.opts.tuning.macro_spelling()))?;
+        let payload = self.macro_get_payload(name)?;
         match resp::macro_value(&payload) {
             Ok((value, lossy)) => {
                 self.note_lossy(lossy);
@@ -285,6 +291,11 @@ impl Session {
             }
             Err(v) => Err(self.violation(Op::MacroGet, v)),
         }
+    }
+
+    /// The `PL` bytes of an EXP 2 get as PowerView sent them, filler bytes and NULs included.
+    pub fn macro_get_payload(&mut self, name: &MacroName) -> Result<Vec<u8>> {
+        self.exp(Op::MacroGet, req::macro_get(name, self.opts.tuning.macro_spelling()))
     }
 
     pub fn macro_set(&mut self, name: &MacroName, value: &str) -> Result<()> {

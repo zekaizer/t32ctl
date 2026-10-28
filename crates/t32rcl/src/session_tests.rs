@@ -363,6 +363,18 @@ fn eval_string_and_the_device_prompt() {
 }
 
 #[test]
+fn eval_last_string_reads_the_slot_without_eval() {
+    let mut s = session(Script::new().attach().expect_req(Request::EvalString).reply_string("t32q-ok"));
+    assert_eq!(s.eval_last_string().unwrap(), "t32q-ok");
+}
+
+#[test]
+fn macro_get_payload_returns_the_raw_pl_bytes() {
+    let mut s = session(Script::new().attach().expect_req(Request::MacroGet { name: "m".into() }).reply_macro("\"0\""));
+    assert_eq!(s.macro_get_payload(&MacroName::new("m").unwrap()).unwrap(), b"\0\0\"0\"");
+}
+
+#[test]
 fn build_falls_back_to_the_version_spelling_and_is_cached() {
     let mut s = session(
         Script::new()
