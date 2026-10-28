@@ -182,6 +182,18 @@ impl fmt::Display for SymbolError {
 
 impl StdError for SymbolError {}
 
+/// The text that is not a register name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegNameError(pub String);
+
+impl fmt::Display for RegNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "register name {:?} is not a letter followed by at most 31 letters, digits or _", self.0)
+    }
+}
+
+impl StdError for RegNameError {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArgError {
     Unsafe { index: usize, ch: char },

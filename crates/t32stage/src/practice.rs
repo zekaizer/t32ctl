@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The only module that formats PRACTICE command text. Inputs are typed (`StagePath`,
-//! `VmRegion`, `Symbol`, `Macro`) and validated so that no builder needs escaping.
+//! `VmRegion`, `Symbol`, `RegName`, `Macro`) and validated so that no builder needs escaping.
 //!
 //! Syntax sources are the TRACE32 manuals (not in the repository): `general_ref_d`
 //! (`Data.LOAD.Binary`, `Data.SAVE.Binary`, `Data.CLEARVM`, `Data.LOAD.Elf`), `ide_ref` (`MKDIR`,
@@ -10,7 +10,7 @@
 use std::fmt;
 
 use crate::{
-    error::{ArgError, PathError, SymbolError},
+    error::{ArgError, PathError, RegNameError, SymbolError},
     macros::Macro,
     vm::VmRegion,
 };
@@ -270,6 +270,32 @@ impl Symbol {
     }
 }
 
+/// A register name as the caller typed it: `[A-Za-z][A-Za-z0-9_]{0,31}`. Builders upper-case it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RegName(String);
+
+impl RegName {
+    pub const MAX_LEN: usize = 32;
+
+    pub fn new(text: &str) -> Result<Self, RegNameError> {
+        let mut bytes = text.bytes();
+        let ok = bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
+            && text.len() <= Self::MAX_LEN
+            && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        if ok { Ok(Self(text.to_string())) } else { Err(RegNameError(text.to_string())) }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RegName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Characters a script argument may contain besides ASCII letters and digits. Arguments travel
 /// unquoted in a macro value, are spliced into the runner's `DO` line and split by `ENTRY` at
 /// blanks. ASSUMED(channel-in): none of them splits or changes an argument there (`,`
@@ -406,6 +432,19 @@ pub mod fnc {
     pub fn symbol_exists(s: &Symbol) -> String {
         format!("sYmbol.EXIST({})", s.as_str())
     }
+
+    /// The selected core, 0-based (ide_func). Answers on build 168999 (`fn-table`).
+    pub const CORE: &str = "CORE()";
+    /// Number of cores in the SMP system. Answers while the target is down (`fn-table`).
+    pub const CORE_NUMBER: &str = "CORE.NUMBER()";
+    /// The CPU PowerView is configured for. Answers while the target is down (`fn-table`).
+    pub const SYSTEM_CPU: &str = "SYStem.CPU()";
+
+    /// A register of the selected core. Fails with "target system down" while the target is
+    /// down (`fn-table`).
+    pub fn register(r: &RegName) -> String {
+        format!("Register({})", r.as_str().to_ascii_uppercase())
+    }
 }
 
 #[cfg(test)]
@@ -513,6 +552,23 @@ mod tests {
         for bad in ["", "1abc", "a b", "a&b", "a\"b", "a+b"] {
             assert!(Symbol::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn register_names_are_kept_as_typed_and_upper_cased_in_practice_text() {
+        for ok in ["x0", "sp", "pc", "cpsr", "ESR_EL1", "R", &"a".repeat(32)] {
+            assert_eq!(RegName::new(ok).map(|r| r.as_str().to_string()), Ok(ok.to_string()), "{ok}");
+        }
+        for bad in ["", "0x", "_a", "a-b", "a b", "x0+8", "a&b", &"a".repeat(33)] {
+            assert_eq!(RegName::new(bad), Err(RegNameError(bad.to_string())), "{bad}");
+        }
+        assert_eq!(fnc::register(&RegName::new("esr_el1").unwrap()), "Register(ESR_EL1)");
+        assert_eq!(fnc::register(&RegName::new("pc").unwrap()), "Register(PC)");
+        assert_eq!([fnc::CORE, fnc::CORE_NUMBER, fnc::SYSTEM_CPU], ["CORE()", "CORE.NUMBER()", "SYStem.CPU()"]);
+        assert_eq!(
+            RegName::new("a-b").unwrap_err().to_string(),
+            "register name \"a-b\" is not a letter followed by at most 31 letters, digits or _"
+        );
     }
 
     #[test]
