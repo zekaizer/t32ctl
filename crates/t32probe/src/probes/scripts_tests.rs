@@ -95,3 +95,15 @@ fn script_error_runs_es_and_ig_first_and_fits_its_deadline() {
     let budget = crate::registry::ProbeId::ScriptError.def().deadline - crate::probes::lab::LAB_RESERVE;
     assert!(worst <= budget, "every case timing out takes {worst:?}, the Lab has {budget:?}");
 }
+
+#[test]
+fn the_nested_size_check_returns_what_the_script_saw() {
+    let lines: Vec<&str> = SUB_B.lines().collect();
+    assert_eq!(lines[0], "IF OS.FILE.SIZE(OS.PresentPracticeDirectory()+\"/deep/data.bin\")!=4097.");
+    assert_eq!(
+        lines[1],
+        "  ENDDO \"size-mismatch ppd=\"+OS.PresentPracticeDirectory()+\" ppf=\"+OS.PPF()+\" size=\"\
+         +FORMAT.Decimal(1.,OS.FILE.SIZE(OS.PresentPracticeDirectory()+\"/deep/data.bin\"))"
+    );
+    assert_eq!(lines[2..], ["WAIT 1.s", "DO \"~~~~/deep/c.cmm\"", "ENDDO \"chain-ok\""]);
+}

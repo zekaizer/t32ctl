@@ -212,9 +212,12 @@ fn macro_names(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
 const MAIN: &str = "GLOBAL &t32ctl_probe_main\n&t32ctl_probe_main=\"main-ran\"\nLOCAL &r\n\
                     DO \"~~~~/sub/b.cmm\"\nENTRY %LINE &r\nENDDO &r\n";
 /// `OS.PresentPracticeDirectory()+"/..."` is the function form ide_ref documents (`Eval.GOSUB`);
-/// `~~~~` is documented only in `DO`/`GOSUB` parameters.
+/// `~~~~` is documented only in `DO`/`GOSUB` parameters. A mismatch returns what the script saw,
+/// because alpha.5 got one here while channel-in's nesting did not.
 const SUB_B: &str = "IF OS.FILE.SIZE(OS.PresentPracticeDirectory()+\"/deep/data.bin\")!=4097.\n  \
-                     ENDDO \"size-mismatch\"\nWAIT 1.s\nDO \"~~~~/deep/c.cmm\"\nENDDO \"chain-ok\"\n";
+                     ENDDO \"size-mismatch ppd=\"+OS.PresentPracticeDirectory()+\" ppf=\"+OS.PPF()+\" size=\"\
+                     +FORMAT.Decimal(1.,OS.FILE.SIZE(OS.PresentPracticeDirectory()+\"/deep/data.bin\"))\n\
+                     WAIT 1.s\nDO \"~~~~/deep/c.cmm\"\nENDDO \"chain-ok\"\n";
 /// Proves the end of the chain ran in this run: the client compares the global with the token.
 const SUB_C: &str = "GLOBAL &t32ctl_probe_deep\n&t32ctl_probe_deep=\"&t32ctl_token\"\nWAIT 1.s\nENDDO\n";
 
