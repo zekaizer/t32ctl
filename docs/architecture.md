@@ -72,10 +72,11 @@ State 2 (dialog) is answered with `T32_Stop` and an unwind. Runs start only on a
 stack, and the unwind stays pending only until the stack is seen empty again, so the unwinding
 `END` can only end scripts t32stage started.
 
-The stage root is resolved once per `Stage`: the literal `OS.PTD()\t32ctl` path when that text is
-ASCII-safe, otherwise the macro `&t32ctl_root`, which PowerView computes and expands itself so a
-temp directory in an unknown code page never passes through the client's command bytes.
-`--stage-root` overrides both.
+The stage root is resolved once per `Stage`: `--stage-root` when given, otherwise
+`OS.PTD()\t32ctl` when that text is ASCII-safe. A temp directory that is not ASCII-safe needs
+`--stage-root`. PowerView does not expand macros in commands sent over RCL (PRACTICE Script
+Language User's Guide), so no root that PowerView computes itself can be named in a client
+command. For the same reason the client sets every macro a script reads over EXP 2.
 
 ## Cleanup
 
@@ -129,7 +130,6 @@ that probe. The probe report answers it.
 | Reading never-initialized `VM:` fails instead of returning zeros. | `vm-rw` | `t32stage::vm` |
 | `Data.CLEARVM <range>` exists on DVD 02/2024. | `vm-rw` | `practice::cmd::clear_vm` |
 | `OS.PTD()` answers; whether its text is ASCII-safe; trailing separator. | `tempdir` | `practice::fnc::PTD` |
-| `GLOBAL` and `&m=OS.PTD()+"\t32ctl"` over ExecuteCommand create and set the root macro, and both later commands and ExecuteFunction expressions expand it. | `tempdir` | `practice::cmd::bind_root` |
 | Which of `OS.FILE.readable`, `OS.FILE.EXIST`, `FILE.EXIST` answers. | `tempdir` | `practice::ExistsFn` |
 | `PRACTICE.StackDepth()` answers over ExecuteFunction. | `tempdir` | `practice::fnc::STACK_DEPTH` |
 | `/UNZIP` refuses a corrupt gzip (the bundle's integrity check). | `gzip` | `Stage::ensure_snapshot` |

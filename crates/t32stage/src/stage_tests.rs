@@ -56,7 +56,7 @@ fn closed(mut s: Script, unwind: bool) -> Script {
     if unwind {
         s = idle(s, 0);
     }
-    for m in Macro::ALL.iter().filter(|m| **m != Macro::Root) {
+    for m in Macro::ALL {
         s = set(s, *m, "");
     }
     s
@@ -98,6 +98,18 @@ fn a_failed_open_hands_its_cleanup_back_without_running_it() {
     assert!(matches!(failed.error, StageError::Rcl(_)), "{failed}");
     assert!(matches!(failed.cleanup.pending(), [Undo::ClearMacros(_)]));
     failed.cleanup.discard();
+    let _ = std::fs::remove_dir_all(state_dir);
+}
+
+#[test]
+fn a_temp_dir_that_is_not_ascii_safe_needs_an_explicit_root() {
+    let s = Script::new().attach().expect_fn("OS.PTD()").reply_text("C:\\Users\\김\\AppData\\Local\\Temp");
+    let mut session = session_with(vec![Ok(s)], |_| {});
+    let cfg = config("stage-open-non-ascii");
+    let state_dir = cfg.state_dir.clone();
+    let failed = Stage::open(&mut session, cfg).unwrap_err();
+    assert!(matches!(failed.error, StageError::Path(PathError::Char { bad: '김', .. })), "{failed}");
+    assert!(failed.cleanup.pending().is_empty());
     let _ = std::fs::remove_dir_all(state_dir);
 }
 

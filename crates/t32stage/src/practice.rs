@@ -126,40 +126,33 @@ impl fmt::Display for PvPath {
     }
 }
 
-/// Where staged files live. Resolved once per `Stage` and the single source of truth for how a
-/// client-issued command names a staged file.
+/// Where staged files live: an ASCII-safe absolute path, written into client commands as is.
+/// Resolved once per `Stage` and the single source of truth for how a client-issued command names
+/// a staged file. Always spelled out: PowerView does not expand macros in commands sent over RCL
+/// (practice_user, "PRACTICE Macros").
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum StageRoot {
-    /// ASCII-safe absolute path, written into client commands as is.
-    Literal(PvPath),
-    /// `&t32ctl_root`, bound by `cmd::bind_root` and expanded by PowerView, so a temp directory in
-    /// an unknown code page never travels through the client's command bytes.
-    /// ASSUMED(tempdir): command-line assignment creates the global, and both later commands and
-    /// expressions sent over ExecuteFunction expand it; the probe measures the two apart.
-    Macro,
-}
+pub struct StageRoot(PvPath);
 
 /// Name of the root directory below `OS.PTD()`.
 pub const ROOT_DIR: &str = "t32ctl";
 
 impl StageRoot {
-    /// `Literal(<ptd>\t32ctl)` when `OS.PTD()` text is ASCII-safe, `Macro` otherwise.
-    pub fn from_ptd(ptd: &str) -> Self {
-        match PvPath::parse(ptd).and_then(|p| PvPath::parse(&p.join(ROOT_DIR))) {
-            Ok(p) => StageRoot::Literal(p),
-            Err(_) => StageRoot::Macro,
-        }
+    pub fn new(path: PvPath) -> Self {
+        Self(path)
+    }
+
+    /// `<ptd>\t32ctl`. A temp directory that is not ASCII-safe cannot travel through the client's
+    /// command bytes, so the caller needs an explicit root instead.
+    pub fn from_ptd(ptd: &str) -> Result<Self, PathError> {
+        PvPath::parse(ptd).and_then(|p| PvPath::parse(&p.join(ROOT_DIR))).map(Self)
+    }
+
+    pub fn as_path(&self) -> &PvPath {
+        &self.0
     }
 
     pub fn path(&self, rel: RelPath) -> StagePath {
         StagePath { root: self.clone(), rel }
-    }
-
-    pub fn tag(&self) -> &'static str {
-        match self {
-            StageRoot::Literal(_) => "literal",
-            StageRoot::Macro => "macro",
-        }
     }
 }
 
@@ -185,26 +178,18 @@ impl StagePath {
 
     /// Path text for PRACTICE, unquoted.
     pub fn text(&self) -> String {
-        match &self.root {
-            StageRoot::Literal(p) => p.join(self.rel.as_str()),
-            StageRoot::Macro => format!("{}\\{}", Macro::Root.amp(), self.rel.as_str().replace('/', "\\")),
-        }
+        self.root.0.join(self.rel.as_str())
     }
 
-    /// `"<text>"`, ready for a command or a function argument. Also what an operator types by
-    /// hand: `&t32ctl_root` stays bound in PowerView, since cleanup never clears it.
+    /// `"<text>"`, ready for a command or a function argument, and what an operator types by hand.
     pub fn quoted(&self) -> String {
         format!("\"{}\"", self.text())
     }
 }
 
-/// For people: the root macro is spelled out as `<OS.PTD()>\t32ctl`.
 impl fmt::Display for StagePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.root {
-            StageRoot::Literal(_) => f.write_str(&self.text()),
-            StageRoot::Macro => write!(f, "<OS.PTD()>\\{ROOT_DIR}\\{}", self.rel.as_str().replace('/', "\\")),
-        }
+        f.write_str(&self.text())
     }
 }
 
@@ -293,13 +278,6 @@ pub fn render_args(args: &[String]) -> Result<String, ArgError> {
 /// Command builders for `Session::cmd` and generated scripts.
 pub mod cmd {
     use super::*;
-
-    /// Declares `&t32ctl_root` and binds it to `OS.PTD()+"\t32ctl"`; ide_ref's MKTEMP example
-    /// appends `\` to `OS.PresentTemporaryDirectory()`, so the result carries no separator.
-    /// ASSUMED(tempdir): `GLOBAL` and the assignment work over ExecuteCommand.
-    pub fn bind_root() -> [String; 2] {
-        [global(&[Macro::Root]), format!("{}=OS.PTD()+\"\\{ROOT_DIR}\"", Macro::Root.amp())]
-    }
 
     /// `GLOBAL &a &b ...`. ASSUMED(macro): redeclaring an existing global keeps its value.
     pub fn global(macros: &[Macro]) -> String {
@@ -461,19 +439,18 @@ mod tests {
     }
 
     #[test]
-    fn stage_root_is_literal_only_for_ascii_safe_temp_dirs() {
-        let lit = StageRoot::from_ptd("C:\\Users\\op\\AppData\\Local\\Temp");
-        assert_eq!(lit.path(rel("k/a b.bin")).quoted(), "\"C:\\Users\\op\\AppData\\Local\\Temp\\t32ctl\\k\\a b.bin\"");
-        let mac = StageRoot::from_ptd("C:\\Users\\김\\AppData\\Local\\Temp");
-        assert_eq!(mac, StageRoot::Macro);
-        let p = mac.path(rel("k/a.bin"));
-        assert_eq!(p.quoted(), "\"&t32ctl_root\\k\\a.bin\"");
-        assert_eq!(p.to_string(), "<OS.PTD()>\\t32ctl\\k\\a.bin");
+    fn stage_root_comes_only_from_an_ascii_safe_temp_dir() {
+        let root = StageRoot::from_ptd("C:\\Users\\op\\AppData\\Local\\Temp").unwrap();
+        assert_eq!(root.path(rel("k/a b.bin")).quoted(), "\"C:\\Users\\op\\AppData\\Local\\Temp\\t32ctl\\k\\a b.bin\"");
+        assert!(matches!(
+            StageRoot::from_ptd("C:\\Users\\김\\AppData\\Local\\Temp"),
+            Err(PathError::Char { bad: '김', .. })
+        ));
     }
 
     #[test]
     fn command_text_golden() {
-        let root = StageRoot::from_ptd("C:\\T");
+        let root = StageRoot::from_ptd("C:\\T").unwrap();
         let p = root.path(rel("k/a.bin"));
         let r = VmRegion::new(0x0100_0000, NonZeroU32::new(0x40).unwrap()).unwrap();
         assert_eq!(
@@ -492,10 +469,6 @@ mod tests {
         let dir = root.path(rel("o"));
         assert_eq!(cmd::tar(&p, &dir), "TAR \"C:\\T\\t32ctl\\k\\a.bin\" \"C:\\T\\t32ctl\\o\\*\"");
         assert_eq!(cmd::load_elf_symbols(&p, true), "Data.LOAD.Elf \"C:\\T\\t32ctl\\k\\a.bin\" /UNZIP /NoCODE /NoReg");
-        assert_eq!(
-            cmd::bind_root(),
-            ["GLOBAL &t32ctl_root".to_string(), "&t32ctl_root=OS.PTD()+\"\\t32ctl\"".to_string()]
-        );
         assert_eq!(ExistsFn::OsFileExist.call(&dir), "OS.FILE.EXIST(\"C:\\T\\t32ctl\\o\")");
     }
 

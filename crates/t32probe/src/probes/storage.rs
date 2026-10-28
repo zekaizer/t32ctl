@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use t32rcl::{Session, Tuning};
 use t32stage::{
-    ExistsFn, Put, PvPath, RelPath, StagePath, StageRoot, Undo, VmRegion,
+    ExistsFn, Put, RelPath, StagePath, StageRoot, Undo, VmRegion,
     practice::{cmd, fnc},
     transfer,
 };
@@ -41,61 +41,29 @@ fn exercise_root(
     Ok(made.then_some(file))
 }
 
-/// `OS.PTD()`, both stage-root modes, the file-exists function, and the MKDIR/RM/RMDIR
-/// semantics staging relies on.
+/// `OS.PTD()`, the stage root (`OS.PTD()\t32ctl` or `--stage-root`), the file-exists function,
+/// and the MKDIR/RM/RMDIR semantics staging relies on.
 pub fn tempdir(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     ctx.session.take_trace();
     let ptd = ctx.session.eval(fnc::PTD)?.into_text(fnc::PTD)?;
     let lossy = ctx.session.take_trace().lossy_text > 0;
     ctx.measure("ptd_text", Value::Text(ptd.clone()));
-    let ascii = !lossy && PvPath::parse(&ptd).is_ok();
-    ctx.text("ptd", if ascii { "ascii" } else { "non-ascii" });
+    let from_ptd = StageRoot::from_ptd(&ptd).ok().filter(|_| !lossy);
+    ctx.text("ptd", if from_ptd.is_some() { "ascii" } else { "non-ascii" });
     ctx.text("sep", if ptd.ends_with(['\\', '/']) { "yes" } else { "no" });
 
+    let (chosen, tag) = match (&ctx.env.cfg.stage_root, from_ptd) {
+        (Some(p), _) => (StageRoot::new(p.clone()), "override"),
+        (None, Some(r)) => (r, "ptd"),
+        (None, None) => {
+            return Err(ProbeFail::Check("OS.PTD() is not an ASCII-safe path; pass --stage-root".into()));
+        }
+    };
+    ctx.text(key::ROOT, tag);
     let one = scratch_regions(ctx, &[4096])?[0].slice(0, 1).expect("1 byte fits");
     ctx.session.mem_write(&one.addr(), &[0x5A])?;
-    let literal = if ascii { exercise_root(ctx, &StageRoot::from_ptd(&ptd), "lit", &one)? } else { None };
-    let bound =
-        cmd::bind_root().iter().try_fold(true, |acc, c| soft(ctx.session.cmd(c)).map(|r| acc && r.is_some()))?;
-    let root_text = if bound {
-        soft(ctx.session.macro_get(&t32stage::Macro::Root.name()))?.unwrap_or_default()
-    } else {
-        String::new()
-    };
-    ctx.measure("root_macro", Value::Text(root_text));
-    let macro_mode = if bound { exercise_root(ctx, &StageRoot::Macro, "mac", &one)? } else { None };
-    // Macro mode needs both halves: `MKDIR` (a command) and `OS.DIR` (a function) must expand
-    // `&t32ctl_root`. Measured apart, so `macro=FAIL` says which half failed.
-    let root_dir = format!("OS.DIR(\"{}\")", t32stage::Macro::Root.amp());
-    let (fn_side, cmd_side) = if bound {
-        let f = soft(ctx.session.eval(&root_dir).and_then(|v| v.into_bool("OS.DIR")))?;
-        (f, soft(ctx.session.eval_string(&root_dir))?)
-    } else {
-        (None, None)
-    };
-    ctx.measure("root_fn_expand", Value::Text(format!("{fn_side:?}")));
-    ctx.measure("root_cmd_eval", Value::Text(format!("{cmd_side:?}")));
-    ctx.text("literal", if ascii { ok(literal.is_some()) } else { "n/a" });
-    ctx.text("macro", ok(macro_mode.is_some()));
-    ctx.text("macro_fn", ok(fn_side == Some(true)));
-
-    let chosen = match &ctx.env.cfg.stage_root {
-        Some(p) => StageRoot::Literal(p.clone()),
-        None => StageRoot::from_ptd(&ptd),
-    };
-    ctx.text(key::ROOT, chosen.tag());
-    let file = match (&chosen, literal, macro_mode) {
-        (StageRoot::Macro, _, Some(f)) => f,
-        (StageRoot::Literal(_), Some(f), _) if ctx.env.cfg.stage_root.is_none() => f,
-        (StageRoot::Literal(_), _, _) if ctx.env.cfg.stage_root.is_some() => {
-            match exercise_root(ctx, &chosen, "override", &one)? {
-                Some(f) => f,
-                None => return Err(ProbeFail::Check("--stage-root is not usable".into())),
-            }
-        }
-        _ => {
-            return Err(ProbeFail::Check(format!("{} stage root does not work; try --stage-root", chosen.tag())));
-        }
+    let Some(file) = exercise_root(ctx, &chosen, tag, &one)? else {
+        return Err(ProbeFail::Check(format!("the {tag} stage root does not work; try --stage-root")));
     };
     let dir_rel = file.rel().parents().last().expect("file sits in a directory").to_string();
     let dir = chosen.path(RelPath::new(&dir_rel)?);

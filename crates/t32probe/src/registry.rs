@@ -117,7 +117,7 @@ probes! {
     Reconnect = "reconnect", Safe, [Connect], true, 20, transport::reconnect,
         "read timeout shorter than a blocking command; the executor reconnects once";
     Tempdir = "tempdir", Safe, [Connect], true, 30, storage::tempdir,
-        "OS.PTD(), both stage-root modes, MKDIR/RM/RMDIR, exists function, path with spaces";
+        "OS.PTD(), the stage root, MKDIR/RM/RMDIR, exists function, path with spaces";
     VmRw = "vm-rw", Safe, [Connect], true, 180, storage::vm_rw,
         "RCL memory write/read on VM: 1 B to 1 MiB, chunk ladder, throughput, verified restore";
     VmFile = "vm-file", Safe, [VmRw, Tempdir], true, 60, storage::vm_file,
