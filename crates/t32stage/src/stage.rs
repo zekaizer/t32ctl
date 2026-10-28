@@ -7,7 +7,7 @@
 //! | `ensure_snapshot` | gzip, two `VM:` regions, unpack script, offsets, token wait, marker |
 //! | `run` | idle check, macros, token protocol, dialog handling, unwinding |
 //! | `fetch_outputs` | `TAR`, `ZIP`, `VM:` region, tar walking |
-//! | `upload` / `download` | regions, gzip, size checks, temporary files |
+//! | `upload` / `upload_file` / `download` | regions, gzip, slices, size checks, temporary files |
 //! | `close` | the cleanup ledger |
 //!
 //! `Stage` does not own the `Session`: every call takes `&mut Session`, so the caller keeps using
@@ -84,6 +84,15 @@ pub struct UploadStats {
     pub elapsed: Duration,
     pub unpack: Duration,
     pub polls: u32,
+}
+
+/// A local file on the PowerView host, in a directory of its own below the stage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Uploaded {
+    pub path: StagePath,
+    pub len: u64,
+    /// Window-sized slices it took.
+    pub slices: u32,
 }
 
 #[derive(Debug)]
@@ -350,6 +359,55 @@ impl Stage {
         }
         let len = transfer::file_size(session, &dest)?;
         Ok(StagedFile { path: dest, len })
+    }
+
+    /// `len` bytes from `fill` as `<stage>/in-<token>/<name>`, in window-sized slices: the first
+    /// saved, the rest appended, then the size checked. `fill` gets each slice's buffer in order;
+    /// its error is `StageError::Source`. The file and its directory are removed at `close`.
+    pub fn upload_file(
+        &mut self,
+        session: &mut Session,
+        name: &RelPath,
+        len: u64,
+        mut fill: impl FnMut(&mut [u8]) -> std::io::Result<()>,
+    ) -> Result<Uploaded, StageError> {
+        if len == 0 {
+            return Err(VmError::ZeroLength.into());
+        }
+        let dir = format!("in-{}", self.token());
+        let parent = match name.parents().last() {
+            Some(p) => format!("{dir}/{p}"),
+            None => dir.clone(),
+        };
+        let parent = self.path(&parent)?;
+        let ledger = &mut self.ledger;
+        transfer::ensure_dir(session, &parent, |p| ledger.push(Undo::RemoveDir(p.clone())))?;
+        let dest = self.path(&format!("{dir}/{name}"))?;
+        self.ledger.push(Undo::RemoveFile(dest.clone()))?;
+        // Whole 4 KiB units, so a slice never outgrows the window when carved.
+        let slice = u64::from(self.cfg.window.len()).max(4096) / 4096 * 4096;
+        let mut buf = vec![0u8; len.min(slice) as usize];
+        let (mut done, mut slices) = (0u64, 0u32);
+        while done < len {
+            let n = (len - done).min(slice) as usize;
+            fill(&mut buf[..n]).map_err(StageError::Source)?;
+            let region = self.claim(session, &[n as u32])?[0];
+            session.mem_write(&region.addr(), &buf[..n])?;
+            let line = if slices == 0 {
+                cmd::data_save_binary(&dest, &region, false)
+            } else {
+                cmd::data_save_binary_append(&dest, &region)
+            };
+            let budget = transfer::data_budget(session, n as u64);
+            session.with_budget(budget).cmd(&line)?;
+            done += n as u64;
+            slices += 1;
+        }
+        let got = transfer::file_size(session, &dest)?;
+        if got != len {
+            return Err(StageError::SizeMismatch { what: dest.to_string(), want: len, got });
+        }
+        Ok(Uploaded { path: dest, len, slices })
     }
 
     /// PowerView gzips `src` (`ZIP`), the client reads the `.gz` through `VM:` and gunzips it, so

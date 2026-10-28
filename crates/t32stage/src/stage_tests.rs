@@ -592,3 +592,83 @@ fn download_gunzips_what_powerview_zipped() {
     assert!(st.close(&mut session).is_clean());
     let _ = std::fs::remove_dir_all(state_dir);
 }
+
+/// `Stage::upload_file` of `len` bytes through a 4 KiB window; the script continues after `MKDIR`.
+fn upload(tag: &str, s: Script, len: u64, fail_at: Option<usize>) -> (Result<Uploaded, StageError>, Vec<usize>) {
+    let mut session = session_with(vec![Ok(s)], |o| o.tuning = Tuning::new(0x3C00, 0x3C00).unwrap());
+    let cfg = StageConfig { window: VmWindow::new(BASE, 0x1000).unwrap(), ..config(tag) };
+    let state_dir = cfg.state_dir.clone();
+    let mut st = stage(&mut session, cfg);
+    let mut sizes = Vec::new();
+    let fill = |buf: &mut [u8]| {
+        if fail_at == Some(sizes.len()) {
+            return Err(std::io::Error::other("disk gone"));
+        }
+        let at = sizes.iter().sum::<usize>();
+        buf.iter_mut().enumerate().for_each(|(i, b)| *b = ((at + i) % 251) as u8);
+        sizes.push(buf.len());
+        Ok(())
+    };
+    let uploaded = st.upload_file(&mut session, &RelPath::new("image.bin").unwrap(), len, fill);
+    assert!(st.close(&mut session).is_clean());
+    let _ = std::fs::remove_dir_all(state_dir);
+    (uploaded, sizes)
+}
+
+const IN_DIR: &str = "C:\\T\\t32ctl\\in-tok";
+const IMAGE: &str = "C:\\T\\t32ctl\\in-tok\\image.bin";
+
+fn in_dir_made(s: Script) -> Script {
+    s.expect_fn(&format!("OS.DIR(\"{IN_DIR}\")"))
+        .reply_bool(false)
+        .expect_cmd(&format!("MKDIR \"{IN_DIR}\""))
+        .reply_ok()
+}
+
+/// Close after an upload: the file if `present`, then its directory, then the macros.
+fn upload_closed(mut s: Script, present: bool) -> Script {
+    s = s.expect_fn(&format!("OS.FILE.readable(\"{IMAGE}\")")).reply_bool(present);
+    if present {
+        s = s.expect_cmd(&format!("RM \"{IMAGE}\"")).reply_ok();
+        s = s.expect_fn(&format!("OS.FILE.readable(\"{IMAGE}\")")).reply_bool(false);
+    }
+    s = s
+        .expect_fn(&format!("OS.DIR(\"{IN_DIR}\")"))
+        .reply_bool(true)
+        .expect_cmd(&format!("RMDIR \"{IN_DIR}\""))
+        .reply_ok();
+    closed(s.expect_fn(&format!("OS.DIR(\"{IN_DIR}\")")).reply_bool(false), false)
+}
+
+#[test]
+fn a_file_larger_than_the_window_is_saved_then_appended_slice_by_slice_and_size_checked() {
+    let bytes: Vec<u8> = (0..6000).map(|i| (i % 251) as u8).collect();
+    let mut s = in_dir_made(opened(Script::new().attach()));
+    s = s
+        .expect_req(Request::MemWrite { access: "VM".into(), addr: BASE.into(), data: bytes[..4096].to_vec() })
+        .reply_ok();
+    s = s.expect_cmd(&format!("Data.SAVE.Binary \"{IMAGE}\" VM:0x{BASE:08X}++0x00000FFF")).reply_ok();
+    s = s
+        .expect_req(Request::MemWrite { access: "VM".into(), addr: BASE.into(), data: bytes[4096..].to_vec() })
+        .reply_ok();
+    s = s.expect_cmd(&format!("Data.SAVE.Binary \"{IMAGE}\" VM:0x{BASE:08X}++0x0000076F /Append")).reply_ok();
+    s = s.expect_fn(&format!("OS.FILE.SIZE(\"{IMAGE}\")")).reply_decimal(6000);
+    let (uploaded, sizes) = upload("stage-upload-slices", upload_closed(s, true), 6000, None);
+    let uploaded = uploaded.unwrap();
+    assert_eq!((uploaded.path.text().as_str(), uploaded.len, uploaded.slices), (IMAGE, 6000, 2));
+    assert_eq!(sizes, [4096, 1904]);
+}
+
+#[test]
+fn a_short_file_or_a_failing_source_is_an_error_and_cleaned_up() {
+    let mut s = in_dir_made(opened(Script::new().attach()));
+    s = s.expect(Expect::MemWriteLen { access: "VM".into(), addr: BASE.into(), len: 100 }).reply_ok();
+    s = s.expect_cmd(&format!("Data.SAVE.Binary \"{IMAGE}\" VM:0x{BASE:08X}++0x00000063")).reply_ok();
+    s = s.expect_fn(&format!("OS.FILE.SIZE(\"{IMAGE}\")")).reply_decimal(99);
+    let (uploaded, _) = upload("stage-upload-short", upload_closed(s, true), 100, None);
+    assert!(matches!(uploaded, Err(StageError::SizeMismatch { want: 100, got: 99, .. })), "{uploaded:?}");
+
+    let s = in_dir_made(opened(Script::new().attach()));
+    let (uploaded, _) = upload("stage-upload-source", upload_closed(s, false), 100, Some(0));
+    assert!(matches!(&uploaded, Err(StageError::Source(e)) if e.to_string() == "disk gone"), "{uploaded:?}");
+}

@@ -2,7 +2,7 @@
 //! `t32stage`: move files and scripts to a TRACE32 PowerView over RCL only, run them, and
 //! clean up after them.
 //!
-//! - [`Stage`]: open, ensure_snapshot, run, fetch_outputs, upload, download, close.
+//! - [`Stage`]: open, ensure_snapshot, run, fetch_outputs, upload, upload_file, download, close.
 //! - [`Bundle`]: a validated file set that unpacks itself inside PowerView.
 //! - [`practice`]: the only place PRACTICE command text is formatted.
 //! - [`Ledger`]: cleanup registered before every side effect, journaled on the WSL side.
@@ -38,7 +38,7 @@ pub use ledger::{
 pub use macros::{Macro, PARAM_PREFIX, param_macro};
 pub use practice::{ExistsFn, PvPath, RegName, RelPath, StagePath, StageRoot, Symbol};
 pub use runner::{PollSchedule, PollStats, PracticeErrorInfo, RunOutcome, RunReport, RunRequest, ScriptRc, runner_cmm};
-pub use stage::{OpenError, Outputs, Retention, Snapshot, Stage, StageConfig, StagedFile, UploadStats};
+pub use stage::{OpenError, Outputs, Retention, Snapshot, Stage, StageConfig, StagedFile, UploadStats, Uploaded};
 pub use tar::{TarDiag, TarEntry, diagnose as diagnose_tar, walk as walk_tar};
 pub use transfer::Put;
 pub use vm::{Prior, RestoreOutcome, SNAPSHOT_UNIT, VmGuard, VmLease, VmRegion, VmSnapshot, VmWindow};

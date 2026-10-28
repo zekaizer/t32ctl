@@ -49,6 +49,8 @@ pub enum StageError {
     StillPresent {
         what: String,
     },
+    /// The local side of an upload failed: the caller's `fill` could not produce the bytes.
+    Source(io::Error),
 }
 
 impl StageError {
@@ -94,6 +96,7 @@ impl fmt::Display for StageError {
             }
             StageError::BadReply { what, text } => write!(f, "unusable PowerView reply for {what}: {text:?}"),
             StageError::StillPresent { what } => write!(f, "{what} is still present after removal"),
+            StageError::Source(e) => write!(f, "reading the local file: {e}"),
         }
     }
 }
@@ -102,7 +105,7 @@ impl StdError for StageError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             StageError::Rcl(e) => Some(e),
-            StageError::Journal { source, .. } | StageError::Gzip(source) => Some(source),
+            StageError::Journal { source, .. } | StageError::Gzip(source) | StageError::Source(source) => Some(source),
             StageError::Bundle(BundleError::Io { source, .. }) => Some(source),
             _ => None,
         }

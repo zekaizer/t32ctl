@@ -358,6 +358,13 @@ pub mod cmd {
         format!("Data.SAVE.Binary {} {}{z}", dest.quoted(), vm_range(from))
     }
 
+    /// `from` appended to `dest`, which must exist. No `.bak` (`fs-semantics`).
+    /// ASSUMED(fs-semantics): the appended file is the concatenation; the `append` token of the
+    /// alpha.8 safe run is not in the record yet.
+    pub fn data_save_binary_append(dest: &StagePath, from: &VmRegion) -> String {
+        format!("{} /Append", data_save_binary(dest, from, false))
+    }
+
     /// `/UNZIP` accepts gzip from `/ZIP` or an external tool (general_ref_d).
     pub fn data_load_binary(src: &StagePath, at: u32, unzip: bool) -> String {
         let z = if unzip { " /UNZIP" } else { "" };
@@ -556,6 +563,10 @@ mod tests {
             "Data.LOAD.Binary \"C:\\T\\t32ctl\\k\\a.bin\" VM:0x02000000 /UNZIP"
         );
         assert_eq!(cmd::clear_vm(&r), "Data.CLEARVM VM:0x01000000++0x0000003F");
+        assert_eq!(
+            cmd::data_save_binary_append(&p, &r),
+            "Data.SAVE.Binary \"C:\\T\\t32ctl\\k\\a.bin\" VM:0x01000000++0x0000003F /Append"
+        );
         let dir = root.path(rel("o"));
         assert_eq!(cmd::tar(&p, &dir), "TAR \"C:\\T\\t32ctl\\k\\a.bin\" \"C:\\T\\t32ctl\\o\\*\"");
         assert_eq!(cmd::load_elf_symbols(&p, true), "Data.LOAD.Elf \"C:\\T\\t32ctl\\k\\a.bin\" /UNZIP /NoCODE /NoReg");
