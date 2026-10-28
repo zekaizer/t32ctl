@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The policy hooks: the only readers of the memory map. Each returns what the profile declares;
-//! a trust layer can replace them without changing the command line.
+//! The policy hooks: the only readers of declared grades and of the memory map. Each returns
+//! what the profile declares; a trust layer can replace them without changing the command line.
 
 use t32rcl::AccessClass;
 
 use super::{Profile, Region, RegionKind};
 use crate::{
     error::{CtlError, ErrorKind},
+    grade::GradeId,
     notation::Size,
 };
+
+/// The grade procedure `proc` runs at, which the grade word must equal; `None` when the profile
+/// declares no such procedure.
+pub fn effective_grade(p: &Profile, proc: &str) -> Option<GradeId> {
+    p.proc(proc).map(|d| d.grade)
+}
 
 /// The memory policy a call works under.
 #[derive(Clone, Debug, PartialEq, Eq)]

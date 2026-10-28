@@ -55,7 +55,7 @@ read = false
 "#;
 
 fn policy() -> MemoryPolicy {
-    let (_, target, memory) = ProfileDoc::parse(MAP, Path::new("p.toml")).unwrap().select(None);
+    let (_, target, memory) = ProfileDoc::parse(MAP, Path::new("p.toml"), &[]).unwrap().select(None);
     MemoryPolicy { regions: memory, classes: target.classes, default_class: target.default_class, word: target.word }
 }
 
@@ -182,4 +182,25 @@ fn a_place_takes_the_default_class_and_only_a_declared_class() {
             "access class C15 is not one of the profile's classes A, D, P; such an access is raw"
         )
     );
+}
+
+#[test]
+fn the_effective_grade_is_the_declared_one_and_none_for_an_undeclared_procedure() {
+    let text = format!(
+        "{MAP}\n[proc.reset]\nabout = \"r\"\nscript = \"reset.cmm\"\ngrade = \"write\"\ntimeout = \"20s\"\n\
+         effects = [\"target-reset\"]\n"
+    );
+    let doc = ProfileDoc::parse(&text, Path::new("p.toml"), &["reset.cmm"]).unwrap();
+    let (_, target, memory) = doc.select(None);
+    let p = crate::profile::Profile {
+        dir: "b/support/t32ctl".into(),
+        target,
+        memory,
+        variant: None,
+        procs: doc.procs,
+        files: Vec::new(),
+        hash: crate::profile::ProfileHash([0; 32]),
+    };
+    assert_eq!(effective_grade(&p, "reset"), Some(GradeId::Write));
+    assert_eq!(effective_grade(&p, "flash"), None);
 }

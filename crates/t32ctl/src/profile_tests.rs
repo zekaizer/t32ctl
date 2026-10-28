@@ -45,7 +45,7 @@ memory = [{ name = "sram", start = 0x00100000, size = 0x00040000, kind = "ram" }
 "#;
 
 fn parse(text: &str) -> Result<ProfileDoc, CtlError> {
-    ProfileDoc::parse(text, Path::new(FILE))
+    ProfileDoc::parse(text, Path::new(FILE), &["profile.toml"])
 }
 
 fn class(c: &str) -> AccessClass {
@@ -210,8 +210,6 @@ fn planned_keys_say_they_are_planned_and_unknown_keys_stop_at_the_first() {
             "p/profile.toml:44:2: [per.*] is planned, not in this t32ctl",
         ]
     );
-    let e = parse(&(ACME.to_string() + "\n[proc.selftest]\nabout = \"x\"\n")).unwrap_err();
-    assert!(e.message.starts_with("p/profile.toml:37:2: unknown field `proc`, expected one of"), "{}", e.message);
     let e = error_of("target = { cores = 1 }", "target = { cores = 1 }\ntiming = { go_wait = \"1s\" }");
     assert_eq!(e.message, "p/profile.toml:32:10: [timing] is planned, not in this t32ctl");
     let e = error_of("cores = 4", "cores = 4\nlease = \"x\"");

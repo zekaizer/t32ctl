@@ -3,7 +3,8 @@
 //! build's `BOARD` selects, and the profile hash over the directory's files.
 //!
 //! Validation reports the first TOML syntax or schema error (parsing stops there), then every
-//! semantic error, each with file, line and column. Keys of planned features say so.
+//! semantic error, each with file, line and column. Keys of planned features say so. Procedures
+//! and their parameters are in `procedure`.
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -24,6 +25,9 @@ use crate::{
 };
 
 pub mod policy;
+pub mod procedure;
+
+pub use procedure::{Effect, ParamCx, ParamDecl, ParamType, ParamValue, ProcDecl};
 
 pub const PROFILE_FILE: &str = "profile.toml";
 
@@ -36,6 +40,8 @@ pub struct Profile {
     pub memory: Vec<Region>,
     /// The `[variant."<board>"]` the build's `BOARD` selected; `None` for the base profile.
     pub variant: Option<String>,
+    /// Board procedures in declaration order; every variant shares them.
+    pub procs: Vec<ProcDecl>,
     /// The directory's files, sorted by relative path: what the hash covers.
     pub files: Vec<Walked>,
     pub hash: ProfileHash,
@@ -228,9 +234,15 @@ impl Profile {
         };
         let text =
             std::str::from_utf8(&toml.bytes).map_err(|_| invalid(format!("{}: not UTF-8 text", shown.display())))?;
-        let (variant, target, memory) = ProfileDoc::parse(text, &shown)?.select(board);
+        let doc = ProfileDoc::parse(text, &shown, &procedure::names(&files))?;
+        let (variant, target, memory) = doc.select(board);
         let hash = hash(&files);
-        Ok(Self { dir: dir.to_path_buf(), target, memory, variant, files, hash })
+        Ok(Self { dir: dir.to_path_buf(), target, memory, variant, procs: doc.procs, files, hash })
+    }
+
+    /// The procedure declared under `name`.
+    pub fn proc(&self, name: &str) -> Option<&ProcDecl> {
+        self.procs.iter().find(|p| p.name == name)
     }
 }
 
@@ -240,11 +252,13 @@ pub struct ProfileDoc {
     pub target: Target,
     pub memory: Vec<Region>,
     pub variants: BTreeMap<String, (Target, Vec<Region>)>,
+    pub procs: Vec<ProcDecl>,
 }
 
 impl ProfileDoc {
-    /// `file` names the file in messages.
-    pub fn parse(text: &str, file: &Path) -> Result<Self, CtlError> {
+    /// `file` names the file in messages; `files` are the profile directory's files, relative,
+    /// which a procedure's `script` must name.
+    pub fn parse(text: &str, file: &Path, files: &[&str]) -> Result<Self, CtlError> {
         let raw: RawProfile = toml::from_str(text).map_err(|e| syntax(text, file, &e))?;
         let mut issues = Issues::default();
         issues.schema(&raw.schema);
@@ -259,6 +273,7 @@ impl ProfileDoc {
             }
         };
         let memory = regions(&mut issues, &raw.memory);
+        let procs = procedure::procedures(&mut issues, &raw.proc, files, base.as_ref());
         let mut variants = BTreeMap::new();
         for (name, v) in &raw.variant {
             let v = v.get_ref();
@@ -277,7 +292,7 @@ impl ProfileDoc {
         }
         issues.into_result(text, file)?;
         let target = base.expect("a profile without errors has a target");
-        Ok(Self { target, memory, variants })
+        Ok(Self { target, memory, variants, procs })
     }
 
     /// The variant named exactly `board`, else the base: its name, target and memory map.
@@ -298,6 +313,8 @@ struct RawProfile {
     memory: Vec<Spanned<RawRegion>>,
     #[serde(default)]
     variant: BTreeMap<String, Spanned<RawVariant>>,
+    #[serde(default)]
+    proc: BTreeMap<String, Spanned<procedure::RawProc>>,
     timing: Option<Spanned<toml::Value>>,
     stop: Option<Spanned<toml::Value>>,
     per: Option<Spanned<toml::Value>>,
