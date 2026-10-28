@@ -672,3 +672,33 @@ fn a_short_file_or_a_failing_source_is_an_error_and_cleaned_up() {
     let (uploaded, _) = upload("stage-upload-source", upload_closed(s, false), 100, Some(0));
     assert!(matches!(&uploaded, Err(StageError::Source(e)) if e.to_string() == "disk gone"), "{uploaded:?}");
 }
+
+#[test]
+fn a_run_is_timed_on_the_session_clock() {
+    let (b, dir, s) = started("main.cmm");
+    let mut s = started_do(s, &format!("{dir}\\.t32ctl\\runner.cmm"));
+    s = s.expect_req(Request::PracticeState).silence(Duration::from_millis(600)).reply_state(1);
+    s = s.expect_req(Request::PracticeState).silence(Duration::from_millis(600)).reply_state(1);
+    s = s.expect_req(Request::PracticeState).reply_state(1);
+    s = s.expect_req(Request::Stop).reply_ok().expect_fn("PRACTICE.StackDepth()").reply_decimal(1);
+    s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(1).expect_cmd("END").reply_ok();
+    s = s.expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
+    let s = closed(s, false);
+    let mut session = session_with(vec![Ok(s)], |_| {});
+    let cfg = config("stage-clock");
+    let state_dir = cfg.state_dir.clone();
+    let mut st = stage(&mut session, cfg);
+    let snap = st.ensure_snapshot(&mut session, &b).unwrap();
+    let req = RunRequest {
+        entry: RelPath::new("main.cmm").unwrap(),
+        args: vec![],
+        timeout: Duration::from_secs(1),
+        collect_outputs: false,
+        params: vec![],
+    };
+    let report = st.run(&mut session, &snap, &req).unwrap();
+    assert_eq!(report.outcome, RunOutcome::TimedOut { last_state: PracticeState::Running });
+    assert_eq!(report.elapsed, Duration::from_millis(1200));
+    assert!(st.close(&mut session).is_clean());
+    let _ = std::fs::remove_dir_all(state_dir);
+}

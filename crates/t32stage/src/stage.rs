@@ -20,7 +20,7 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use t32rcl::{PracticeState, Session};
@@ -201,7 +201,7 @@ impl Stage {
             return Ok(Snapshot { key, dir, cached: true, upload: None });
         }
         self.require_idle(session)?;
-        let t0 = Instant::now();
+        let t0 = session.now();
         let raw_len = bundle.pack(0).raw_len;
         let b = self.claim(session, &[raw_len])?[0];
         let packed = bundle.pack(b.start());
@@ -243,9 +243,9 @@ impl Stage {
         session.cmd(&cmd::rm(&tmp))?;
 
         session.macro_set(&Macro::Snap.name(), &dir.text())?;
-        let t1 = Instant::now();
+        let t1 = session.now();
         let (outcome, polls) = self.execute(session, &unpack, UNPACK_TIMEOUT)?;
-        let unpack_time = t1.elapsed();
+        let unpack_time = session.now().saturating_duration_since(t1);
         if !outcome.is_success() {
             return Err(StageError::UnpackIncomplete { key: key.hex(), detail: format!("{outcome:?}") });
         }
@@ -255,7 +255,7 @@ impl Stage {
         let upload = UploadStats {
             raw_bytes: packed.raw_len.into(),
             gz_bytes: packed.gz.len() as u64,
-            elapsed: t0.elapsed(),
+            elapsed: session.now().saturating_duration_since(t0),
             unpack: unpack_time,
             polls: polls.samples,
         };
@@ -289,9 +289,10 @@ impl Stage {
         session.macro_set(&Macro::Entry.name(), &self.root.native(&req.entry))?;
         session.macro_set(&Macro::Args.name(), &args)?;
         let runner = snap.dir.join(RUNNER_PATH)?;
-        let t0 = Instant::now();
+        let t0 = session.now();
         let (outcome, polls) = self.execute_with(session, &runner, req.timeout, &token)?;
-        Ok(RunReport { token, outcome, elapsed: t0.elapsed(), polls, out })
+        let elapsed = session.now().saturating_duration_since(t0);
+        Ok(RunReport { token, outcome, elapsed, polls, out })
     }
 
     /// Pack the run's output directory with PowerView's `TAR`, download it, untar it, and
@@ -494,6 +495,7 @@ impl Stage {
     }
 
     /// Token protocol around `DO <script>`; the stack is unwound on every outcome but `Finished`.
+    /// Timed on the session's clock, like every other wait of the session.
     /// The unwind is registered right before `DO` and withdrawn once the stack is seen empty, so
     /// `close` never ends a script someone else started later.
     fn execute_with(
@@ -512,11 +514,11 @@ impl Stage {
         // ASSUMED(script-lab): `DO` over ExecuteCommand returns while the script runs; if it returns
         // at the end instead, the first poll sees the token and the outcome is the same.
         session.cmd(&cmd::do_script(script))?;
-        let mut watch = ScriptWatch::new(timeout, self.cfg.poll, Instant::now());
+        let mut watch = ScriptWatch::new(timeout, self.cfg.poll, session.now());
         loop {
             let state = session.practice_state()?;
             // `empty`: the stack was seen empty after our script, by a read or a finished unwind.
-            let (outcome, empty) = match watch.on_state(Instant::now(), state) {
+            let (outcome, empty) = match watch.on_state(session.now(), state) {
                 Next::PollAfter(d) => {
                     thread::sleep(d);
                     continue;
@@ -532,7 +534,7 @@ impl Stage {
                 Next::NeedIdleDetail => {
                     let done = unquote(&session.macro_get(&Macro::Done.name())?) == token;
                     let depth = stack_depth(session)?;
-                    match watch.on_idle_detail(Instant::now(), done, depth) {
+                    match watch.on_idle_detail(session.now(), done, depth) {
                         IdleVerdict::PollAfter(d) => {
                             thread::sleep(d);
                             continue;
