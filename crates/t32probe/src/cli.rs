@@ -101,7 +101,7 @@ pub struct Args {
     #[arg(long, requires = "symbol")]
     pub allow_run_control: bool,
 
-    /// Symbol for `run-control`, and the existence check after `elf-unzip`.
+    /// Symbol for `run-control` and `target-read`, and the symbol queries after `elf-unzip`.
     #[arg(long)]
     pub symbol: Option<String>,
 
@@ -116,6 +116,24 @@ pub struct Args {
     /// With `run-control`: a 4-byte aligned RAM address the probe may write and restore.
     #[arg(long, value_name = "ADDR", requires = "allow_run_control")]
     pub scratch_ram: Option<String>,
+
+    /// Enable `target-read`: reads registers, memory and symbols of a halted target and prints
+    /// windows to a file. Leave no PowerView printer file open while it runs.
+    #[arg(long, requires = "symbol")]
+    pub allow_target_read: bool,
+
+    /// With `target-read`: a virtual address to translate.
+    #[arg(long, value_name = "ADDR", requires = "allow_target_read")]
+    pub va: Option<String>,
+
+    /// With `target-read`: a peripheral section name for `WinPrint.PER.view`.
+    #[arg(long, value_name = "NAME", requires = "allow_target_read")]
+    pub per_section: Option<String>,
+
+    /// With `target-read`: `<addr>++<len>` of target memory to read over RCL and save to a file,
+    /// at most 16 MiB.
+    #[arg(long, value_name = "ADDR++LEN", requires = "allow_target_read")]
+    pub read_range: Option<String>,
 
     /// Enable `elf-unzip` with this ELF. Loads its symbols (not its code) into PowerView.
     #[arg(long, value_name = "PATH")]
@@ -167,6 +185,36 @@ pub struct RunControlInput {
     pub scratch_ram: Option<u64>,
 }
 
+/// `target-read`'s inputs.
+#[derive(Clone, Debug)]
+pub struct TargetReadInput {
+    pub symbol: Symbol,
+    pub va: Option<u64>,
+    pub per_section: Option<String>,
+    /// Start and length.
+    pub read_range: Option<(u64, u32)>,
+}
+
+/// Largest `--read-range` length.
+const READ_RANGE_MAX: u32 = 16 * 1024 * 1024;
+
+fn parse_section(s: &str) -> Result<String, String> {
+    if (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.') {
+        Ok(s.to_string())
+    } else {
+        Err(format!("{s:?} is not [A-Za-z0-9_.]{{1,64}}"))
+    }
+}
+
+fn parse_range(s: &str) -> Result<(u64, u32), String> {
+    let (a, n) = s.split_once("++").ok_or("expected <addr>++<len>")?;
+    let n = parse_u64(n)?;
+    if !(1..=u64::from(READ_RANGE_MAX)).contains(&n) {
+        return Err(format!("length {n} is not between 1 and {READ_RANGE_MAX}"));
+    }
+    Ok((parse_u64(a)?, n as u32))
+}
+
 /// What the opt-in flags unlocked, with the inputs those probes need. A gate is open iff its
 /// field is set, so "unlocked but missing its input" is not representable.
 #[derive(Clone, Debug, Default)]
@@ -174,6 +222,7 @@ pub struct Gates {
     pub dialog: bool,
     pub multi_client: bool,
     pub run_control: Option<RunControlInput>,
+    pub target_read: Option<TargetReadInput>,
     pub elf: Option<ElfInput>,
 }
 
@@ -183,6 +232,7 @@ impl Gates {
             OptIn::Dialog => self.dialog,
             OptIn::MultiClient => self.multi_client,
             OptIn::RunControl => self.run_control.is_some(),
+            OptIn::TargetRead => self.target_read.is_some(),
             OptIn::Elf => self.elf.is_some(),
         }
     }
@@ -266,7 +316,27 @@ impl Args {
             }),
             _ => None,
         };
-        let gates = Gates { dialog: self.allow_dialog, multi_client: self.allow_multi_client, run_control, elf };
+        let target_read = match &symbol {
+            Some(symbol) if self.allow_target_read => Some(TargetReadInput {
+                symbol: symbol.clone(),
+                va: self.va.as_deref().map(parse_u64).transpose().map_err(|e| format!("--va: {e}"))?,
+                per_section: self
+                    .per_section
+                    .as_deref()
+                    .map(parse_section)
+                    .transpose()
+                    .map_err(|e| format!("--per-section: {e}"))?,
+                read_range: self
+                    .read_range
+                    .as_deref()
+                    .map(parse_range)
+                    .transpose()
+                    .map_err(|e| format!("--read-range: {e}"))?,
+            }),
+            _ => None,
+        };
+        let gates =
+            Gates { dialog: self.allow_dialog, multi_client: self.allow_multi_client, run_control, target_read, elf };
         let selected = registry::select(&ids(&self.only)?, &ids(&self.skip)?, &gates)?;
         let window = VmWindow::new(self.vm_base, self.vm_window).map_err(|e| format!("--vm-base/--vm-window: {e}"))?;
         if window.len() < 8 * 1024 * 1024 {
@@ -360,6 +430,31 @@ mod tests {
         }
         let parsed = Args::try_parse_from(["t32probe", "--loop-line", "main.c:3"]);
         assert!(parsed.is_err(), "--loop-line needs --allow-run-control");
+    }
+
+    #[test]
+    fn target_read_and_load_code_need_their_gates() {
+        assert_eq!(plan(&["--only", "target-read"]), Err("target-read needs --allow-target-read --symbol <s>".into()));
+        assert!(Args::try_parse_from(["t32probe", "--allow-target-read"]).is_err(), "needs --symbol");
+        let tr = |extra: &[&str]| {
+            let mut v = vec!["--only", "target-read", "--allow-target-read", "--symbol", "main"];
+            v.extend_from_slice(extra);
+            plan(&v)
+        };
+        assert_eq!(
+            tr(&["--va", "0xFFFF000000001000", "--per-section", "GIC.D", "--read-range", "0x80000000++0x1000"]),
+            Ok(())
+        );
+        for bad in [
+            ["--read-range", "0x80000000++0x1000001"],
+            ["--read-range", "0x80000000++0"],
+            ["--read-range", "0x80000000"],
+            ["--per-section", "a b"],
+            ["--va", "zz"],
+        ] {
+            let e = tr(&bad).unwrap_err();
+            assert!(e.starts_with(bad[0]), "{bad:?}: {e}");
+        }
     }
 
     #[test]

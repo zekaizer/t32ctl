@@ -99,6 +99,18 @@ fn an_opt_in_probe_without_its_flag_is_a_usage_error() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("dialog needs --allow-dialog"));
 }
 
+/// `--only <probe>` without its flag: exit 2 and the flag named.
+fn needs_gate(probe: &str, flag: &str) {
+    let out = Command::new(bin()).args(["--only", probe]).output().expect("runs");
+    assert_eq!(out.status.code(), Some(2), "{probe}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains(&format!("{probe} needs {flag}")), "{probe}");
+}
+
+#[test]
+fn target_read_and_load_code_need_their_gates() {
+    needs_gate("target-read", "--allow-target-read --symbol <s>");
+}
+
 #[test]
 fn sigint_during_attach_prints_the_partial_report_and_exits_130() {
     let l = TcpListener::bind("127.0.0.1:0").expect("bind");

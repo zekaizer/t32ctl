@@ -20,6 +20,7 @@ pub mod optin;
 pub mod scriptlab;
 pub mod scripts;
 pub mod storage;
+pub mod target;
 pub mod transport;
 pub mod unpack;
 
