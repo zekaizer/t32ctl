@@ -150,6 +150,14 @@ or 1, both success (api_remote_c).
 Rule: t32ctl sends `END` only after checking the stack held nothing but its own script, and warns
 that it closes the operator's dialogs and files.
 
+### `ENDDO` hands back text, not a value
+
+A script's `ENDDO <value>` reaches the caller's `ENTRY %LINE` as the text of the line, unevaluated
+and with its quotes: `ENDDO "a="+OS.PPD()` arrives as `"a="+OS.PPD()` (alpha.6 `bundle`). Only
+macros in it are expanded, because that happens before the line runs.
+
+Rule: compute a return value into a macro first (`&m=...`), then `ENDDO "&m"`.
+
 ### Errors
 
 `ON ERROR JUMPTO` in a script catches errors raised in nested `DO` files (`script-error`:
