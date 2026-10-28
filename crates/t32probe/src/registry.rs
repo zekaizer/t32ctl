@@ -125,7 +125,7 @@ probes! {
     Gzip = "gzip", Safe, [VmFile], true, 180, storage::gzip,
         "gzip upload, /UNZIP decode, corrupt gzip must fail, size ceiling";
     Macro = "macro", Safe, [Tempdir], true, 30, scripts::macro_probe,
-        "EXP 2 macros: wire spelling, set/get, size, script reads and writes";
+        "EXP 2 macros: wire spelling, set/get, redeclaration, size, characters";
     Bundle = "bundle", Safe, [Gzip, Macro], true, 90, scripts::bundle,
         "self-extracting bundle, nested DO chain, marker, runner rc, state during the chain";
     ScriptError = "script-error", Safe, [Bundle], true, 90, scripts::script_error,

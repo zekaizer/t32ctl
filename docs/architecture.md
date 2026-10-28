@@ -135,7 +135,6 @@ that probe. The probe report answers it.
 | `/UNZIP` refuses a corrupt gzip (the bundle's integrity check). | `gzip` | `Stage::ensure_snapshot` |
 | EXP 2 names a macro without `&` (both spellings are tried). | `macro` | `t32rcl::MacroSpelling` |
 | Redeclaring an existing global keeps its value. | `macro` | `practice::cmd::global` |
-| Macros expand inside a quoted command-line assignment. | `macro` | `practice::cmd::bind_path` |
 | `&m="0"` stores `0`, not `"0"` (quotes are stripped either way). | `macro` | `Stage` |
 | One-line `IF` bodies, `GOTO`, `OPEN /Create /Binary` for empty files, and EXP-set macros visible to scripts. | `bundle` | `bundle::render_unpack` |
 | `DO` over ExecuteCommand returns while the script runs. | `bundle` | `Stage::execute_with` |

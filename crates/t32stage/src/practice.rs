@@ -306,12 +306,6 @@ pub mod cmd {
         format!("GLOBAL {}", macros.iter().map(|m| m.amp()).collect::<Vec<_>>().join(" "))
     }
 
-    /// `&m="<path>"`: PowerView expands `&t32ctl_root` inside the string when the root is a macro.
-    /// ASSUMED(macro): macros expand inside a quoted assignment on the command line.
-    pub fn bind_path(m: Macro, p: &StagePath) -> String {
-        format!("{}={}", m.amp(), p.quoted())
-    }
-
     pub fn mkdir(p: &StagePath) -> String {
         format!("MKDIR {}", p.quoted())
     }
@@ -502,7 +496,6 @@ mod tests {
             cmd::bind_root(),
             ["GLOBAL &t32ctl_root".to_string(), "&t32ctl_root=OS.PTD()+\"\\t32ctl\"".to_string()]
         );
-        assert_eq!(cmd::bind_path(Macro::Snap, &dir), "&t32ctl_snap=\"C:\\T\\t32ctl\\o\"");
         assert_eq!(ExistsFn::OsFileExist.call(&dir), "OS.FILE.EXIST(\"C:\\T\\t32ctl\\o\")");
     }
 

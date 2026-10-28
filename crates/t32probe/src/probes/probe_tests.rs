@@ -315,9 +315,6 @@ fn the_macro_probe_falls_back_to_the_ampersand_spelling_and_keeps_it() {
     for _ in 0..14 {
         s = s.expect(t32rcl::testkit::Expect::Any).reply_exp_error(1, "refused");
     }
-    s = s.expect_req(set(a, "v1")).reply_macro("");
-    s = s.expect_cmd("&t32ctl_probe_b=\"[&t32ctl_probe_a]\"").reply_ok().expect_req(get(b)).reply_macro("[v1]");
-    s = s.expect_cmd("&t32ctl_probe_b=OS.PTD()").reply_ok().expect_req(get(b)).reply_macro("C:\\T");
     s = s.expect_req(set(a, "")).reply_macro("").expect_req(set(b, "")).reply_macro("");
     let mut session = connect(vec![Ok(s)]);
     let mut env = test_env("probe-macro-amp");

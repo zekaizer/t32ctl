@@ -108,7 +108,7 @@ fn a_cached_snapshot_costs_one_call_and_a_run_finishes_by_token() {
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "a 0x10");
     s = executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "\"0\"", "7.");
@@ -142,7 +142,7 @@ fn an_operator_script_started_after_our_run_is_never_unwound() {
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "");
     s = executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "0", "");
@@ -173,7 +173,7 @@ fn started(entry: &str) -> (Bundle, String, Script) {
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, entry);
     s = set(s, Macro::Args, "");
     (b, dir, s)
@@ -236,7 +236,7 @@ fn a_busy_stack_is_refused_and_a_dialog_is_stopped_and_unwound() {
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 2);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "");
     s = set(s, Macro::Token, "tok");
@@ -272,7 +272,7 @@ fn a_script_that_outlives_stop_and_end_is_an_unwind_failure_not_busy() {
     let mut s = opened(Script::new().attach());
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = set(s, Macro::Entry, "main.cmm");
     s = set(s, Macro::Args, "");
     s = set(s, Macro::Token, "tok");
@@ -328,7 +328,7 @@ fn an_uncached_snapshot_is_uploaded_inflated_unpacked_and_verified() {
         ))
         .reply_ok();
     s = s.expect_cmd(&format!("RM \"{tmp}\"")).reply_ok();
-    s = s.expect_cmd(&format!("&t32ctl_snap=\"{dir}\"")).reply_ok();
+    s = set(s, Macro::Snap, &dir);
     s = executed(s, &format!("{dir}\\.t32ctl\\unpack.cmm"), "0", "");
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = s.expect_fn(&format!("OS.FILE.readable(\"{tmp}\")")).reply_bool(false);

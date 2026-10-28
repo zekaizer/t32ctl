@@ -230,7 +230,7 @@ impl Stage {
         session.cmd(&cmd::data_save_binary(&unpack, &script, false))?;
         session.cmd(&cmd::rm(&tmp))?;
 
-        session.cmd(&cmd::bind_path(Macro::Snap, &dir))?;
+        session.macro_set(&Macro::Snap.name(), &dir.text())?;
         let t1 = Instant::now();
         let (outcome, polls) = self.execute(session, &unpack, UNPACK_TIMEOUT)?;
         let unpack_time = t1.elapsed();
@@ -261,12 +261,12 @@ impl Stage {
             let out = self.path(&format!("out-{token}"))?;
             let ledger = &mut self.ledger;
             transfer::ensure_dir(session, &out, |p| ledger.push(Undo::RemoveDir(p.clone())))?;
-            session.cmd(&cmd::bind_path(Macro::Out, &out))?;
+            session.macro_set(&Macro::Out.name(), &out.text())?;
             Some(out)
         } else {
             None
         };
-        session.cmd(&cmd::bind_path(Macro::Snap, &snap.dir))?;
+        session.macro_set(&Macro::Snap.name(), &snap.dir.text())?;
         session.macro_set(&Macro::Entry.name(), req.entry.as_str())?;
         session.macro_set(&Macro::Args.name(), &args)?;
         let runner = snap.dir.join(RUNNER_PATH)?;

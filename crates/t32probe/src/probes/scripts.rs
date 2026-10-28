@@ -17,7 +17,7 @@ fn name(s: &str) -> MacroName {
 }
 
 /// EXP 2 global macros: the wire spelling, whether `GLOBAL` must come first, redeclaration,
-/// value size, characters that survive, and command-line assignments that read macros.
+/// value size, and characters that survive.
 pub fn macro_probe(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let (a, b) = (name("t32ctl_probe_a"), name("t32ctl_probe_b"));
     ctx.push(Undo::ClearMacros(vec![a.clone(), b.clone()]))?;
@@ -75,15 +75,7 @@ pub fn macro_probe(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     }
     ctx.measure("charset_bad_full", Value::Text(bad.clone()));
     ctx.text("charset_bad", if bad.is_empty() { "none".to_string() } else { bad.escape_default().to_string() });
-
-    ctx.session.macro_set(&a, "v1")?;
-    let copied = soft(ctx.session.cmd(&format!("{}=\"[{}]\"", b.amp(), a.amp())))?.is_some()
-        && soft(ctx.session.macro_get(&b))?.as_deref() == Some("[v1]");
-    ctx.text("cmd_assign", ok(copied));
-    let func = soft(ctx.session.cmd(&format!("{}={}", b.amp(), fnc::PTD)))?.is_some()
-        && soft(ctx.session.macro_get(&b))?.is_some_and(|v| !v.is_empty());
-    ctx.text("fn_assign", ok(func));
-    ctx.check(copied && func, || "a command-line assignment does not reach the global macro".into())
+    Ok(())
 }
 
 /// Returns what `b.cmm` returned, so the runner's result shows how far the chain got.
