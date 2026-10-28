@@ -112,8 +112,8 @@ probes! {
         "N round trips of GetState and of a trivial function: p50, p95, max";
     Clients = "clients", Safe, [Connect], true, 5, transport::clients,
         "RCL.TCP.NrUsedCons(), else api.RCL.TCP.NrUsedCons()";
-    Keepalive = "keepalive", Safe, [Connect], true, 20, transport::keepalive,
-        "blocking WAIT 3.s: do keepalive frames arrive, at what interval";
+    Keepalive = "keepalive", Safe, [Connect], true, 30, transport::keepalive,
+        "blocking WAIT 10.s: do keepalive frames arrive, at what interval";
     Reconnect = "reconnect", Safe, [Connect], true, 20, transport::reconnect,
         "read timeout shorter than a blocking command; the executor reconnects once";
     Tempdir = "tempdir", Safe, [Connect], true, 30, storage::tempdir,

@@ -28,7 +28,7 @@ fn reconnect_forces_a_timeout_and_the_executor_revives_once() {
 
 #[test]
 fn keepalive_reports_the_interval_from_frame_times() {
-    let mut s = Script::new().attach().expect_cmd("WAIT 3.s");
+    let mut s = Script::new().attach().expect_cmd("WAIT 10.s");
     for _ in 0..3 {
         s = s.silence(Duration::from_millis(1000)).keepalive(1);
     }
@@ -40,6 +40,18 @@ fn keepalive_reports_the_interval_from_frame_times() {
     assert_eq!(o.lookup("n"), Some(&Value::Count(3)));
     assert_eq!(o.lookup("interval"), Some(&Value::Seconds(1.0)));
     assert_eq!(o.lookup("raw"), Some(&Value::Text("fe00 fe00 fe00".into())));
+}
+
+#[test]
+fn keepalive_waits_ten_seconds() {
+    let s = Script::new().attach().expect_cmd("WAIT 10.s").silence(Duration::from_secs(12)).reply_ok();
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("probe-keepalive-10s");
+    let r = run(&mut env, &mut session, &[ProbeId::Keepalive.def()]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
+    assert_eq!(o.lookup("n"), Some(&Value::Count(0)));
+    assert_eq!(o.lookup("interval"), Some(&Value::Text("none".into())));
 }
 
 #[test]
