@@ -10,11 +10,12 @@
 use std::{ffi::OsString, path::PathBuf};
 
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum, error::ErrorKind as ClapKind};
+use t32stage::RegName;
 
 use crate::{
     error::{CtlError, ErrorKind},
     grade::{Grade, GradeId},
-    notation::{NotationError, PracticeText},
+    notation::{NotationError, PracticeText, reg_name},
 };
 
 /// TRACE32 control over RCL for coding agents. The first word is the permission grade.
@@ -57,6 +58,8 @@ pub enum ReadLeaf {
     /// Header, target and CPU check, profile, PowerView; `--full` adds `profile=<hash>`, the binding, the config,
     /// and the state directory
     Status(ReadStatus),
+    /// Registers of PowerView's selected core; no name: the general-purpose set
+    Reg(ReadReg),
     /// Static command schema
     Describe(ReadDescribe),
 }
@@ -66,6 +69,13 @@ pub struct ReadStatus {
     /// Add the profile hash, the binding, the config, and the state directory
     #[arg(long)]
     pub full: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ReadReg {
+    /// Register names as PowerView spells them, in any case: `x0`, `sp`, `esr_el1`
+    #[arg(value_name = "NAME", value_parser = reg_name)]
+    pub names: Vec<RegName>,
 }
 
 #[derive(Debug, Args)]
@@ -161,6 +171,8 @@ macro_rules! leaves {
 
 leaf!(Read, ReadStatus, path: ["read", "status"], waits: "-", connects: true,
       examples: ["t32ctl read status", "t32ctl read status --full", "t32ctl read status --json"]);
+leaf!(Read, ReadReg, path: ["read", "reg"], waits: "-", connects: true,
+      examples: ["t32ctl read reg", "t32ctl read reg x0 sp", "t32ctl read reg esr_el1 far_el1 --json"]);
 leaf!(Read, ReadDescribe, path: ["read", "describe"], waits: "no connection", connects: false,
       examples: ["t32ctl read describe", "t32ctl read describe --format permissions"]);
 
@@ -171,6 +183,7 @@ leaf!(Raw, RawEval, path: ["raw", "eval"], waits: "the function", connects: true
 
 leaves! {
     (Read, ReadStatus),
+    (Read, ReadReg),
     (Read, ReadDescribe),
     (Raw, RawCommand),
     (Raw, RawEval),
@@ -183,6 +196,7 @@ impl Cli {
         match &self.grade {
             GradeCmd::Read(g) => match g.leaf {
                 ReadLeaf::Status(_) => &<ReadStatus as Leaf<Read>>::SPEC,
+                ReadLeaf::Reg(_) => &<ReadReg as Leaf<Read>>::SPEC,
                 ReadLeaf::Describe(_) => &<ReadDescribe as Leaf<Read>>::SPEC,
             },
             GradeCmd::Raw(g) => match g.leaf {

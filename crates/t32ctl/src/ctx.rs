@@ -42,14 +42,14 @@
 use std::{marker::PhantomData, path::Path};
 
 use t32rcl::{ConnectError, ConnectOpts, Endpoint, FuncValue, Health, PracticeState, Session, TargetState};
-use t32stage::{CleanupReport, ExistsFn, practice::fnc, replay_leftovers};
+use t32stage::{CleanupReport, ExistsFn, RegName, practice::fnc, replay_leftovers};
 
 use crate::{
     error::{Context, CtlError, ErrorKind, from_connect, from_rcl},
     grade::{Grade, Raw},
     notation::PracticeText,
     profile::Profile,
-    report::{At, CmdBody, CpuMatch, Header, Hex, Notice, Practice, PvStatus, TargetView},
+    report::{At, CmdBody, CpuMatch, Header, Hex, Notice, Practice, PvStatus, Reg64, RegValue, RegsBody, TargetView},
 };
 
 /// What a call does when the connected CPU is not the profile's.
@@ -180,6 +180,14 @@ fn system_cpu(s: &mut Session, context: Context) -> Result<String, CtlError> {
         .map_err(|e| from_rcl(&e, context, fnc::SYSTEM_CPU))
 }
 
+/// `Register(<NAME>)` as an unsigned value; a refusal names the register.
+fn register(s: &mut Session, name: &RegName) -> Result<u64, CtlError> {
+    let expr = fnc::register(name);
+    let v = s.eval(&expr).map_err(|e| from_rcl(&e, Context::Read, &expr))?;
+    let shown = v.to_string();
+    as_u64(v).ok_or_else(|| CtlError::new(ErrorKind::PvError, format!("{expr}: not a register value: {shown}")))
+}
+
 /// An address in any of the integer forms PowerView answers with.
 fn as_u64(v: FuncValue) -> Option<u64> {
     match v {
@@ -211,6 +219,34 @@ impl<'c, G: Grade> Ctx<'c, G> {
     /// The host that attached.
     pub fn host(&self) -> &str {
         &self.conn.host
+    }
+
+    /// Registers of PowerView's selected core, in the order named. A down or running target is
+    /// refused before any `Register()`, which would fail with "target system down".
+    pub fn read_regs(&mut self, names: &[RegName]) -> Result<RegsBody, CtlError> {
+        self.require_stopped("registers")?;
+        let s = &mut self.conn.session;
+        let core = s.eval(fnc::CORE).and_then(|v| v.into_int(fnc::CORE)).ok();
+        let mut regs = Vec::with_capacity(names.len());
+        for name in names {
+            let value = register(s, name)?;
+            regs.push(RegValue { name: name.to_string(), value: Reg64(value) });
+        }
+        Ok(RegsBody { core, regs })
+    }
+
+    /// Exit 3 unless the run state the call found allows target access: down is `target-down`,
+    /// running is `not-halted`.
+    fn require_stopped(&self, what: &str) -> Result<(), CtlError> {
+        match self.run {
+            TargetState::Down => {
+                Err(CtlError::new(ErrorKind::TargetDown, format!("the target is down: {what} need an attached target")))
+            }
+            TargetState::Running => {
+                Err(CtlError::new(ErrorKind::NotHalted, format!("the target is running: {what} need a stopped target")))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The target against the profile, and PowerView's build, RCL clients and PRACTICE state.

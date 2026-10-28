@@ -198,6 +198,7 @@ impl Hint {
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Body {
     Status(Box<StatusBody>),
+    Regs(RegsBody),
     Eval(EvalBody),
     Cmd(CmdBody),
 }
@@ -206,16 +207,56 @@ impl Body {
     /// Exit 0 or 1: whether the command ended as asked.
     pub fn outcome(&self) -> Exit {
         match self {
-            Body::Status(_) | Body::Eval(_) | Body::Cmd(_) => Exit::Ok,
+            Body::Status(_) | Body::Regs(_) | Body::Eval(_) | Body::Cmd(_) => Exit::Ok,
         }
     }
 
     pub fn lines(&self) -> Vec<String> {
         match self {
             Body::Status(s) => s.lines(),
+            Body::Regs(r) => r.lines(),
             Body::Eval(e) => vec![e.to_string()],
             Body::Cmd(_) => vec!["cmd: done".into()],
         }
+    }
+}
+
+/// `read reg`: values of PowerView's selected core, named as the caller typed them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RegsBody {
+    /// `CORE()`; absent when PowerView refused it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub core: Option<i64>,
+    pub regs: Vec<RegValue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RegValue {
+    pub name: String,
+    pub value: Reg64,
+}
+
+/// A register value: `0x` and 16 hex digits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reg64(pub u64);
+
+impl fmt::Display for Reg64 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#018x}", self.0)
+    }
+}
+
+impl Serialize for Reg64 {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl RegsBody {
+    /// Four `name=value` tokens per line.
+    fn lines(&self) -> Vec<String> {
+        let tokens: Vec<String> = self.regs.iter().map(|r| format!("{}={}", r.name, r.value)).collect();
+        tokens.chunks(4).map(|c| c.join(" ")).collect()
     }
 }
 

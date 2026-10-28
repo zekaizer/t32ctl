@@ -534,3 +534,76 @@ fn a_command_that_blocks_past_the_call_budget_is_no_answer_and_says_powerview_ma
     );
     assert_eq!(out.code, 5);
 }
+
+/// `read reg`'s `CORE()`, then one `Register()` per name with its value, on a stopped target.
+fn regs(names: &[(&str, u64)]) -> Script {
+    let s = connected(2).expect_fn("CORE()").reply_decimal(0);
+    let s =
+        names.iter().fold(s, |s, (n, v)| s.expect_fn(&format!("Register({n})")).reply_function(4, &format!("0x{v:X}")));
+    stopped_header(s)
+}
+
+#[test]
+fn read_reg_prints_the_named_registers_as_typed_with_16_hex_digits() {
+    let w = World::new("reg");
+    let out = call("t32ctl read reg x0 sp", &deps(w.env(), vec![Ok(regs(&[("X0", 0), ("SP", 0x4010_7e40)]))]));
+    assert_eq!(out.text, "stopped core=0 pc=0x40083e10\nx0=0x0000000000000000 sp=0x0000000040107e40\n");
+    assert_eq!(out.code, 0);
+    let d = deps(w.env(), vec![Ok(regs(&[("ESR_EL1", 0x9600_0045)]))]);
+    let out = call("t32ctl read reg esr_el1 --json", &d);
+    let v: Value = serde_json::from_str(&out.text).unwrap();
+    assert_eq!(
+        v["body"],
+        serde_json::json!({"kind": "regs", "core": 0, "regs": [{"name": "esr_el1", "value": "0x0000000096000045"}]})
+    );
+}
+
+#[test]
+fn read_reg_without_a_name_reads_the_aarch64_general_purpose_set_four_per_line() {
+    let w = World::new("regset");
+    let mut names: Vec<String> = (0..=30).map(|i| format!("X{i}")).collect();
+    names.extend(["SP", "PC", "CPSR"].map(String::from));
+    let values: Vec<(&str, u64)> = names.iter().enumerate().map(|(i, n)| (n.as_str(), i as u64)).collect();
+    let out = call("t32ctl read reg", &deps(w.env(), vec![Ok(regs(&values))]));
+    let lines: Vec<&str> = out.text.lines().collect();
+    assert_eq!(lines.len(), 1 + 9, "{}", out.text);
+    assert_eq!(lines[1], "x0=0x0000000000000000 x1=0x0000000000000001 x2=0x0000000000000002 x3=0x0000000000000003");
+    assert_eq!(lines[9], "pc=0x0000000000000020 cpsr=0x0000000000000021");
+}
+
+#[test]
+fn a_register_powerview_refuses_is_exit_2_and_named() {
+    let w = World::new("regrefused");
+    let s = connected(2).expect_fn("CORE()").reply_decimal(0).expect_fn("Register(X0)").reply_function(4, "0x1");
+    let s = stopped_header(s.expect_fn("Register(FOO)").reply_function(0, "syntax error"));
+    let out = call("t32ctl read reg x0 foo", &deps(w.env(), vec![Ok(s)]));
+    assert_eq!(
+        out.text,
+        "stopped core=0 pc=0x40083e10\n\
+         error[refused]: Register(FOO): function: PowerView refused: function failed (code 0): syntax error\n"
+    );
+    assert_eq!(out.code, 2);
+    let out = call("t32ctl read reg x0+8", &deps(w.env(), vec![]));
+    assert_eq!(
+        out.text,
+        "error[notation]: register name \"x0+8\" is not a letter followed by at most 31 letters, digits or _\n"
+    );
+    assert_eq!(out.code, 2);
+}
+
+#[test]
+fn read_reg_refuses_a_down_or_running_target_before_any_register_read() {
+    let w = World::new("regstate");
+    let down = connected(0).expect_req(Request::TargetState).reply_state(0);
+    let out = call("t32ctl read reg pc", &deps(w.env(), vec![Ok(down)]));
+    assert_eq!(out.text, "down\nerror[target-down]: the target is down: registers need an attached target\n");
+    assert_eq!(out.code, 3);
+    let running = connected(3).expect_req(Request::TargetState).reply_state(3);
+    let running = running.expect_fn("CORE.NUMBER()").reply_decimal(4);
+    let out = call("t32ctl read reg pc", &deps(w.env(), vec![Ok(running)]));
+    assert_eq!(
+        out.text,
+        "running cores=0-3\nerror[not-halted]: the target is running: registers need a stopped target\n"
+    );
+    assert_eq!(out.code, 3);
+}

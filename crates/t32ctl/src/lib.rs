@@ -75,6 +75,7 @@ pub fn run(argv: &[OsString], deps: &Deps) -> Output {
     match cli.grade {
         GradeCmd::Read(g) => match &g.leaf {
             ReadLeaf::Status(a) => connected::<Read, _>(a, &g.globals, deps, CpuCheck::Report, read::status),
+            ReadLeaf::Reg(a) => connected::<Read, _>(a, &g.globals, deps, CpuCheck::Refuse, read::reg),
             ReadLeaf::Describe(a) => document::<Read, _>(a, |a| describe::render(a.format)),
         },
         GradeCmd::Raw(g) => match &g.leaf {

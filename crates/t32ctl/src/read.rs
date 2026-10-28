@@ -3,9 +3,11 @@
 
 use std::path::PathBuf;
 
+use t32stage::RegName;
+
 use crate::{
     Setup,
-    cli::ReadStatus,
+    cli::{ReadReg, ReadStatus},
     config::Sourced,
     ctx::Ctx,
     error::CtlError,
@@ -43,4 +45,20 @@ pub fn status(args: &ReadStatus, ctx: &mut Ctx<'_, Read>, setup: &Setup<'_>) -> 
         body.state_dir = Some(format!("{}/", env.display(&setup.pv_dir)));
     }
     Ok(Body::Status(Box::new(body)))
+}
+
+/// The AArch64 general-purpose set `read reg` reads without a name.
+const GENERAL: [&str; 34] = [
+    "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
+    "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "sp", "pc", "cpsr",
+];
+
+/// The named registers, or the general-purpose set.
+pub fn reg(args: &ReadReg, ctx: &mut Ctx<'_, Read>, _setup: &Setup<'_>) -> Result<Body, CtlError> {
+    let names = if args.names.is_empty() {
+        GENERAL.iter().map(|n| RegName::new(n).expect("a general-purpose register name is valid")).collect()
+    } else {
+        args.names.clone()
+    };
+    ctx.read_regs(&names).map(Body::Regs)
 }

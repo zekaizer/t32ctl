@@ -313,6 +313,11 @@ impl fmt::Display for Place {
     }
 }
 
+/// A register name for clap: `[A-Za-z][A-Za-z0-9_]{0,31}`.
+pub fn reg_name(s: &str) -> Result<RegName, NotationError> {
+    RegName::new(s).map_err(|e| NotationError(e.to_string()))
+}
+
 /// A plain file name for `--to` and declared outputs: no `/`, not starting with `.`, and a name
 /// PowerView can carry (`RelPath`).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
