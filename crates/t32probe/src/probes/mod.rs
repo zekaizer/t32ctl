@@ -11,6 +11,9 @@
 //! PRACTICE text written here, outside `t32stage::practice`, is probe-only: it measures how
 //! PowerView behaves and never becomes a Phase 1 code path.
 
+// Used from script-lab on.
+#[allow(dead_code)]
+pub mod lab;
 pub mod optin;
 pub mod scripts;
 pub mod storage;
@@ -18,10 +21,12 @@ pub mod transport;
 
 use std::time::Duration;
 
-use t32rcl::{ErrorClass, Session};
+use t32rcl::{CallBudget, ErrorClass, Session};
 use t32stage::{
-    Bundle, BundleLimits, RelPath, RunReport, RunRequest, Snapshot, Stage, StageError, Undo, VmRegion, VmSnapshot,
-    practice::fnc,
+    Bundle, BundleLimits, RelPath, RunReport, RunRequest, Snapshot, Stage, StageError, StagePath, StageRoot, Undo,
+    VmRegion, VmSnapshot,
+    practice::{cmd, fnc},
+    transfer,
 };
 
 use crate::ctx::{ProbeCtx, ProbeFail};
@@ -83,6 +88,64 @@ pub(crate) fn nr_used_cons(session: &mut Session) -> Result<i64, t32rcl::Error> 
         }
     }
     Err(refused.expect("NR_USED_CONS is not empty"))
+}
+
+/// The tempdir rule: `--stage-root`, else `OS.PTD()\t32ctl`.
+pub(crate) fn stage_root(ctx: &mut ProbeCtx<'_>) -> Result<StageRoot, ProbeFail> {
+    if let Some(p) = &ctx.env.cfg.stage_root {
+        return Ok(StageRoot::new(p.clone()));
+    }
+    let ptd = ctx.session.eval(fnc::PTD)?.into_text(fnc::PTD)?;
+    StageRoot::from_ptd(&ptd).map_err(|e| ProbeFail::Check(format!("OS.PTD() gives no stage root: {e}")))
+}
+
+/// `<root>\probe-<run>-<tag>`, its removal registered before `MKDIR`. The root is created if
+/// missing and never removed. An existing directory is refused: it holds an earlier run's files.
+pub(crate) fn workdir(ctx: &mut ProbeCtx<'_>, root: &StageRoot, tag: &str) -> Result<StagePath, ProbeFail> {
+    transfer::ensure_root(ctx.session, root)?;
+    let dir = root.path(RelPath::new(&format!("probe-{}-{tag}", ctx.env.cfg.run_id))?);
+    let expr = fnc::dir_exists(&dir);
+    if ctx.session.eval(&expr)?.into_bool(&expr)? {
+        return Err(ProbeFail::Check(format!("work directory already exists: {dir}")));
+    }
+    ctx.push(Undo::RemoveDir(dir.clone()))?;
+    ctx.session.cmd(&cmd::mkdir(&dir))?;
+    if !ctx.session.eval(&expr)?.into_bool(&expr)? {
+        return Err(ProbeFail::Check(format!("MKDIR did not create {dir}")));
+    }
+    Ok(dir)
+}
+
+/// File names in a directory, not recursive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Listing {
+    /// Names after the last `\` or `/`; `first_raw` is the first answer as PowerView gave it.
+    Names {
+        names: Vec<String>,
+        first_raw: String,
+    },
+    Unavailable(String),
+}
+
+const LIST_MAX: usize = 1000;
+
+/// `OS.FIRSTFILE("<dir>\*")`, then `OS.NEXTFILE()` until the empty string (ide_func), at most
+/// `LIST_MAX` names, each call under a 3 s budget.
+pub(crate) fn list_dir(session: &mut Session, dir: &StagePath) -> Result<Listing, ProbeFail> {
+    let mut s = session.with_budget(CallBudget::idle(Duration::from_secs(3)).with_total(Duration::from_secs(3)));
+    let first = format!("OS.FIRSTFILE(\"{}\\*\")", dir.text());
+    let mut ask = |expr: &str| soft(s.eval(expr).and_then(|v| v.into_text(expr)));
+    let Some(mut name) = ask(&first)? else { return Ok(Listing::Unavailable(format!("{first} refused"))) };
+    let first_raw = name.clone();
+    let mut names = Vec::new();
+    while !name.is_empty() && names.len() < LIST_MAX {
+        names.push(name.rsplit(['\\', '/']).next().unwrap_or_default().to_string());
+        let Some(next) = ask("OS.NEXTFILE()")? else {
+            return Ok(Listing::Unavailable("OS.NEXTFILE() refused".into()));
+        };
+        name = next;
+    }
+    Ok(Listing::Names { names, first_raw })
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {

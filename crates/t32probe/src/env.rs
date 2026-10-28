@@ -105,6 +105,16 @@ pub const CLEANUP_BASE: Duration = Duration::from_secs(30);
 /// Slowest RCL memory throughput the cleanup budget plans for, in bytes per second.
 const RESTORE_FLOOR: f64 = 1e6;
 
+/// How a Lab script hands back a value besides the file oracle. script-lab decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScriptOut {
+    /// `Data.Set VM:<slot> "<text>" 0`, read over RCL.
+    VmSet,
+    /// `OPEN #8`, `WRITE #8`, `CLOSE #8` into a file the client loads.
+    Write,
+    Off,
+}
+
 /// Tunables measured by earlier probes and used by later ones. The executor copies them into
 /// each probe context and back.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -112,6 +122,7 @@ pub struct Learned {
     pub macro_spelling: Option<MacroSpelling>,
     pub exists: Option<ExistsFn>,
     pub build: Option<PowerViewBuild>,
+    pub script_out: Option<ScriptOut>,
 }
 
 impl Learned {
@@ -146,11 +157,21 @@ pub struct Env {
     /// Host and port that attached, set after `connect`.
     pub endpoint: Option<Endpoint>,
     pub learned: Learned,
+    /// Lab polling without real waits.
+    #[cfg(test)]
+    pub lab_timing: crate::probes::lab::LabTiming,
 }
 
 impl Env {
     pub fn new(cfg: EnvConfig) -> Self {
-        Self { cfg, cancel: Cancel::new(), endpoint: None, learned: Learned::default() }
+        Self {
+            cfg,
+            cancel: Cancel::new(),
+            endpoint: None,
+            learned: Learned::default(),
+            #[cfg(test)]
+            lab_timing: crate::probes::lab::LabTiming::INSTANT,
+        }
     }
 
     pub fn connect_opts(&self) -> ConnectOpts {
