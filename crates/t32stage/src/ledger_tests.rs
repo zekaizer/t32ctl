@@ -24,7 +24,7 @@ fn readable(s: Script, rel: &str, v: bool) -> Script {
 #[test]
 fn undos_run_newest_first_and_continue_after_a_failure() {
     let mut s = Script::new().attach().expect_req(Request::TargetState).reply_state(2);
-    s = s.expect_req(Request::MacroSet { name: "t32ctl_rc".into(), value: String::new() }).reply_macro("");
+    s = s.expect_req(Request::MacroSet { name: "&t32ctl_rc".into(), value: String::new() }).reply_macro("");
     s = s.expect_fn("OS.DIR(\"C:\\T\\t32ctl\\d\")").reply_bool(true);
     s = s.expect_cmd("RMDIR \"C:\\T\\t32ctl\\d\"").reply_error(90, "directory not empty");
     s = readable(s, "d/a.bin", true).expect_cmd("RM \"C:\\T\\t32ctl\\d\\a.bin\"").reply_ok();
@@ -79,7 +79,7 @@ fn the_journal_is_written_before_the_effect_and_removed_once_clean() {
     assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 3);
 
     let mut s = Script::new().attach();
-    s = s.expect_req(Request::MacroSet { name: "t32ctl_rc".into(), value: String::new() }).reply_macro("");
+    s = s.expect_req(Request::MacroSet { name: "&t32ctl_rc".into(), value: String::new() }).reply_macro("");
     s = s.expect_req(Request::PracticeState).reply_state(0).expect_fn("PRACTICE.StackDepth()").reply_decimal(0);
     s = readable(s, "k/a.bin", false);
     let report = ledger.run(&mut session(s));

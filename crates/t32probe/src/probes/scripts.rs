@@ -32,7 +32,7 @@ pub fn macro_probe(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     ctx.push(Undo::ClearMacros(vec![a.clone(), b.clone()]))?;
     let base = ctx.session.tuning();
     let try_spellings = |ctx: &mut ProbeCtx<'_>| -> Result<Option<MacroSpelling>, ProbeFail> {
-        for s in [MacroSpelling::Bare, MacroSpelling::Ampersand] {
+        for s in [MacroSpelling::Ampersand, MacroSpelling::Bare] {
             ctx.session.set_tuning(base.with_macro_spelling(s));
             let set = soft(ctx.session.macro_set(&a, "v1"))?.is_some();
             let got = if set { soft(ctx.session.macro_get(&a))? } else { None };
@@ -268,7 +268,7 @@ fn gate_closed(ctx: &mut ProbeCtx<'_>, gate: &str, why: &str) -> ProbeResult {
 /// snapshot path, and where a script reads `&t32ctl_snap` under its real name.
 pub fn bundle(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     if ctx.learned.exp_to_script != Some(true) {
-        return gate_closed(ctx, "a", "EXP 2 values do not reach scripts (macro-visibility v1)");
+        return gate_closed(ctx, "a", "EXP 2 values do not reach scripts (macro-visibility v1 or v3)");
     }
     if ctx.learned.abspath_same != Some(true) {
         return gate_closed(ctx, "b", "OS.FILE.ABSPATH rewrites the snapshot path; the unpack guard would refuse it");

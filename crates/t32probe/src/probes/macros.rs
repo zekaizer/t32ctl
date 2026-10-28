@@ -197,11 +197,13 @@ fn visibility_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
         ctx.measure(&format!("prep.{x}"), Value::Text(token));
     }
 
+    // The case Stage reproduces: GLOBAL on the command line, then an EXP 2 set in this spelling.
+    let stage_case = if ctx.session.tuning().macro_spelling() == MacroSpelling::Bare { "v1" } else { "v3" };
     let mut left = 0;
     for x in VIS {
         let m = name(x)?;
         let r1 = lab.run(ctx, &rd1(x))?;
-        if x == "v1" && r1.ran() {
+        if x == stage_case && r1.ran() {
             ctx.learned.exp_to_script = Some(yes(&r1, "val"));
         }
         let e = lab.run(ctx, &ex(x))?;

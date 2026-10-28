@@ -135,7 +135,8 @@ pub(crate) enum Listing {
 const LIST_MAX: usize = 1000;
 
 /// `OS.FIRSTFILE("<dir>\*")`, then `OS.NEXTFILE()` until the empty string (ide_func), at most
-/// `LIST_MAX` names, each call under a 3 s budget.
+/// `LIST_MAX` names, each call under a 3 s budget. `.` and `..` are left out: build 168999 lists
+/// them.
 pub(crate) fn list_dir(session: &mut Session, dir: &StagePath) -> Result<Listing, ProbeFail> {
     let mut s = session.with_budget(CallBudget::idle(Duration::from_secs(3)).with_total(Duration::from_secs(3)));
     let first = format!("OS.FIRSTFILE(\"{}\\*\")", dir.text());
@@ -144,7 +145,10 @@ pub(crate) fn list_dir(session: &mut Session, dir: &StagePath) -> Result<Listing
     let first_raw = name.clone();
     let mut names = Vec::new();
     while !name.is_empty() && names.len() < LIST_MAX {
-        names.push(name.rsplit(['\\', '/']).next().unwrap_or_default().to_string());
+        let base = name.rsplit(['\\', '/']).next().unwrap_or_default();
+        if !matches!(base, "." | "..") {
+            names.push(base.to_string());
+        }
         let Some(next) = ask("OS.NEXTFILE()")? else {
             return Ok(Listing::Unavailable("OS.NEXTFILE() refused".into()));
         };

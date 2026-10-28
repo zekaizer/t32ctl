@@ -171,7 +171,7 @@ that probe. The probe report answers it.
 | Which of `OS.FILE.readable`, `OS.FILE.EXIST`, `FILE.EXIST` answers. | `tempdir` | `practice::ExistsFn` |
 | `PRACTICE.StackDepth()` answers over ExecuteFunction. | `tempdir` | `practice::fnc::STACK_DEPTH` |
 | `/UNZIP` refuses a corrupt gzip (the bundle's integrity check). | `gzip` | `Stage::ensure_snapshot` |
-| EXP 2 names a macro without `&` (both spellings are tried). | `macro` | `t32rcl::MacroSpelling` |
+| EXP 2 with `&name` reaches the macro a `DO`'d script uses; bare `name` is a separate store (refuted for bare on build 168999). | `macro-visibility` | `t32rcl::MacroSpelling` |
 | Redeclaring an existing global keeps its value. | `macro` | `practice::cmd::global` |
 | `&m="0"` stores `0`, not `"0"` (quotes are stripped either way). | `macro` | `Stage` |
 | A macro set over EXP 2 reads back inside a `DO`'d script. | `macro-visibility` | `bundle::render_unpack` |
