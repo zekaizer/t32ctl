@@ -305,7 +305,8 @@ impl fmt::Display for RegName {
 /// separates parameters in some command formats, `/` starts an option); the probe passes each
 /// through `ENTRY` and compares. Widen only with that evidence.
 const ARG_SAFE: &[char] = &['_', '-', '.', '/', ':', '+', '=', ',', '@'];
-const MAX_ARGS_LEN: usize = 8 * 1024;
+/// The argument text travels in `&t32ctl_args`, and a macro holds at most 4 KiB (build 168999).
+const MAX_ARGS_LEN: usize = 4 * 1024;
 
 /// `DO` argument text: validated arguments joined by one space.
 pub fn render_args(args: &[String]) -> Result<String, ArgError> {
@@ -559,6 +560,8 @@ mod tests {
         assert_eq!(render_args(&["a b".into()]), Err(ArgError::Unsafe { index: 0, ch: ' ' }));
         assert_eq!(render_args(&["ok".into(), "x\"y".into()]), Err(ArgError::Unsafe { index: 1, ch: '"' }));
         assert!(Symbol::parse("main").is_ok());
+        assert_eq!(render_args(&["a".repeat(4096)]).map(|t| t.len()), Ok(4096));
+        assert_eq!(render_args(&["a".repeat(4095), "b".into()]), Err(ArgError::TooLong { len: 4097, max: 4096 }));
         assert!(Symbol::parse("\\\\app\\mod\\func").is_ok());
         for bad in ["", "1abc", "a b", "a&b", "a\"b", "a+b"] {
             assert!(Symbol::parse(bad).is_err(), "{bad}");
