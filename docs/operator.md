@@ -66,9 +66,11 @@ Asking for an opt-in probe without its flag is a usage error before anything is 
   `globals_left`.
 - PowerView's GUI stalls for seconds while `vm-large` saves and loads the whole `VM:` window and
   while `keepalive` blocks in `WAIT 10.s`.
-- On the WSL side: a lock file and a cleanup journal in `$XDG_STATE_HOME/t32ctl/` (default
-  `~/.local/state/t32ctl/`). A run that dies leaves its journal; the next run replays it once
-  connected and reports the result on a `residue` line.
+- On the WSL side: a lock file and a cleanup journal in `$XDG_STATE_HOME/t32ctl/pv/<host>-<port>/`
+  (default `~/.local/state/t32ctl/pv/auto-20000/` for `--host auto`), keyed by `--host` as typed:
+  the directory t32ctl uses for the same PowerView, so the two tools share the `VM:` lock and the
+  journals. A run that dies leaves its journal; the next run replays it once connected and reports
+  the result on a `residue` line.
 
 ## Reading the report
 

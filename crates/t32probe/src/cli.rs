@@ -81,7 +81,8 @@ pub struct Args {
     #[arg(long, default_value_t = 200)]
     pub latency_n: u32,
 
-    /// Directory for the VM: lease and the cleanup journal (default `$XDG_STATE_HOME/t32ctl`).
+    /// Directory for the VM: lease and the cleanup journal (default
+    /// `$XDG_STATE_HOME/t32ctl/pv/<host>-<port>`, the directory t32ctl uses for this PowerView).
     #[arg(long, value_name = "DIR")]
     pub state_dir: Option<PathBuf>,
 
@@ -293,6 +294,15 @@ fn ids(names: &[String]) -> Result<Vec<ProbeId>, String> {
 }
 
 impl Args {
+    /// `--state-dir`, else the per-PowerView directory below `base` keyed by `--host` as typed.
+    fn state_dir(&self, base: Option<PathBuf>) -> Result<PathBuf, String> {
+        let per_pv = base.map(|b| t32stage::pv_state_dir(&b, &self.host, self.port));
+        self.state_dir
+            .clone()
+            .or(per_pv)
+            .ok_or_else(|| "no state directory: set --state-dir, XDG_STATE_HOME or HOME".into())
+    }
+
     /// Validate everything before anything is sent.
     pub fn plan(&self, wsl: WslFacts, run_id: String) -> Result<(Env, Vec<&'static ProbeDef>), String> {
         let symbol = self.symbol.as_deref().map(Symbol::parse).transpose().map_err(|e| format!("--symbol: {e}"))?;
@@ -358,11 +368,7 @@ impl Args {
             self.prompt.as_deref().map(DevicePrompt::parse).transpose().map_err(|e| format!("--prompt: {e}"))?;
         let stage_root =
             self.stage_root.as_deref().map(PvPath::parse).transpose().map_err(|e| format!("--stage-root: {e}"))?;
-        let state_dir = self
-            .state_dir
-            .clone()
-            .or_else(t32stage::default_state_dir)
-            .ok_or("no state directory: set --state-dir, XDG_STATE_HOME or HOME")?;
+        let state_dir = self.state_dir(t32stage::default_state_dir())?;
         if !(self.timeout > 0.0 && self.timeout <= MAX_TIMEOUT_S) {
             return Err(format!("--timeout must be a number of seconds above 0 and at most {MAX_TIMEOUT_S}"));
         }
@@ -401,6 +407,23 @@ mod tests {
         let mut argv = vec!["t32probe", "--state-dir", state.to_str().expect("utf-8 temp dir")];
         argv.extend_from_slice(extra);
         Args::try_parse_from(argv).expect("parses").plan(WslFacts::default(), "r1".into()).map(drop)
+    }
+
+    #[test]
+    fn the_default_state_dir_is_the_per_powerview_directory_t32ctl_uses() {
+        let dir = |argv: &[&str], base: Option<&str>| {
+            let args = Args::try_parse_from(argv).expect("parses");
+            args.state_dir(base.map(PathBuf::from))
+        };
+        let base = Some("/s/t32ctl");
+        assert_eq!(dir(&["t32probe"], base), Ok(PathBuf::from("/s/t32ctl/pv/auto-20000")));
+        assert_eq!(
+            dir(&["t32probe", "--host", "10.0.0.2", "--port", "20001"], base),
+            Ok(PathBuf::from("/s/t32ctl/pv/10.0.0.2-20001"))
+        );
+        assert_eq!(dir(&["t32probe", "--state-dir", "/x"], base), Ok(PathBuf::from("/x")));
+        assert_eq!(dir(&["t32probe", "--state-dir", "/x"], None), Ok(PathBuf::from("/x")));
+        assert!(dir(&["t32probe"], None).is_err());
     }
 
     #[test]
