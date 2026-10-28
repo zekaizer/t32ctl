@@ -156,8 +156,8 @@ probes! {
         "Lab script opens a dialog: state 2, T32_Stop, only our script ended (shows a window)";
     MultiClient = "multi-client", Tier::OptIn(MultiClient), [ScriptLab], true, 60, optin::multi_client,
         "second connection: attach and latency while A's script waits, NrUsedCons, attach while A blocks in WAIT";
-    RunControl = "run-control", Tier::OptIn(RunControl), [Tempdir], true, 60, optin::run_control,
-        "Go to --symbol with a timeout, Break, breakpoint list unchanged (changes target state)";
+    RunControl = "run-control", Tier::OptIn(RunControl), [VmFile], true, 180, optin::run_control,
+        "Go/Break and every core's PC, Go to --symbol, steps and step-out, breakpoint kind, write and /COUNT breakpoints, a reverted RAM and register write, breakpoint list unchanged (changes target state)";
     ElfUnzip = "elf-unzip", Tier::OptIn(Elf), [Gzip, Tempdir], true, 240, optin::elf_unzip,
         "Data.LOAD.Elf x.elf.gz /UNZIP and the VM: fallback; symbols only";
 }
@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(ALL.len(), safe.len() + opt.len());
         let order: Vec<&str> = ALL.iter().filter(|d| d.tier == Tier::Safe).map(|d| d.id.name()).collect();
         assert_eq!(order, safe);
-        let rows: [(&str, &[&str], u64); 18] = [
+        let rows: [(&str, &[&str], u64); 19] = [
             ("keepalive", &["connect"], 30),
             ("gzip", &["vm-file"], 180),
             ("macro", &["tempdir"], 45),
@@ -315,6 +315,7 @@ mod tests {
             ("bundle", &["gzip", "macro", "macro-visibility", "unpack-literal"], 150),
             ("dialog", &["script-lab"], 40),
             ("multi-client", &["script-lab"], 60),
+            ("run-control", &["vm-file"], 180),
         ];
         for (n, req, secs) in rows {
             let d = ProbeId::parse(n).expect("listed").def();

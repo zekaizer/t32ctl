@@ -3,21 +3,26 @@
 //! the typed input the probe needs, so these bodies may assume consent.
 
 use std::{
+    collections::BTreeMap,
     thread,
     time::{Duration, Instant},
 };
 
-use t32rcl::{CallBudget, ConnectError, Endpoint, ErrorClass, RemoteKind, Session, TargetState};
+use t32rcl::{AccessClass, CallBudget, ConnectError, Endpoint, ErrorClass, MemAddr, RemoteKind, Session, TargetState};
 use t32stage::{
-    Put, Undo,
+    Put, StagePath, Undo, VmRegion,
     practice::{cmd, fnc},
+    transfer,
 };
 
 use super::{
-    lab::{Case, Ending, Expect, Lab, LabSizes, Seen, Until},
-    nr_used_cons, ok, soft,
+    functions::command,
+    hex,
+    lab::{Case, Ending, Expect, Lab, LabSizes, Seen, Until, eval_text},
+    nr_used_cons, ok, scratch_regions, soft, stage_root, workdir,
 };
 use crate::{
+    cli::SourceLine,
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
     outcome::{SkipReason, Value},
     stats::Stats,
@@ -150,15 +155,194 @@ fn multi_client_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
     ctx.check(attach_script != "-", || "client B never tried to attach while A's script ran".into())
 }
 
+/// Target state polling: every `POLL`, at most `GO_POLLS` after a run command (5 s), then `Break`.
+const POLL: Duration = Duration::from_millis(10);
+const GO_POLLS: u32 = 500;
+/// Samples of the target state while `Go` runs before the probe's own `Break` (1 s).
+const RUN_POLLS: u32 = 100;
+/// Room for a `STOre ... Break` script read back through `VM:`.
+const STORE_LEN: u32 = 64 * 1024;
+const GO: &str = "Go";
+
+/// A pause between target polls; none in tests.
+pub(crate) fn nap(ctx: &ProbeCtx<'_>, d: Duration) {
+    #[cfg(test)]
+    let factor = ctx.env.lab_timing.pause;
+    #[cfg(not(test))]
+    let factor = {
+        let _ = ctx;
+        1.0
+    };
+    thread::sleep(d.mul_f64(factor));
+}
+
+pub(crate) fn unverified(name: &str) -> String {
+    format!("unverified:{name}")
+}
+
+/// Whether this build offers a target command or function, asked once per name with
+/// `PRACTICE.CoMmanD.AVAILable` / `PRACTICE.FUNCtion.AVAILable` (ide_func). A name it does not
+/// offer is recorded as `unverified.<name>` and its step is skipped.
+#[derive(Debug, Default)]
+pub(crate) struct Verified(BTreeMap<String, bool>);
+
+impl Verified {
+    pub fn command(&mut self, ctx: &mut ProbeCtx<'_>, name: &str) -> Result<bool, ProbeFail> {
+        self.ask(ctx, "CoMmanD", name)
+    }
+
+    pub fn function(&mut self, ctx: &mut ProbeCtx<'_>, name: &str) -> Result<bool, ProbeFail> {
+        self.ask(ctx, "FUNCtion", name)
+    }
+
+    fn ask(&mut self, ctx: &mut ProbeCtx<'_>, kind: &str, name: &str) -> Result<bool, ProbeFail> {
+        if let Some(&v) = self.0.get(name) {
+            return Ok(v);
+        }
+        let expr = format!("PRACTICE.{kind}.AVAILable({name})");
+        let v = soft(ctx.session.eval(&expr).and_then(|v| v.into_bool(&expr)))?.unwrap_or(false);
+        if !v {
+            ctx.measure(&format!("unverified.{name}"), Value::Text(unverified(name)));
+        }
+        self.0.insert(name.to_string(), v);
+        Ok(v)
+    }
+}
+
+/// Apply the newest `Revert` named `what` now; `clean` turns false when it did not apply.
+pub(crate) fn revert(ctx: &mut ProbeCtx<'_>, what: &str, clean: &mut bool) {
+    let o = ctx.ledger.revert_now(ctx.session, what);
+    *clean &= o.is_clean();
+    ctx.measure(&format!("revert.{what}"), Value::Text(o.label()));
+}
+
+pub(crate) fn halted(ctx: &mut ProbeCtx<'_>) -> Result<bool, ProbeFail> {
+    Ok(matches!(ctx.session.target_state()?, TargetState::Halted | TargetState::Stopped))
+}
+
+/// Poll up to `polls` times until the target halts.
+pub(crate) fn wait_halt(ctx: &mut ProbeCtx<'_>, polls: u32) -> Result<bool, ProbeFail> {
+    for i in 0..polls {
+        if halted(ctx)? {
+            return Ok(true);
+        }
+        if i + 1 < polls {
+            nap(ctx, POLL);
+        }
+    }
+    Ok(false)
+}
+
+/// How a run command ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ran {
+    Refused,
+    Halted(Duration),
+    /// Still running after 5 s; the probe sent `Break`.
+    Broken(Duration),
+}
+
+impl Ran {
+    pub fn token(self) -> String {
+        match self {
+            Ran::Refused => "refused".into(),
+            Ran::Halted(d) => format!("halted@{}", ms(d)),
+            Ran::Broken(d) => format!("break@{}", ms(d)),
+        }
+    }
+}
+
+/// A run command, up to 5 s for the target to halt, then `Break`. The caller registered
+/// `BreakTarget` before.
+pub(crate) fn run_until_halt(ctx: &mut ProbeCtx<'_>, command: &str) -> Result<Ran, ProbeFail> {
+    let t = ctx.session.now();
+    if soft(ctx.session.cmd(command))?.is_none() {
+        return Ok(Ran::Refused);
+    }
+    if wait_halt(ctx, GO_POLLS)? {
+        return Ok(Ran::Halted(ctx.session.now().saturating_duration_since(t)));
+    }
+    soft(ctx.session.cmd(cmd::BREAK))?;
+    wait_halt(ctx, GO_POLLS)?;
+    Ok(Ran::Broken(ctx.session.now().saturating_duration_since(t)))
+}
+
+/// `Register(PC)` as PowerView prints it; `None` when unverified or refused.
+pub(crate) fn pc(ctx: &mut ProbeCtx<'_>, v: &mut Verified) -> Result<Option<String>, ProbeFail> {
+    if !v.function(ctx, "Register")? {
+        return Ok(None);
+    }
+    eval_text(ctx, "Register(PC)")
+}
+
+fn pc_and_name(ctx: &mut ProbeCtx<'_>, v: &mut Verified) -> Result<String, ProbeFail> {
+    let Some(pc) = pc(ctx, v)? else { return Ok("pc=?".into()) };
+    let name = if v.function(ctx, "sYmbol.NAME")? {
+        eval_text(ctx, &format!("sYmbol.NAME(P:{pc})"))?.unwrap_or_else(|| "?".into())
+    } else {
+        unverified("sYmbol.NAME")
+    };
+    Ok(format!("pc={pc} sym={name}"))
+}
+
 /// Lines of a `STOre ... Break` script without comments, for comparison.
 fn breakpoint_lines(text: &str) -> Vec<String> {
     text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with(';')).map(str::to_string).collect()
 }
 
-/// `Go <symbol>` with a timeout, `Break` if needed, and the breakpoint list unchanged.
-/// Changes the target state.
+/// `STOre "<dir>\<name>" Break` read back through `region`; `None` when PowerView refused.
+fn store(ctx: &mut ProbeCtx<'_>, dir: &StagePath, region: &VmRegion, name: &str) -> Result<Option<String>, ProbeFail> {
+    let p = dir.join(name)?;
+    ctx.push(Undo::RemoveFile(p.clone()))?;
+    if soft(ctx.session.cmd(&cmd::store_breakpoints(&p)))?.is_none() {
+        return Ok(None);
+    }
+    let Some(size) = soft(transfer::file_size(ctx.session, &p))? else { return Ok(None) };
+    if size > u64::from(region.len()) {
+        return Err(ProbeFail::Check(format!("{p} holds {size} bytes, more than {STORE_LEN}")));
+    }
+    if size == 0 {
+        return Ok(Some(String::new()));
+    }
+    let raw = soft(transfer::get_file(ctx.session, &p, region, size as u32))?;
+    Ok(raw.map(|r| String::from_utf8_lossy(&r).into_owned()))
+}
+
+/// The run-control inputs and what the steps share.
+struct Rc {
+    dir: StagePath,
+    region: VmRegion,
+    v: Verified,
+    /// Every `Revert` applied cleanly so far.
+    clean: bool,
+    base: Vec<String>,
+}
+
+impl Rc {
+    fn store(&mut self, ctx: &mut ProbeCtx<'_>, name: &str) -> Result<Option<String>, ProbeFail> {
+        store(ctx, &self.dir, &self.region, name)
+    }
+
+    /// `run_until_halt` once `Go` is verified: the `Ran` token or `unverified:Go`.
+    fn run(&mut self, ctx: &mut ProbeCtx<'_>, command: &str) -> Result<String, ProbeFail> {
+        if !self.v.command(ctx, GO)? {
+            return Ok(unverified(GO));
+        }
+        Ok(run_until_halt(ctx, command)?.token())
+    }
+
+    fn same_as_base(&self, text: &Option<String>) -> bool {
+        text.as_deref().map(breakpoint_lines).as_ref() == Some(&self.base)
+    }
+}
+
+/// Run control on a halted target: breakpoint list stability, `Go`/`Break` and every core's PC,
+/// `Go <symbol>`, steps and step-out candidates, an execution breakpoint, and with operator input
+/// write breakpoints, a `/COUNT` breakpoint and a reverted RAM and register write. Every change
+/// is reverted in memory right after it is measured. Changes the target state.
 pub fn run_control(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
-    let symbol = ctx.env.cfg.gates.run_control.clone().expect("gate opens only with a symbol");
+    let input = ctx.env.cfg.gates.run_control.clone().expect("gate opens only with a symbol");
+    let symbol = input.symbol.clone();
     let state = ctx.session.target_state()?;
     if !matches!(state, TargetState::Halted | TargetState::Stopped) {
         return Err(ProbeFail::Skip(SkipReason::TargetNotUp { state: state.name().into() }));
@@ -168,34 +352,274 @@ pub fn run_control(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
             why: format!("symbol {} not found", symbol.as_str()),
         }));
     }
-    let store = |ctx: &mut ProbeCtx<'_>, name: &str| -> Result<Vec<String>, ProbeFail> {
-        let f = ctx.staged_file(name)?;
-        let (stage, session) = ctx.stage()?;
-        session.cmd(&cmd::store_breakpoints(&f))?;
-        Ok(breakpoint_lines(&String::from_utf8_lossy(&stage.download(session, &f)?)))
-    };
-    let before = store(ctx, "bp0.cmm")?;
+    let root = stage_root(ctx)?;
+    let dir = workdir(ctx, &root, "rc")?;
+    let region = scratch_regions(ctx, &[STORE_LEN])?[0];
+    let mut rc = Rc { dir, region, v: Verified::default(), clean: true, base: Vec::new() };
+    let base = rc.store(ctx, "bp0.cmm")?.ok_or_else(|| ProbeFail::Check("STOre ... Break was refused".into()))?;
+    rc.base = breakpoint_lines(&base);
+    ctx.measure("breakpoints_before", Value::Text(rc.base.join(" | ")));
+    let again = rc.store(ctx, "bp0b.cmm")?;
+    ctx.text("store", if rc.same_as_base(&again) { "stable" } else { "diff" });
+
     ctx.push(Undo::BreakTarget)?;
-    let t = Instant::now();
-    ctx.session.cmd(&cmd::go(&symbol))?;
-    let mut reached = false;
-    while t.elapsed() < Duration::from_secs(5) {
-        if matches!(ctx.session.target_state()?, TargetState::Halted | TargetState::Stopped) {
-            reached = true;
-            break;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    if !reached {
-        ctx.session.cmd(cmd::BREAK)?;
-    }
-    ctx.text("reached", if reached { "yes" } else { "no-break" });
-    ctx.headline("after", Value::Seconds(t.elapsed().as_secs_f64()));
-    let after = store(ctx, "bp1.cmm")?;
-    ctx.measure("breakpoints_before", Value::Text(before.join(" | ")));
-    let unchanged = before == after;
+    let go = go_break(ctx, &mut rc)?;
+    ctx.text("go", go);
+    let halt_all = cores(ctx, &mut rc)?;
+    ctx.text("halt_all", halt_all);
+
+    let reached = rc.run(ctx, &cmd::go(&symbol))?;
+    ctx.measure("go_symbol", Value::Text(reached));
+    let bp1 = rc.store(ctx, "bp1.cmm")?;
+    ctx.text("tmp_bp", if rc.same_as_base(&bp1) { "clean" } else { "left" });
+
+    let stepout = steps(ctx, &mut rc)?;
+    ctx.text("stepout", stepout);
+    let bp_impl = exec_breakpoint(ctx, &mut rc, &symbol)?;
+    ctx.text("bp_impl", bp_impl);
+    let wp_max = match &input.watch {
+        Some(var) => write_breakpoints(ctx, &mut rc, var)?,
+        None => "n/a".into(),
+    };
+    ctx.text("wp_max", wp_max);
+    let count = match &input.loop_line {
+        Some(line) => count_breakpoint(ctx, &mut rc, line)?,
+        None => "n/a".into(),
+    };
+    ctx.text("count", count);
+    let write = match input.scratch_ram {
+        Some(a) => scratch_write(ctx, &mut rc, a)?,
+        None => "n/a".into(),
+    };
+    ctx.text("write", write);
+
+    let end = rc.store(ctx, "bp9.cmm")?;
+    let unchanged = rc.same_as_base(&end);
     ctx.text("bp_unchanged", if unchanged { "yes" } else { "NO" });
-    ctx.check(unchanged, || format!("breakpoint list changed: {before:?} -> {after:?}"))
+    ctx.measure("reverts", Value::Text(ok(rc.clean).into()));
+    ctx.check(unchanged && rc.clean, || {
+        format!("breakpoint list unchanged: {unchanged}, every revert clean: {}", rc.clean)
+    })
+}
+
+/// `Go`, the target state sampled for 1 s, then the probe's `Break`: milliseconds until halted.
+fn go_break(ctx: &mut ProbeCtx<'_>, rc: &mut Rc) -> Result<String, ProbeFail> {
+    if !rc.v.command(ctx, GO)? {
+        return Ok(unverified(GO));
+    }
+    if soft(ctx.session.cmd(GO))?.is_none() {
+        return Ok("refused".into());
+    }
+    let mut running = 0;
+    for i in 0..RUN_POLLS {
+        match ctx.session.target_state()? {
+            TargetState::Running => running += 1,
+            TargetState::Halted | TargetState::Stopped => {
+                ctx.measure("go_running", Value::Text(format!("{running}/{}", i + 1)));
+                return Ok("halted-early".into());
+            }
+            _ => {}
+        }
+        nap(ctx, POLL);
+    }
+    ctx.measure("go_running", Value::Text(format!("{running}/{RUN_POLLS}")));
+    let t = ctx.session.now();
+    if soft(ctx.session.cmd(cmd::BREAK))?.is_none() {
+        return Ok("break-refused".into());
+    }
+    Ok(match wait_halt(ctx, GO_POLLS)? {
+        true => ms(ctx.session.now().saturating_duration_since(t)),
+        false => "nohalt".into(),
+    })
+}
+
+/// Every core's PC after the `Break`, selecting each core and then the first one again.
+fn cores(ctx: &mut ProbeCtx<'_>, rc: &mut Rc) -> Result<String, ProbeFail> {
+    if !rc.v.function(ctx, "CORE.NUMBER")? {
+        return Ok(unverified("CORE.NUMBER"));
+    }
+    let n = soft(ctx.session.eval("CORE.NUMBER()").and_then(|v| v.into_int("CORE.NUMBER()")))?;
+    let Some(n) = n.filter(|n| *n > 1) else { return Ok("single".into()) };
+    if !rc.v.command(ctx, "CORE.select")? {
+        return Ok(unverified("CORE.select"));
+    }
+    let Some(c0) = eval_text(ctx, "CORE()")? else { return Ok("partial".into()) };
+    let (mut answered, mut registered) = (0, false);
+    for k in 0..n {
+        if soft(ctx.session.cmd(&format!("CORE.select {k}")))?.is_none() {
+            ctx.measure(&format!("core.{k}"), Value::Text("refused".into()));
+            continue;
+        }
+        if !registered {
+            ctx.push(Undo::Revert { what: "core".into(), commands: vec![format!("CORE.select {c0}")] })?;
+            registered = true;
+        }
+        let pc = pc(ctx, &mut rc.v)?;
+        answered += usize::from(pc.is_some());
+        ctx.measure(&format!("core.{k}"), Value::Text(pc.unwrap_or_else(|| "refused".into())));
+    }
+    revert(ctx, "core", &mut rc.clean);
+    Ok(if answered as i64 == n { "ok" } else { "partial" }.into())
+}
+
+/// Three steps, then the step-out candidates in order: the first that halts is `stepout`.
+fn steps(ctx: &mut ProbeCtx<'_>, rc: &mut Rc) -> Result<String, ProbeFail> {
+    for c in ["Step.Over", "Step", "Step.Asm"] {
+        let r = if rc.v.command(ctx, c)? {
+            let ran = run_until_halt(ctx, c)?;
+            format!("{} {}", ran.token(), pc_and_name(ctx, &mut rc.v)?)
+        } else {
+            unverified(c)
+        };
+        ctx.measure(&format!("step.{c}"), Value::Text(r));
+    }
+    for c in ["Step.Out", "Go.Return", "Go.Up"] {
+        if !rc.v.command(ctx, c)? {
+            continue;
+        }
+        let ran = run_until_halt(ctx, c)?;
+        let at = pc_and_name(ctx, &mut rc.v)?;
+        ctx.measure(&format!("step.{c}"), Value::Text(format!("{} {at}", ran.token())));
+        if matches!(ran, Ran::Halted(_)) {
+            return Ok(c.into());
+        }
+    }
+    Ok("none".into())
+}
+
+/// The symbol as a word of a breakpoint line.
+fn names_symbol(line: &str, symbol: &str) -> bool {
+    line.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '\\' | ':')))
+        .any(|w| w.eq_ignore_ascii_case(symbol))
+}
+
+/// `Break.Set <symbol>` and how `STOre` writes it (`/SOFT`, `/Onchip`); skipped when the
+/// operator's list already has a breakpoint there.
+fn exec_breakpoint(ctx: &mut ProbeCtx<'_>, rc: &mut Rc, symbol: &t32stage::Symbol) -> Result<String, ProbeFail> {
+    let s = symbol.as_str();
+    if rc.base.iter().any(|l| names_symbol(l, s)) {
+        ctx.measure("bp_exec", Value::Text("in the operator's list".into()));
+        return Ok("?".into());
+    }
+    if !rc.v.command(ctx, "Break.Set")? {
+        return Ok(unverified("Break.Set"));
+    }
+    if soft(ctx.session.cmd(&format!("Break.Set {s}")))?.is_none() {
+        ctx.measure("bp_exec", Value::Text("refused".into()));
+        return Ok("?".into());
+    }
+    let what = format!("bp {s}");
+    ctx.push(Undo::Revert { what: what.clone(), commands: vec![format!("Break.Delete {s}")] })?;
+    let text = rc.store(ctx, "bp2.cmm")?;
+    revert(ctx, &what, &mut rc.clean);
+    let lines = text.as_deref().map(breakpoint_lines).unwrap_or_default();
+    ctx.measure("bp_exec", Value::Text(lines.join(" | ")));
+    let up = lines.join("\n").to_ascii_uppercase();
+    Ok(if up.contains("/SOFT") {
+        "soft"
+    } else if up.contains("/ONCHIP") {
+        "onchip"
+    } else {
+        "?"
+    }
+    .into())
+}
+
+/// Up to five `/Write` breakpoints 4 bytes apart on `var`, a `Go`, all deleted again: how many
+/// PowerView accepted.
+fn write_breakpoints(ctx: &mut ProbeCtx<'_>, rc: &mut Rc, var: &t32stage::Symbol) -> Result<String, ProbeFail> {
+    if !rc.v.command(ctx, "Break.Set")? {
+        return Ok(unverified("Break.Set"));
+    }
+    if !rc.v.function(ctx, "Var.ADDRESS")? {
+        return Ok(unverified("Var.ADDRESS"));
+    }
+    let mut set = 0;
+    for k in 1..=5u32 {
+        let at = format!("(Var.ADDRESS({})+{})", var.as_str(), 4 * (k - 1));
+        match command(ctx, &format!("Break.Set {at} /Write"))? {
+            Ok(()) => {
+                ctx.push(Undo::Revert { what: format!("wp{k}"), commands: vec![format!("Break.Delete {at}")] })?;
+                set = k;
+            }
+            Err(e) => {
+                let why = format!("k={k} status={} {}", e.code, e.message.as_deref().unwrap_or(""));
+                ctx.measure("wp_refused", Value::Text(why));
+                break;
+            }
+        }
+    }
+    if set > 0 {
+        let ran = rc.run(ctx, GO)?;
+        let at = pc_and_name(ctx, &mut rc.v)?;
+        ctx.measure("wp_go", Value::Text(format!("{ran} {at}")));
+    }
+    for k in (1..=set).rev() {
+        revert(ctx, &format!("wp{k}"), &mut rc.clean);
+    }
+    Ok(set.to_string())
+}
+
+/// `Break.Set <file>\<line> /COUNT 3`, a `Go`, and whether `STOre` keeps the count.
+fn count_breakpoint(ctx: &mut ProbeCtx<'_>, rc: &mut Rc, line: &SourceLine) -> Result<String, ProbeFail> {
+    if !rc.v.command(ctx, "Break.Set")? {
+        return Ok(unverified("Break.Set"));
+    }
+    let at = format!("{}\\{}", line.file, line.line);
+    if soft(ctx.session.cmd(&format!("Break.Set {at} /COUNT 3")))?.is_none() {
+        return Ok("refused".into());
+    }
+    ctx.push(Undo::Revert { what: "count".into(), commands: vec![format!("Break.Delete {at}")] })?;
+    let ran = rc.run(ctx, GO)?;
+    ctx.measure("count_go", Value::Text(ran));
+    let text = rc.store(ctx, "bp3.cmm")?;
+    revert(ctx, "count", &mut rc.clean);
+    let lines = text.as_deref().map(breakpoint_lines).unwrap_or_default();
+    let stored = lines.iter().find(|l| l.to_ascii_uppercase().contains("/COUNT"));
+    ctx.measure("count_line", Value::Text(stored.cloned().unwrap_or_default()));
+    Ok(if stored.is_some() { "stored" } else { "dropped" }.into())
+}
+
+/// A long written to `D:<a>` and restored, then X9 written and restored; `ok` when the RAM write
+/// read back and the restore brought the old bytes back.
+fn scratch_write(ctx: &mut ProbeCtx<'_>, rc: &mut Rc, a: u64) -> Result<String, ProbeFail> {
+    if !rc.v.command(ctx, "Data.Set")? {
+        return Ok(unverified("Data.Set"));
+    }
+    let at = MemAddr::new(AccessClass::parse("D")?, a);
+    let Some(orig) = soft(ctx.session.mem_read(&at, 4))? else {
+        ctx.measure("ram", Value::Text("unreadable".into()));
+        return Ok("FAIL".into());
+    };
+    let le = u32::from_le_bytes([orig[0], orig[1], orig[2], orig[3]]);
+    let set = |v: u32| format!("Data.Set D:0x{a:X} %Long %LE 0x{v:08X}");
+    ctx.push(Undo::Revert { what: "ram".into(), commands: vec![set(le)] })?;
+    let wrote = soft(ctx.session.cmd(&set(0x5A5A_A5A5)))?.is_some();
+    let back = soft(ctx.session.mem_read(&at, 4))?;
+    revert(ctx, "ram", &mut rc.clean);
+    let restored = soft(ctx.session.mem_read(&at, 4))?;
+    let shown = |b: &Option<Vec<u8>>| b.as_deref().map_or("-".into(), hex);
+    ctx.measure(
+        "ram",
+        Value::Text(format!("orig={} wrote={wrote} back={} restored={}", hex(&orig), shown(&back), shown(&restored))),
+    );
+    let ok = wrote && back.as_deref() == Some(&[0xA5, 0xA5, 0x5A, 0x5A][..]) && restored.as_deref() == Some(&orig[..]);
+
+    if rc.v.command(ctx, "Register.Set")? && rc.v.function(ctx, "Register")? {
+        let x9 = match eval_text(ctx, "Register(X9)")? {
+            Some(orig) => {
+                ctx.push(Undo::Revert { what: "x9".into(), commands: vec![format!("Register.Set X9 {orig}")] })?;
+                let wrote = soft(ctx.session.cmd("Register.Set X9 0x0123456789ABCDEF"))?.is_some();
+                let back = eval_text(ctx, "Register(X9)")?;
+                revert(ctx, "x9", &mut rc.clean);
+                let restored = eval_text(ctx, "Register(X9)")?;
+                format!("orig={orig} wrote={wrote} back={back:?} restored={restored:?}")
+            }
+            None => "refused".into(),
+        };
+        ctx.measure("x9", Value::Text(x9));
+    }
+    Ok(if ok { "ok" } else { "FAIL" }.into())
 }
 
 /// `Data.LOAD.Elf x.elf.gz /UNZIP /NoCODE /NoReg`, then the fallback through `VM:`. Symbols only:

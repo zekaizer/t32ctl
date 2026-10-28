@@ -105,6 +105,18 @@ pub struct Args {
     #[arg(long)]
     pub symbol: Option<String>,
 
+    /// With `run-control`: a source line `<file>:<line>` inside a loop, for a `/COUNT` breakpoint.
+    #[arg(long, value_name = "FILE:LINE", requires = "allow_run_control")]
+    pub loop_line: Option<String>,
+
+    /// With `run-control`: a variable to set write breakpoints on.
+    #[arg(long, value_name = "VAR", requires = "allow_run_control")]
+    pub watch: Option<String>,
+
+    /// With `run-control`: a 4-byte aligned RAM address the probe may write and restore.
+    #[arg(long, value_name = "ADDR", requires = "allow_run_control")]
+    pub scratch_ram: Option<String>,
+
     /// Enable `elf-unzip` with this ELF. Loads its symbols (not its code) into PowerView.
     #[arg(long, value_name = "PATH")]
     pub elf: Option<PathBuf>,
@@ -118,13 +130,50 @@ pub struct ElfInput {
     pub symbol: Option<Symbol>,
 }
 
+/// What `PvPath` refuses inside a path; a blank is refused too.
+const LINE_FILE_FORBIDDEN: &[char] = &['"', '&', '%', ';', '*', '?', '<', '>', '|', '`'];
+
+/// A source line for a breakpoint: `<file>\<line>` in PRACTICE.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceLine {
+    pub file: String,
+    pub line: u32,
+}
+
+impl SourceLine {
+    /// `<file>:<line>`, split at the last `:` so a drive letter stays in the file. The file goes
+    /// unquoted into a command: no blank and none of the characters a stage path refuses.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let (file, line) = text.rsplit_once(':').ok_or("expected <file>:<line>")?;
+        if file.is_empty() {
+            return Err("the file is empty".into());
+        }
+        if let Some(bad) = file.chars().find(|c| !('!'..='~').contains(c) || LINE_FILE_FORBIDDEN.contains(c)) {
+            return Err(format!("the file contains {bad:?}"));
+        }
+        match line.parse::<u32>() {
+            Ok(line) if line >= 1 => Ok(Self { file: file.to_string(), line }),
+            _ => Err(format!("line {line:?} is not a number of at least 1")),
+        }
+    }
+}
+
+/// `run-control`'s inputs: the symbol to run to and the optional steps' operator-chosen targets.
+#[derive(Clone, Debug)]
+pub struct RunControlInput {
+    pub symbol: Symbol,
+    pub loop_line: Option<SourceLine>,
+    pub watch: Option<Symbol>,
+    pub scratch_ram: Option<u64>,
+}
+
 /// What the opt-in flags unlocked, with the inputs those probes need. A gate is open iff its
 /// field is set, so "unlocked but missing its input" is not representable.
 #[derive(Clone, Debug, Default)]
 pub struct Gates {
     pub dialog: bool,
     pub multi_client: bool,
-    pub run_control: Option<Symbol>,
+    pub run_control: Option<RunControlInput>,
     pub elf: Option<ElfInput>,
 }
 
@@ -162,6 +211,19 @@ fn check_json_dest(path: &Path) -> Result<(), String> {
     }
 }
 
+fn parse_u64(s: &str) -> Result<u64, String> {
+    let (digits, radix) = s.strip_prefix("0x").map_or((s, 10), |h| (h, 16));
+    u64::from_str_radix(&digits.replace('_', ""), radix).map_err(|e| e.to_string())
+}
+
+fn parse_ram(s: &str) -> Result<u64, String> {
+    let a = parse_u64(s)?;
+    if a % 4 != 0 {
+        return Err(format!("{s} is not 4-byte aligned"));
+    }
+    Ok(a)
+}
+
 fn ids(names: &[String]) -> Result<Vec<ProbeId>, String> {
     names
         .iter()
@@ -185,12 +247,26 @@ impl Args {
             }
             None => None,
         };
-        let gates = Gates {
-            dialog: self.allow_dialog,
-            multi_client: self.allow_multi_client,
-            run_control: if self.allow_run_control { symbol } else { None },
-            elf,
+        let run_control = match &symbol {
+            Some(symbol) if self.allow_run_control => Some(RunControlInput {
+                symbol: symbol.clone(),
+                loop_line: self
+                    .loop_line
+                    .as_deref()
+                    .map(SourceLine::parse)
+                    .transpose()
+                    .map_err(|e| format!("--loop-line: {e}"))?,
+                watch: self.watch.as_deref().map(Symbol::parse).transpose().map_err(|e| format!("--watch: {e}"))?,
+                scratch_ram: self
+                    .scratch_ram
+                    .as_deref()
+                    .map(parse_ram)
+                    .transpose()
+                    .map_err(|e| format!("--scratch-ram: {e}"))?,
+            }),
+            _ => None,
         };
+        let gates = Gates { dialog: self.allow_dialog, multi_client: self.allow_multi_client, run_control, elf };
         let selected = registry::select(&ids(&self.only)?, &ids(&self.skip)?, &gates)?;
         let window = VmWindow::new(self.vm_base, self.vm_window).map_err(|e| format!("--vm-base/--vm-window: {e}"))?;
         if window.len() < 8 * 1024 * 1024 {
@@ -254,6 +330,36 @@ mod tests {
         }
         assert!(plan(&["--timeout", "1e30"]).is_err());
         assert!(plan(&["--scale", "2", "--timeout", "20"]).is_ok());
+    }
+
+    #[test]
+    fn scratch_ram_and_loop_line_are_validated_before_anything_is_sent() {
+        let rc = |extra: &[&str]| {
+            let mut v = vec!["--allow-run-control", "--symbol", "main"];
+            v.extend_from_slice(extra);
+            plan(&v)
+        };
+        assert_eq!(rc(&[]), Ok(()));
+        assert_eq!(
+            rc(&["--loop-line", "C:\\src\\main.c:12", "--watch", "counter", "--scratch-ram", "0x80001000"]),
+            Ok(())
+        );
+        for bad in [
+            ["--scratch-ram", "0x80001002"],
+            ["--scratch-ram", "nope"],
+            ["--loop-line", "main.c"],
+            ["--loop-line", "main.c:0"],
+            ["--loop-line", "main.c:x"],
+            ["--loop-line", ":12"],
+            ["--loop-line", "my file.c:12"],
+            ["--loop-line", "a;b.c:12"],
+            ["--watch", "1x"],
+        ] {
+            let e = rc(&bad).unwrap_err();
+            assert!(e.starts_with(bad[0]), "{bad:?}: {e}");
+        }
+        let parsed = Args::try_parse_from(["t32probe", "--loop-line", "main.c:3"]);
+        assert!(parsed.is_err(), "--loop-line needs --allow-run-control");
     }
 
     #[test]

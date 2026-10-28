@@ -114,7 +114,12 @@ fn run_control_is_skipped_when_the_target_is_down() {
     let s = Script::new().attach().expect_req(Request::TargetState).reply_state(0);
     let mut session = connect(vec![Ok(s)]);
     let mut env = test_env("probe-runcontrol");
-    env.cfg.gates.run_control = Some(Symbol::parse("main").unwrap());
+    env.cfg.gates.run_control = Some(crate::cli::RunControlInput {
+        symbol: Symbol::parse("main").unwrap(),
+        loop_line: None,
+        watch: None,
+        scratch_ram: None,
+    });
     let r = run(&mut env, &mut session, &[ProbeId::RunControl.def()]);
     assert_eq!(r.outcomes[0].verdict, Verdict::Skipped);
     assert!(matches!(&r.outcomes[0].skip, Some(SkipReason::TargetNotUp { state }) if state == "down"));
