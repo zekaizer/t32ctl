@@ -881,7 +881,7 @@ by grade, so a leaf can call only what its grade allows, and the compiler checks
 
 | Impl block | Operations | Status |
 |---|---|---|
-| `impl<G: Grade> Ctx<G>` | Status; read registers; resolve a place and read memory, checked against the memory map; `run_procedure` with an `Admitted<G>` proof | MVP |
+| `impl<G: Grade> Ctx<G>` | Status; read registers; resolve a place and read memory, checked against the memory map; `run_procedure` with a `ProcPrep<G>` built from an `Admitted<G>` proof | MVP |
 | `impl Ctx<Raw>` | PRACTICE text: a command, a function, a repository script | MVP |
 | `impl<G: Grade> Ctx<G>` | Read the stack, variables, symbols, breakpoints; text of a table view | planned |
 | `impl<G: AtLeast<Run>> Ctx<G>` | Go, step, halt, wait for a stop, set and clear breakpoints, load symbols, take and release the lease | planned |
@@ -893,9 +893,11 @@ by grade, so a leaf can call only what its grade allows, and the compiler checks
 `read < run < write < sys < burn < raw`, so `Ctx<Raw>` can do everything; no MVP operation needs
 a grade range. Compile-fail tests show that `Ctx<Read>` has no `cmd` and `Ctx<Burn>` no `eval`.
 `Admitted<G>` is built only by the grade check, which compares the grade word with
-`effective_grade`, so no leaf runs a procedure without it, and a compile-fail test shows that no
-other code can build one. The `t32rcl` `Session` and the `t32stage` `Stage` are private to `Ctx`; no
-leaf reaches them. Every PRACTICE text comes from builders in `t32stage::practice`, as
+`effective_grade`. `run_procedure` takes only a `ProcPrep<G>`, which `procs::prepare` builds from
+the `Admitted<G>` it consumes, and derives from `G` whether the run is a burn, so no leaf runs a
+procedure without the check; compile-fail tests show that no other code can build either one. The
+`t32rcl` `Session` and the `t32stage` `Stage` are private to `Ctx`; no leaf reaches them. Every
+PRACTICE text comes from builders in `t32stage::practice`, as
 [architecture.md](architecture.md#t32ctl-the-phase-1-contract) records.
 
 ### Policy hooks
@@ -941,8 +943,9 @@ Tests that keep it one definition:
 - Every hint the table can produce renders and parses back to the same arguments.
 - The generated blocks in this file and in the skill equal the output of `t32ctl read describe`.
 - No `never_allow` rule appears in the snippet's `allow`.
-- `Ctx<Read>` has no `cmd`, `Ctx<Burn>` no `eval`, and only the grade check builds an
-  `Admitted<G>`, checked with compile-fail tests. Planned: `AtLeast` matches the grade order.
+- `Ctx<Read>` has no `cmd`, `Ctx<Burn>` no `eval`, only the grade check builds an `Admitted<G>`, and
+  only `procs::prepare` a `ProcPrep<G>`, checked with compile-fail tests. Planned: `AtLeast` matches
+  the grade order.
 - The example config, binding file, and profile in [profiles.md](profiles.md) load and validate.
 - The transcripts marked `transcript: mvp` in this file, [profiles.md](profiles.md), and
   [cli-sessions.md](cli-sessions.md) are rendered from report values, or from the call itself when

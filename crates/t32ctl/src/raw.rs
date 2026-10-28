@@ -108,7 +108,6 @@ pub fn script_prepare(args: &RawScript, setup: &Setup<'_>) -> Result<Prepared, C
         out_shown,
         declared: Vec::new(),
         transfer_bound: setup.config.transfer_timeout.as_duration(),
-        burn: false,
     })
 }
 

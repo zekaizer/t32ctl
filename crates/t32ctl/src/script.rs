@@ -35,8 +35,6 @@ pub struct Prepared {
     pub declared: Vec<OutName>,
     /// `[calls] transfer_timeout`, the bound of each file upload.
     pub transfer_bound: Duration,
-    /// A burn procedure: success needs an explicit rc.
-    pub burn: bool,
 }
 
 /// One parameter's value.
@@ -106,16 +104,17 @@ fn ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// The run: uploads, macros, snapshot, the runner, outputs. A dialog, a vanished runner, or a
-/// failed output fetch after a known result is an error that carries the body.
+/// The run: uploads, macros, snapshot, the runner, outputs. A `burn` run succeeds only with an
+/// explicit rc. A dialog, a vanished runner, or a failed output fetch after a known result is an
+/// error that carries the body.
 pub(crate) fn execute(
     session: &mut Session,
     stage: &mut Stage,
     cancel: &Cancel,
     prep: Prepared,
+    burn: bool,
 ) -> Result<Body, CtlError> {
-    let Prepared { mut subject, bundle, entry, args, timeout, params, out, out_shown, declared, transfer_bound, burn } =
-        prep;
+    let Prepared { mut subject, bundle, entry, args, timeout, params, out, out_shown, declared, transfer_bound } = prep;
     let mut macros = Vec::with_capacity(params.len());
     let mut uploads = Vec::with_capacity(params.len());
     for p in &params {

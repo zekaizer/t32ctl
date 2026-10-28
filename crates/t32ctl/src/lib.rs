@@ -157,7 +157,7 @@ where
         return offline::<G, _>(args, &globals, deps, |a, setup| procs::help(&a.name, setup));
     }
     let check = |p: &ProcPrep<G>| {
-        if p.adm.decl().declares(Effect::DebuggerConfig) { CpuCheck::Skip } else { CpuCheck::Refuse }
+        if p.decl().declares(Effect::DebuggerConfig) { CpuCheck::Skip } else { CpuCheck::Refuse }
     };
     prepared::<G, _, _>(
         args,

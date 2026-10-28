@@ -52,11 +52,12 @@ use t32stage::{
 
 use crate::{
     error::{Context, CtlError, ErrorKind, from_connect, from_rcl, from_stage},
-    grade::{Grade, Raw},
+    grade::{Grade, GradeId, Raw},
     notation::{Place, PracticeText, Size},
+    procs::ProcPrep,
     profile::{
         Profile, RegionKind,
-        policy::{Admitted, Piece, Segment, effective_memory},
+        policy::{Piece, Segment, effective_memory},
     },
     report::{
         At, Body, CmdBody, CpuMatch, Header, Hex, Notice, Practice, PvStatus, Reg64, RegValue, RegsBody, TargetView,
@@ -207,8 +208,9 @@ impl Conn {
         self.stage_token = token;
     }
 
-    /// Run a prepared bundle, opening the stage first if no step of this call opened it.
-    fn run_bundle(&mut self, run: Prepared) -> Result<Body, CtlError> {
+    /// Run a prepared bundle, opening the stage first if no step of this call opened it. A `burn`
+    /// run succeeds only with an explicit rc.
+    fn run_bundle(&mut self, run: Prepared, burn: bool) -> Result<Body, CtlError> {
         if self.stage.is_none() {
             let cfg = self.stage_cfg.clone().expect("a connecting call configures the stage");
             match Stage::open(&mut self.session, cfg) {
@@ -228,7 +230,7 @@ impl Conn {
             }
         }
         let stage = self.stage.as_mut().expect("the stage is open");
-        script::execute(&mut self.session, stage, &self.cancel, run)
+        script::execute(&mut self.session, stage, &self.cancel, run, burn)
     }
 
     /// Run the stage's cleanup under a fresh 30 s deadline, not tied to Ctrl-C, reviving a dead
@@ -446,9 +448,8 @@ impl<'c, G: Grade> Ctx<'c, G> {
 
     /// Run a procedure the grade check admitted at this grade. It runs whatever the target state:
     /// an `attach` procedure brings the target up.
-    pub fn run_procedure(&mut self, adm: Admitted<G>, run: Prepared) -> Result<Body, CtlError> {
-        let _admitted = adm;
-        self.conn.run_bundle(run)
+    pub fn run_procedure(&mut self, prep: ProcPrep<G>) -> Result<Body, CtlError> {
+        self.conn.run_bundle(prep.into_run(), G::ID == GradeId::Burn)
     }
 
     /// The host that attached.
@@ -776,6 +777,6 @@ impl Ctx<'_, Raw> {
 
     /// A script bundle from the repository, outside every policy.
     pub fn run_script(&mut self, run: Prepared) -> Result<Body, CtlError> {
-        self.conn.run_bundle(run)
+        self.conn.run_bundle(run, false)
     }
 }

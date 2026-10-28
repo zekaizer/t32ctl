@@ -190,11 +190,31 @@ fn values<G: Grade>(
     Ok(out)
 }
 
-/// What a procedure call settled before connecting: the grade check's proof and the run.
+/// What a procedure call settled before connecting: the grade check's proof and the run. Built
+/// only by [`prepare`], from the `Admitted<G>` it consumes, so `Ctx::run_procedure` runs nothing
+/// the grade check did not admit:
+///
+/// ```compile_fail,E0451
+/// use t32ctl::{grade::Burn, procs::ProcPrep, profile::policy::Admitted, script::Prepared};
+/// fn forge(adm: Admitted<Burn>, run: Prepared) -> ProcPrep<Burn> {
+///     ProcPrep { adm, run }
+/// }
+/// ```
 #[derive(Debug)]
 pub struct ProcPrep<G: Grade> {
-    pub adm: Admitted<G>,
-    pub run: Prepared,
+    adm: Admitted<G>,
+    run: Prepared,
+}
+
+impl<G: Grade> ProcPrep<G> {
+    pub fn decl(&self) -> &ProcDecl {
+        self.adm.decl()
+    }
+
+    /// The run, for `Ctx::run_procedure`; the admission is consumed with it.
+    pub(crate) fn into_run(self) -> Prepared {
+        self.run
+    }
 }
 
 /// The profile directory's files as one bundle; a file PowerView cannot take is `profile-invalid`.
@@ -256,14 +276,13 @@ pub fn prepare<G: Grade>(name: &str, call: &ProcCall, setup: &Setup<'_>) -> Resu
         out_shown,
         declared: decl.outputs.clone(),
         transfer_bound: setup.config.transfer_timeout.as_duration(),
-        burn: G::ID == GradeId::Burn,
     };
     Ok(ProcPrep { adm, run })
 }
 
 /// Run the admitted procedure. An interrupted `burn` says what the storage may hold.
 pub fn run<G: Grade>(prep: ProcPrep<G>, ctx: &mut Ctx<'_, G>, _setup: &Setup<'_>) -> Result<Body, CtlError> {
-    ctx.run_procedure(prep.adm, prep.run).map_err(|mut e| {
+    ctx.run_procedure(prep).map_err(|mut e| {
         if e.kind == ErrorKind::Interrupted && G::ID == GradeId::Burn {
             e.details.push("the burn procedure was interrupted: the storage may hold a partial image".into());
         }
