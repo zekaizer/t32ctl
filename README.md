@@ -17,7 +17,8 @@ This repository holds the foundation and the Phase 0 measurement tool:
 Phase 0 exists because the build machine has no TRACE32: every behavior the design depends on
 and the manuals do not settle is measured by `t32probe` on the operator's PC. The design is in
 [docs/architecture.md](docs/architecture.md); running the probe is in
-[docs/operator.md](docs/operator.md).
+[docs/operator.md](docs/operator.md). What the probe runs taught about PowerView is in
+[docs/trace32-pitfalls.md](docs/trace32-pitfalls.md).
 
 ## Build
 
