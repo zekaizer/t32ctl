@@ -158,3 +158,15 @@ fn a_directory_the_bundle_cannot_carry_is_bad_bundle_naming_the_file() {
         ("error[bad-bundle]: tools/t32: DDR_STRESS.cmm and ddr_stress.cmm differ only in case\n", 2)
     );
 }
+
+#[test]
+fn a_root_past_the_bundle_limits_is_bad_bundle_before_it_is_read() {
+    let w = scripts("script-limits");
+    let big = fs::File::create(w.0.join("ws/tools/t32/big.bin")).unwrap();
+    big.set_len(BundleLimits::default().max_bytes + 1).unwrap();
+    let out = call("t32ctl raw script tools/t32/ddr_stress.cmm", &deps(w.env(), vec![]));
+    assert_eq!(
+        (out.text.as_str(), out.code),
+        ("error[bad-bundle]: tools/t32/big.bin: past the bundle limits of 512 files / 33554432 bytes\n", 2)
+    );
+}

@@ -49,8 +49,8 @@ fn notation(message: String) -> CtlError {
 }
 
 /// The bundle, entry, arguments and output directory of `raw script`, before connecting. The root
-/// is walked by the profile's rules: hidden files and editor leftovers stay out, and a symlink or
-/// special file is `bad-bundle`.
+/// is walked by the profile's rules: hidden files and editor leftovers stay out, and a symlink, a
+/// special file or a file past the bundle limits is `bad-bundle`.
 pub fn script_prepare(args: &RawScript, setup: &Setup<'_>) -> Result<Prepared, CtlError> {
     let env = setup.env;
     let entry = lexical(&env.cwd.join(&args.entry));

@@ -282,6 +282,19 @@ fn a_symlink_or_a_name_practice_cannot_carry_is_refused_by_name() {
 }
 
 #[test]
+fn a_directory_past_the_bundle_limits_is_refused_while_walking() {
+    let t = Temp::new("limits");
+    t.write("profile.toml", ACME);
+    for i in 0..t32stage::BundleLimits::default().max_files {
+        t.write(&format!("s/{i}.cmm"), "x");
+    }
+    let e = Profile::load(&t.env(), &t.profile_dir(), None).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::ProfileInvalid);
+    assert!(e.message.starts_with("b/support/t32ctl/"), "{}", e.message);
+    assert!(e.message.ends_with(": past the bundle limits of 512 files / 33554432 bytes"), "{}", e.message);
+}
+
+#[test]
 fn a_loaded_profile_has_its_variant_files_and_hash_and_reports_errors_relative_to_the_cwd() {
     let t = Temp::new("load");
     t.write("profile.toml", ACME);

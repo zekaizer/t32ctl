@@ -109,11 +109,11 @@ outside the range is a load error with file, line, and column, not a clamp.
 
 ## Target profile
 
-One directory per board, `support/t32ctl/` in the Zephyr board directory, holding `profile.toml`
-and the board's `.cmm` scripts. The directory is the bundle root: its files travel with a
-procedure. Three names are well known: `attach`, `reset`, and `flash`. The skill refers to them
-by name, and `read procs` shows which ones a board has, so a board uses these names for these
-jobs.
+One directory per board, `support/t32ctl/` in the Zephyr board directory, holding `profile.toml` and
+the board's `.cmm` scripts. The directory is the bundle root: its files travel with a procedure, so
+it holds at most 512 files and 32 MiB, and a larger one fails to load. Three names are well known:
+`attach`, `reset`, and `flash`. The skill refers to them by name, and `read procs` shows which ones
+a board has, so a board uses these names for these jobs.
 
 The profile hash is SHA-256 over the relative paths and contents of the regular files in the
 directory, excluding hidden files and editor leftovers (`.*`, `*~`, `#*#`, `*.swp`). The bundle

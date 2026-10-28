@@ -16,7 +16,7 @@ use std::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use t32rcl::AccessClass;
-use t32stage::RelPath;
+use t32stage::{BundleLimits, RelPath};
 use toml::Spanned;
 
 use crate::{
@@ -168,9 +168,10 @@ fn ignored(name: &str) -> bool {
 }
 
 /// Every regular file below `root` except ignored names, sorted by relative path with `/`
-/// separators. Anything that is neither a regular file nor a directory is refused.
+/// separators. Anything that is neither a regular file nor a directory is refused, and so is the
+/// file that takes the count or the total size past the default bundle limits, before it is read.
 pub fn walk(root: &Path) -> Result<Vec<Walked>, WalkError> {
-    fn visit(root: &Path, dir: &Path, out: &mut Vec<Walked>) -> Result<(), WalkError> {
+    fn visit(root: &Path, dir: &Path, out: &mut Vec<Walked>, total: &mut u64) -> Result<(), WalkError> {
         let io = |path: &Path, e: std::io::Error| WalkError {
             path: path.to_path_buf(),
             what: e.to_string(),
@@ -188,8 +189,15 @@ pub fn walk(root: &Path) -> Result<Vec<Walked>, WalkError> {
                 return Err(refuse("a symlink"));
             }
             if meta.is_dir() {
-                visit(root, &path, out)?;
+                visit(root, &path, out, total)?;
             } else if meta.is_file() {
+                let limits = BundleLimits::default();
+                *total += meta.len();
+                if out.len() + 1 > limits.max_files || *total > limits.max_bytes {
+                    let what =
+                        format!("past the bundle limits of {} files / {} bytes", limits.max_files, limits.max_bytes);
+                    return Err(WalkError { path, what, special: false });
+                }
                 let rel_text = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
                 let rel = RelPath::new(&rel_text).map_err(|e| WalkError {
                     path: path.clone(),
@@ -205,7 +213,7 @@ pub fn walk(root: &Path) -> Result<Vec<Walked>, WalkError> {
         Ok(())
     }
     let mut out = Vec::new();
-    visit(root, root, &mut out)?;
+    visit(root, root, &mut out, &mut 0)?;
     out.sort_by(|a, b| a.rel.as_str().cmp(b.rel.as_str()));
     Ok(out)
 }
