@@ -156,41 +156,44 @@ connection), and the run paths of `run-control`, `target-read`, `load-code` and 
 ## Open questions
 
 Each PowerView behavior below is assumed by code marked `ASSUMED(<probe>)` and is measured by
-that probe. The probe report answers it.
+that probe. The result column is build 168999 (about DVD 09/2024), from the alpha.1 to alpha.8 runs
+on #2; `docs/trace32-pitfalls.md` explains the refuted ones. A row without a result needs an opt-in
+probe that has not run yet.
 
-| Assumption | Probe | Where |
-|---|---|---|
-| PowerView always sends the 8-byte frame pad. | `connect` | `t32rcl::frame` |
-| A long EXP reply (a 60000-byte macro value) arrives as one frame. | `macro` | `t32rcl::frame` |
-| Request id 0 (after id 254) is accepted. | `latency` | `t32rcl::wait` |
-| A keepalive is `[0] == 0xFE`; status 254 shares the byte (raw frames are recorded). | `keepalive` | `t32rcl::wait` |
-| Memory chunks above 1024 bytes are accepted, and up to which size. | `vm-rw` | `t32rcl::Tuning` |
-| Reading never-initialized `VM:` fails instead of returning zeros. | `vm-rw` | `t32stage::vm` |
-| `Data.CLEARVM <range>` exists on DVD 02/2024. | `vm-rw` | `practice::cmd::clear_vm` |
-| `OS.PTD()` answers; whether its text is ASCII-safe; trailing separator. | `tempdir` | `practice::fnc::PTD` |
-| Which of `OS.FILE.readable`, `OS.FILE.EXIST`, `FILE.EXIST` answers. | `tempdir` | `practice::ExistsFn` |
-| `PRACTICE.StackDepth()` answers over ExecuteFunction. | `tempdir` | `practice::fnc::STACK_DEPTH` |
-| `/UNZIP` refuses a corrupt gzip (the bundle's integrity check). | `gzip` | `Stage::ensure_snapshot` |
-| EXP 2 with `&name` reaches the macro a `DO`'d script uses; bare `name` is a separate store (refuted for bare on build 168999). | `macro-visibility` | `t32rcl::MacroSpelling` |
-| Redeclaring an existing global keeps its value. | `macro` | `practice::cmd::global` |
-| `&m="0"` stores `0`, not `"0"` (quotes are stripped either way). | `macro` | `Stage` |
-| A macro set over EXP 2 reads back inside a `DO`'d script. | `macro-visibility` | `bundle::render_unpack` |
-| One-line `IF` bodies, `GOTO` and `OPEN /Create /Binary` for empty files work in the unpack script, which writes nothing behind an empty or relative snapshot path. | `unpack-literal` | `bundle::render_unpack` |
-| `OS.FILE.ABSPATH` returns an absolute path unchanged. | `unpack-literal` | `bundle::render_unpack` |
-| `DO` over ExecuteCommand returns while the script runs. | `script-lab` | `Stage::execute_with` |
-| A script in `WAIT` reads as running, not as halted. | `script-lab` | `runner::ScriptWatch` |
-| `ENTRY %LINE` after `DO` yields the callee's `ENDDO` value. | `channel-out` | `runner::runner_cmm` |
-| `ON ERROR JUMPTO` in the runner catches errors in nested `DO` files and unwinds them. | `script-error` | `runner::runner_cmm` |
-| `EVAL ERROR.MESSAGE()` + EvalGetString reads the error of a halted script. | `script-halt` | `Stage` |
-| `T32_Stop` answers status 0 or 1. | `script-halt` | `t32rcl::Session::stop_practice` |
-| Arguments with `, / : = + @ - . _` reach `ENTRY` intact through the unquoted `DO` line. | `channel-in` | `practice::render_args` |
-| An overwritten file leaves a `.bak` sibling named as `bak_candidates` predicts. | `fs-semantics` | `RelPath::bak_candidates` |
-| 10 s plus 1 s per MB covers the silence of a long `SAVE` or `LOAD` between keepalives. | `vm-large` | `transfer::data_budget` |
-| `TAR <archive> <dir>\*` stores names relative to `<dir>`. | `tar-download` | `practice::cmd::tar` |
-| `ZIP` writes plain gzip. | `tar-download` | `practice::cmd::zip` |
-| A modal dialog reads as state 2 and `T32_Stop` ends the wait (and whether the window closes). | `dialog` | `runner::ScriptWatch` |
-| Two `STOre <file> Break` lists differ only when breakpoints differ. | `run-control` | `practice::cmd::store_breakpoints` |
-| `Data.LOAD.Elf ... /UNZIP` exists. | `elf-unzip` | `practice::cmd::load_elf_symbols` |
+| Assumption | Probe | Where | Build 168999 |
+|---|---|---|---|
+| PowerView always sends the 8-byte frame pad. | `connect` | `t32rcl::frame` | holds |
+| A long EXP reply (a 60000-byte macro value) arrives as one frame. | `macro` | `t32rcl::frame` | moot: EXP values over 4 KiB are refused |
+| Request id 0 (after id 254) is accepted. | `latency` | `t32rcl::wait` | holds |
+| A keepalive is `[0] == 0xFE`; status 254 shares the byte (raw frames are recorded). | `keepalive` | `t32rcl::wait` | holds; one about every 2 s |
+| Memory chunks above 1024 bytes are accepted, and up to which size. | `vm-rw` | `t32rcl::Tuning` | holds up to the client limit, 15360 |
+| Reading never-initialized `VM:` fails instead of returning zeros. | `vm-rw` | `t32stage::vm` | holds, as status 113 |
+| `Data.CLEARVM <range>` exists on DVD 02/2024. | `vm-rw` | `practice::cmd::clear_vm` | holds |
+| `OS.PTD()` answers; whether its text is ASCII-safe; trailing separator. | `tempdir` | `practice::fnc::PTD` | holds; ASCII, no separator |
+| Which of `OS.FILE.readable`, `OS.FILE.EXIST`, `FILE.EXIST` answers. | `tempdir` | `practice::ExistsFn` | `OS.FILE.readable` |
+| `PRACTICE.StackDepth()` answers over ExecuteFunction. | `tempdir` | `practice::fnc::STACK_DEPTH` | holds |
+| `/UNZIP` refuses a corrupt gzip (the bundle's integrity check). | `gzip` | `Stage::ensure_snapshot` | holds, 4 of 4 |
+| EXP 2 with `&name` reaches the macro a `DO`'d script uses; bare `name` is a separate store. | `macro-visibility` | `t32rcl::MacroSpelling` | holds for `&name`; bare is a separate store |
+| Redeclaring an existing global keeps its value. | `macro` | `practice::cmd::global` | holds |
+| `&m="0"` stores `0`, not `"0"` (quotes are stripped either way). | `macro-return` | `Stage` | holds |
+| A macro set over EXP 2 reads back inside a `DO`'d script. | `macro-visibility` | `bundle::render_unpack` | holds with `&name` |
+| One-line `IF` bodies, `GOTO` and `OPEN /Create /Binary` for empty files work in the unpack script, which writes nothing behind an empty or relative snapshot path. | `unpack-literal` | `bundle::render_unpack` | holds |
+| `OS.FILE.ABSPATH` returns an absolute path unchanged. | `unpack-literal` | `bundle::render_unpack` | holds |
+| `DO` over ExecuteCommand returns while the script runs. | `script-lab` | `Stage::execute_with` | holds |
+| A script in `WAIT` reads as running, not as halted. | `script-lab` | `runner::ScriptWatch` | holds |
+| `ENTRY %LINE` after `DO` yields the callee's `ENDDO` value. | `channel-out` | `runner::runner_cmm` | partly: the unevaluated text, quotes kept |
+| `ON ERROR JUMPTO` in the runner catches errors in nested `DO` files and unwinds them. | `script-error` | `runner::runner_cmm` | holds, 6 of 6 |
+| `EVAL ERROR.MESSAGE()` + EvalGetString reads the error of a halted script. | `script-error` | `Stage` | holds |
+| `T32_Stop` answers status 0 or 1. | `script-halt` | `t32rcl::Session::stop_practice` | holds; 0 seen |
+| Arguments with `, / : = + @ - . _` reach `ENTRY` intact through the unquoted `DO` line. | `channel-in` | `practice::render_args` | holds |
+| An overwritten file leaves a `.bak` sibling named as `bak_candidates` predicts. | `fs-semantics` | `RelPath::bak_candidates` | holds; last extension becomes `.bak` |
+| 10 s plus 1 s per MB covers the silence of a long `SAVE` or `LOAD` between keepalives. | `vm-large` | `transfer::data_budget` | holds; 32 MiB in under 0.2 s |
+| `TAR <archive> <dir>\*` stores names relative to `<dir>`. | `tar-download` | `practice::cmd::tar` | refuted: full path minus the drive; `tar::below` strips it |
+| `ZIP` writes plain gzip. | `tar-download` | `practice::cmd::zip` | holds |
+| The whole bundle path: upload, unpack, cache hit, repair, runner, nested `DO` chain. | `bundle` | `Stage` | holds (alpha.8) |
+| A modal dialog reads as state 2 and `T32_Stop` ends the wait (and whether the window closes). | `dialog` | `runner::ScriptWatch` | |
+| Two `STOre <file> Break` lists differ only when breakpoints differ. | `run-control` | `practice::cmd::store_breakpoints` | |
+| `Data.LOAD.Elf ... /UNZIP` exists. | `elf-unzip` | `practice::cmd::load_elf_symbols` | |
 
 Questions that only the operator can answer:
 
