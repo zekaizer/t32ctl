@@ -135,3 +135,37 @@ fn run_control_reverts_core_and_breakpoints_even_when_a_step_fails() {
     assert_eq!(o.lookup("revert.core"), Some(&Value::Text("done".into())));
     assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
 }
+
+fn queried(ctx: &mut crate::ctx::ProbeCtx<'_>) -> crate::ctx::ProbeResult {
+    let t = symbol_queries(ctx, &t32stage::Symbol::parse("main").unwrap())?;
+    ctx.text("sym", t);
+    Ok(())
+}
+
+#[test]
+fn elf_unzip_asks_the_symbol_functions_this_build_offers() {
+    let mut s = avail(Script::new().attach(), "FUNCtion", "sYmbol.BEGIN", true);
+    s = s.expect_fn("sYmbol.BEGIN(main)").reply_text("P:0x1000");
+    s = avail(s, "FUNCtion", "sYmbol.END", true).expect_fn("sYmbol.END(main)").reply_text("P:0x10FF");
+    s = avail(s, "FUNCtion", "sYmbol.SIZEOF", false);
+    s = avail(s, "FUNCtion", "sYmbol.NAME", true).expect_fn("sYmbol.NAME(P:0x1000)").reply_function(0, "no symbol");
+    s = avail(s, "FUNCtion", "sYmbol.FUNCTION", true).expect_fn("sYmbol.FUNCTION(P:0x1000)").reply_text("main");
+    s = avail(s, "FUNCtion", "sYmbol.SECRANGE", true);
+    s = s.expect_fn("sYmbol.SECRANGE(\".text\")").reply_text("P:0x0--0xFFFF");
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("elf-symbols");
+    let def: &'static crate::registry::ProbeDef = Box::leak(Box::new(crate::registry::ProbeDef {
+        id: ProbeId::ElfUnzip,
+        tier: crate::registry::Tier::Safe,
+        requires: &[],
+        needs_connection: true,
+        deadline: Duration::from_secs(5),
+        about: "",
+        run: queried,
+    }));
+    let r = run(&mut env, &mut session, &[def]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
+    assert_eq!(o.lookup("sym"), Some(&Value::Text("4/5".into())));
+    assert_eq!(o.lookup("unverified.sYmbol.SIZEOF"), Some(&Value::Text("unverified:sYmbol.SIZEOF".into())));
+}

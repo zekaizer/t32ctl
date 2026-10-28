@@ -167,7 +167,7 @@ probes! {
     LoadCode = "load-code", Tier::OptIn(LoadCode), [VmFile], true, 300, target::load_code,
         "Data.LOAD.Elf of --elf into the halted target with /NoReg and without, time and keepalives, PC, /DIFF with FOUND(); the PC restored (changes target memory)";
     ElfUnzip = "elf-unzip", Tier::OptIn(Elf), [Gzip, Tempdir], true, 240, optin::elf_unzip,
-        "Data.LOAD.Elf x.elf.gz /UNZIP and the VM: fallback; symbols only";
+        "Data.LOAD.Elf x.elf.gz /UNZIP and the VM: fallback, then with --symbol the sYmbol functions on it; symbols only";
 }
 
 impl Serialize for ProbeId {

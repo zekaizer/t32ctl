@@ -622,8 +622,9 @@ fn scratch_write(ctx: &mut ProbeCtx<'_>, rc: &mut Rc, a: u64) -> Result<String, 
     Ok(if ok { "ok" } else { "FAIL" }.into())
 }
 
-/// `Data.LOAD.Elf x.elf.gz /UNZIP /NoCODE /NoReg`, then the fallback through `VM:`. Symbols only:
-/// target memory and registers are never written. The loaded symbols stay in PowerView.
+/// `Data.LOAD.Elf x.elf.gz /UNZIP /NoCODE /NoReg`, then the fallback through `VM:`; with
+/// `--symbol`, the symbol functions on what was loaded. Symbols only: target memory and
+/// registers are never written. The loaded symbols stay in PowerView.
 pub fn elf_unzip(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let elf = ctx.env.cfg.gates.elf.clone().expect("gate opens only with an ELF");
     ctx.measure("elf_path", Value::Text(elf.path.display().to_string()));
@@ -659,8 +660,38 @@ pub fn elf_unzip(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
                 None => "?",
             },
         );
+        let answered = symbol_queries(ctx, sym)?;
+        ctx.text("sym", answered);
     }
     ctx.check(fallback, || "Data.LOAD.Elf of the inflated ELF failed".into())
+}
+
+/// Symbol functions on the loaded symbols, each asked only when this build offers it:
+/// `<answered>/<asked>`. `NAME` and `FUNCTION` take the address `BEGIN` answered.
+pub(crate) fn symbol_queries(ctx: &mut ProbeCtx<'_>, sym: &t32stage::Symbol) -> Result<String, ProbeFail> {
+    let mut v = Verified::default();
+    let (mut asked, mut answered) = (0, 0);
+    let mut ask = |ctx: &mut ProbeCtx<'_>, v: &mut Verified, f: &str, arg: &str| -> Result<Option<String>, ProbeFail> {
+        if !v.function(ctx, f)? {
+            return Ok(None);
+        }
+        let r = eval_text(ctx, &format!("{f}({arg})"))?;
+        asked += 1;
+        answered += usize::from(r.is_some());
+        ctx.measure(&format!("sym.{f}"), Value::Text(r.clone().unwrap_or_else(|| "refused".into())));
+        Ok(r)
+    };
+    let s = sym.as_str();
+    let begin = ask(ctx, &mut v, "sYmbol.BEGIN", s)?;
+    ask(ctx, &mut v, "sYmbol.END", s)?;
+    ask(ctx, &mut v, "sYmbol.SIZEOF", s)?;
+    if let Some(b) = begin {
+        let at = if b.contains(':') { b } else { format!("P:{b}") };
+        ask(ctx, &mut v, "sYmbol.NAME", &at)?;
+        ask(ctx, &mut v, "sYmbol.FUNCTION", &at)?;
+    }
+    ask(ctx, &mut v, "sYmbol.SECRANGE", "\".text\"")?;
+    Ok(format!("{answered}/{asked}"))
 }
 
 #[cfg(test)]
