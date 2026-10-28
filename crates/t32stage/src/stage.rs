@@ -286,7 +286,10 @@ impl Stage {
         session.cmd(&cmd::tar(&archive, out))?;
         let bytes = self.download(session, &archive)?;
         let diag = tar::diagnose(&bytes);
-        let files = tar::walk(&bytes)?;
+        let mut files = tar::walk(&bytes)?;
+        for f in &mut files {
+            f.name = tar::below(&f.name, &out.text());
+        }
         let rels: Vec<RelPath> = files.iter().filter_map(|f| RelPath::new(&f.name).ok()).collect();
         let dirs: BTreeSet<&str> = rels.iter().flat_map(RelPath::parents).collect();
         for d in dirs {

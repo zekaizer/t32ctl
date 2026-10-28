@@ -339,8 +339,8 @@ pub mod cmd {
         format!("Data.CLEARVM {}", vm_range(r))
     }
 
-    /// `TAR <archive> <dir>\*`: recursive by default (ide_ref).
-    /// ASSUMED(tar-download): names are stored relative to `<dir>`.
+    /// `TAR <archive> <dir>\*`: recursive by default (ide_ref). Build 168999 stores each name with
+    /// the full path minus the drive; `tar::below` makes it relative to `<dir>`.
     pub fn tar(archive: &StagePath, dir: &StagePath) -> String {
         format!("TAR {} \"{}\\*\"", archive.quoted(), dir.text())
     }
