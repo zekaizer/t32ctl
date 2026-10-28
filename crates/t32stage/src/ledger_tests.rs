@@ -219,6 +219,69 @@ fn revert_now_applies_and_removes_only_that_undo() {
     ledger.discard();
 }
 
+/// `OS.FIRSTFILE` and `OS.NEXTFILE` over `C:\T\t32ctl\<rel>`: `.`, `..`, `names`, the end.
+fn listed(s: Script, rel: &str, names: &[&str]) -> Script {
+    let dir = format!("C:\\T\\t32ctl\\{}", rel.replace('/', "\\"));
+    let mut s = s.expect_fn(&format!("OS.FIRSTFILE(\"{dir}\\*\")")).reply_text(&format!("{dir}\\."));
+    for n in [".."].iter().chain(names).chain(&[""]) {
+        s = s.expect_fn("OS.NEXTFILE()").reply_text(n);
+    }
+    s
+}
+
+fn is_dir(s: Script, rel: &str, v: bool) -> Script {
+    s.expect_fn(&format!("OS.DIR(\"C:\\T\\t32ctl\\{}\")", rel.replace('/', "\\"))).reply_bool(v)
+}
+
+#[test]
+fn a_run_dir_is_emptied_deepest_first_then_removed() {
+    let mut s = listed(is_dir(Script::new().attach(), "out-tok", true), "out-tok", &["a.log", "sub"]);
+    s = is_dir(s, "out-tok/a.log", false);
+    s = readable(s, "out-tok/a.log", true).expect_cmd("RM \"C:\\T\\t32ctl\\out-tok\\a.log\"").reply_ok();
+    s = readable(s, "out-tok/a.log", false);
+    s = listed(is_dir(s, "out-tok/sub", true), "out-tok/sub", &["b.bin"]);
+    s = is_dir(s, "out-tok/sub/b.bin", false);
+    s = readable(s, "out-tok/sub/b.bin", true).expect_cmd("RM \"C:\\T\\t32ctl\\out-tok\\sub\\b.bin\"").reply_ok();
+    s = readable(s, "out-tok/sub/b.bin", false);
+    s = is_dir(s, "out-tok/sub", true).expect_cmd("RMDIR \"C:\\T\\t32ctl\\out-tok\\sub\"").reply_ok();
+    s = is_dir(s, "out-tok/sub", false);
+    s = s.expect_cmd("RMDIR \"C:\\T\\t32ctl\\out-tok\"").reply_ok();
+    s = is_dir(s, "out-tok", false);
+
+    let mut ledger = Ledger::new(ExistsFn::OsFileReadable);
+    ledger.push(Undo::RemoveRunDir(file("out-tok"))).unwrap();
+    let report = ledger.run(&mut session(s));
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(report.items.len(), 1);
+    assert_eq!(report.items[0].what, "remove run dir C:\\T\\t32ctl\\out-tok");
+}
+
+#[test]
+fn what_a_run_dir_keeps_is_named_in_the_hint_before_its_rmdir_and_stays_journaled() {
+    let dir = temp_dir("journal-run-dir");
+    let mut s = listed(is_dir(Script::new().attach(), "out-tok", true), "out-tok", &["a.log", "b.log"]);
+    s = is_dir(s, "out-tok/a.log", false);
+    s = readable(s, "out-tok/a.log", true).expect_cmd("RM \"C:\\T\\t32ctl\\out-tok\\a.log\"").reply_error(90, "in use");
+    s = is_dir(s, "out-tok/b.log", false);
+    s = readable(s, "out-tok/b.log", true).expect_cmd("RM \"C:\\T\\t32ctl\\out-tok\\b.log\"").reply_ok();
+    s = readable(s, "out-tok/b.log", false);
+    s = s.expect_cmd("RMDIR \"C:\\T\\t32ctl\\out-tok\"").reply_error(90, "critical error accessing file");
+
+    let mut ledger = Ledger::journaled(Journal::create(&dir, "run").unwrap(), ExistsFn::OsFileReadable);
+    ledger.push(Undo::RemoveRunDir(file("out-tok"))).unwrap();
+    let report = ledger.run(&mut session(s));
+    assert!(matches!(report.items[0].outcome, CleanupOutcome::Failed(_)), "{report:?}");
+    assert_eq!(
+        report.items[0].manual.as_deref(),
+        Some("RM \"C:\\T\\t32ctl\\out-tok\\a.log\"\nRMDIR \"C:\\T\\t32ctl\\out-tok\"")
+    );
+    assert_eq!(fs::read_to_string(dir.join("journal/run.undo")).unwrap(), "rm-run-dir\tLC:\\T\\t32ctl\tout-tok\n");
+    assert!(
+        matches!(Undo::from_line("rm-run-dir\tLC:\\T\\t32ctl\tout-tok"), Some(Undo::RemoveRunDir(p)) if p == file("out-tok"))
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
 #[test]
 fn manual_commands_are_typeable() {
     assert_eq!(Undo::RemoveFile(file("x y.bin")).manual_hint().as_deref(), Some("RM \"C:\\T\\t32ctl\\x y.bin\""));

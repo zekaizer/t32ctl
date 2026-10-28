@@ -401,7 +401,7 @@ fn flash_closed(mut s: Script, files: &[(&str, &[u8])]) -> Script {
     for name in ["image", "part", "offset"] {
         s = tk::set_name(s, &format!("t32ctl_p_{name}"), "");
     }
-    s = tk::dir_removed(s, &out);
+    s = tk::run_dir_removed(s, &out);
     s = tk::file_removed(s, &format!("{}\\image.bin", tk::at("in-tok")));
     tk::closed(tk::dir_removed(s, &tk::at("in-tok")), false)
 }
@@ -574,23 +574,28 @@ fn our_script_left_on_the_stack_after_cleanup_is_residue_and_overrides_exit_0() 
 }
 
 #[test]
-fn a_failed_output_fetch_keeps_the_result_and_is_pv_error() {
+fn a_failed_output_fetch_keeps_the_result_is_pv_error_and_cleanup_empties_the_run_directory() {
     let w = with_procs("proc-fetch");
     let out_dir = tk::out_dir();
+    let log = format!("{out_dir}\\x.log");
     let s = finished(started(attached(2), &w, "attach.cmm", &[]), "", "0", "");
     let s = s.expect_fn(&format!("OS.FIRSTFILE(\"{out_dir}\\*\")")).reply_text("x.log");
     let s = s.expect_cmd(&format!("TAR \"{out_dir}.tar\" \"{out_dir}\\*\"")).reply_error(90, "refused");
     let s = tk::file_absent(s, &format!("{out_dir}.tar"));
     let s = s.expect_fn(&format!("OS.DIR(\"{out_dir}\")")).reply_bool(true);
-    let s = s.expect_cmd(&format!("RMDIR \"{out_dir}\"")).reply_error(90, "critical error accessing file");
+    let s = s.expect_fn(&format!("OS.FIRSTFILE(\"{out_dir}\\*\")")).reply_text(".");
+    let s = s.expect_fn("OS.NEXTFILE()").reply_text("..").expect_fn("OS.NEXTFILE()").reply_text(&log);
+    let s = s.expect_fn("OS.NEXTFILE()").reply_text("");
+    let s = tk::file_removed(s.expect_fn(&format!("OS.DIR(\"{log}\")")).reply_bool(false), &log);
+    let s = s.expect_cmd(&format!("RMDIR \"{out_dir}\"")).reply_ok();
+    let s = s.expect_fn(&format!("OS.DIR(\"{out_dir}\")")).reply_bool(false);
     let s = stopped_header(tk::closed(s, false));
     let out = call("t32ctl run proc attach", &deps(w.env(), vec![Ok(s)]));
     assert_eq!(out.code, 5);
     let lines: Vec<&str> = out.text.lines().collect();
-    assert_eq!(lines[1], format!("! residue: remove dir {out_dir}; in PowerView type: RMDIR \"{out_dir}\""));
-    assert_eq!(lines[3..5], ["result: finished rc=0 after 0ms", "outputs: none"]);
+    assert_eq!(lines[2..4], ["result: finished rc=0 after 0ms", "outputs: none"], "{}", out.text);
     assert_eq!(
-        lines[5],
-        "error[pv-error]: fetching the outputs: command: PowerView refused: command failed (code 90 FN1): refused"
+        lines[4..],
+        ["error[pv-error]: fetching the outputs: command: PowerView refused: command failed (code 90 FN1): refused"]
     );
 }

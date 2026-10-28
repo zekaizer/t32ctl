@@ -22,6 +22,7 @@ use t32rcl::{Health, MacroName, PracticeState, Session, TargetState};
 use crate::{
     error::StageError,
     practice::{ExistsFn, PvPath, RelPath, StagePath, StageRoot, cmd, fnc},
+    transfer,
     vm::{RestoreOutcome, VmSnapshot},
 };
 
@@ -35,6 +36,10 @@ pub enum Undo {
     RemoveFile(StagePath),
     /// `OS.DIR`? then `RMDIR`, then verify gone. Fails when not empty: never recursive.
     RemoveDir(StagePath),
+    /// `RemoveDir` of a directory a run's script writes into (`out-<token>`), after removing what
+    /// the script left in it, contents before their directory. Only for a directory no one else
+    /// writes into.
+    RemoveRunDir(StagePath),
     /// Write the snapshot back and verify.
     RestoreVm(VmSnapshot),
     /// `T32_Stop` if running, then `END` while the stack is not empty. Registered after the stack
@@ -56,6 +61,7 @@ impl Undo {
         match self {
             Undo::RemoveFile(p) => format!("remove file {p}"),
             Undo::RemoveDir(p) => format!("remove dir {p}"),
+            Undo::RemoveRunDir(p) => format!("remove run dir {p}"),
             Undo::RestoreVm(s) => format!("{RESTORE_VM}{:#x}+{:#x}", s.region().start(), s.region().len()),
             Undo::UnwindPractice => "unwind PRACTICE stack".to_string(),
             Undo::ClearMacros(m) => {
@@ -67,10 +73,12 @@ impl Undo {
     }
 
     /// What an operator types into PowerView if this undo could not run, one command per line.
+    /// `None` for a run directory: what it holds is known only by listing it.
     pub fn manual_hint(&self) -> Option<String> {
         match self {
             Undo::RemoveFile(p) => Some(cmd::rm(p)),
             Undo::RemoveDir(p) => Some(cmd::rmdir(p)),
+            Undo::RemoveRunDir(_) => None,
             Undo::UnwindPractice => Some(cmd::END.to_string()),
             Undo::BreakTarget => Some(cmd::BREAK.to_string()),
             Undo::RestoreVm(s) => {
@@ -79,6 +87,17 @@ impl Undo {
             }
             Undo::ClearMacros(_) => None,
             Undo::Revert { commands, .. } => Some(commands.join("\n")),
+        }
+    }
+
+    /// Apply it: the outcome, and what an operator types for what it left.
+    fn attempt(&self, session: &mut Session, exists: ExistsFn) -> (CleanupOutcome, Option<String>) {
+        match self {
+            Undo::RemoveRunDir(p) => remove_run_dir(session, p, exists),
+            _ => {
+                let outcome = self.apply(session, exists).unwrap_or_else(|e| CleanupOutcome::Failed(e.to_string()));
+                (outcome, self.manual_hint())
+            }
         }
     }
 
@@ -96,16 +115,13 @@ impl Undo {
                 Ok(CleanupOutcome::Done)
             }
             Undo::RemoveDir(p) => {
-                let present = |s: &mut Session| s.eval(&fnc::dir_exists(p))?.into_bool("OS.DIR()");
-                if !present(session)? {
+                if !dir_present(session, p)? {
                     return Ok(CleanupOutcome::AlreadyClean);
                 }
-                session.cmd(&cmd::rmdir(p))?;
-                if present(session)? {
-                    return Err(StageError::StillPresent { what: p.to_string() });
-                }
+                rmdir_verified(session, p)?;
                 Ok(CleanupOutcome::Done)
             }
+            Undo::RemoveRunDir(p) => Ok(remove_run_dir(session, p, exists).0),
             Undo::RestoreVm(s) => match s.restore(session)? {
                 RestoreOutcome::Restored { uninit } => Ok(CleanupOutcome::Restored { uninit }),
                 RestoreOutcome::Mismatch { first } => {
@@ -156,6 +172,7 @@ impl Undo {
         match self {
             Undo::RemoveFile(p) => Some(format!("rm-file\t{}", path(p))),
             Undo::RemoveDir(p) => Some(format!("rm-dir\t{}", path(p))),
+            Undo::RemoveRunDir(p) => Some(format!("rm-run-dir\t{}", path(p))),
             Undo::UnwindPractice => Some("unwind".to_string()),
             Undo::ClearMacros(m) => {
                 Some(format!("clear-macros\t{}", m.iter().map(MacroName::as_str).collect::<Vec<_>>().join(",")))
@@ -174,6 +191,7 @@ impl Undo {
         match fields.as_slice() {
             ["rm-file", root, rel] => Some(Undo::RemoveFile(path(root, rel)?)),
             ["rm-dir", root, rel] => Some(Undo::RemoveDir(path(root, rel)?)),
+            ["rm-run-dir", root, rel] => Some(Undo::RemoveRunDir(path(root, rel)?)),
             ["unwind"] => Some(Undo::UnwindPractice),
             ["clear-macros", names] => {
                 names.split(',').map(|n| MacroName::new(n).ok()).collect::<Option<Vec<_>>>().map(Undo::ClearMacros)
@@ -182,6 +200,67 @@ impl Undo {
             _ => None,
         }
     }
+}
+
+fn dir_present(session: &mut Session, p: &StagePath) -> Result<bool, StageError> {
+    Ok(session.eval(&fnc::dir_exists(p))?.into_bool("OS.DIR()")?)
+}
+
+fn rmdir_verified(session: &mut Session, p: &StagePath) -> Result<(), StageError> {
+    session.cmd(&cmd::rmdir(p))?;
+    if dir_present(session, p)? {
+        return Err(StageError::StillPresent { what: p.to_string() });
+    }
+    Ok(())
+}
+
+/// Names `Undo::RemoveRunDir` lists per directory and pass.
+const RUN_DIR_LIST_MAX: usize = 1000;
+
+/// `Undo::RemoveRunDir`: what `dir` holds, then `dir`. A failed removal does not stop the rest;
+/// the hint names what is left in removal order, the directory's `RMDIR` last. A failed listing
+/// gives no hint, since what is left is unknown; the journal keeps the step for the next run.
+fn remove_run_dir(session: &mut Session, dir: &StagePath, exists: ExistsFn) -> (CleanupOutcome, Option<String>) {
+    let mut left = Vec::new();
+    let emptied = match dir_present(session, dir) {
+        Ok(false) => return (CleanupOutcome::AlreadyClean, None),
+        Ok(true) => empty_dir(session, dir, exists, &mut left),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = emptied {
+        return (CleanupOutcome::Failed(e.to_string()), None);
+    }
+    match rmdir_verified(session, dir) {
+        Ok(()) => (CleanupOutcome::Done, None),
+        Err(e) => {
+            left.push(cmd::rmdir(dir));
+            (CleanupOutcome::Failed(e.to_string()), Some(left.join("\n")))
+        }
+    }
+}
+
+/// Remove what `dir` holds, contents before their directory, past a failed removal; the commands
+/// for what stays go to `left`. A failed listing or `OS.DIR` stops it. A name that is not a `RelPath` stays.
+/// ASSUMED(fs-semantics): `OS.FIRSTFILE` lists subdirectories too.
+fn empty_dir(
+    session: &mut Session,
+    dir: &StagePath,
+    exists: ExistsFn,
+    left: &mut Vec<String>,
+) -> Result<(), StageError> {
+    for name in transfer::list_dir(session, dir, RUN_DIR_LIST_MAX)? {
+        let Ok(p) = dir.join(&name) else { continue };
+        let undo = if dir_present(session, &p)? {
+            empty_dir(session, &p, exists, left)?;
+            Undo::RemoveDir(p)
+        } else {
+            Undo::RemoveFile(p)
+        };
+        if !undo.apply(session, exists).is_ok_and(|o| o.is_clean()) {
+            left.extend(undo.manual_hint());
+        }
+    }
+    Ok(())
 }
 
 /// `T32_Stop` if a script runs, then `END` until the stack is empty. Only for callers that saw an
@@ -406,22 +485,19 @@ impl Ledger {
         let mut report = CleanupReport::default();
         let mut left: Vec<String> = Vec::new();
         for undo in pending.into_iter().rev() {
-            let outcome = if session.health() != Health::Live
+            let (outcome, manual) = if session.health() != Health::Live
                 && let Err(e) = session.try_revive()
             {
-                CleanupOutcome::NotAttempted(format!("no connection: {e}"))
+                (CleanupOutcome::NotAttempted(format!("no connection: {e}")), undo.manual_hint())
             } else {
-                match undo.apply(session, exists) {
-                    Ok(o) => o,
-                    Err(e) => CleanupOutcome::Failed(e.to_string()),
-                }
+                undo.attempt(session, exists)
             };
             if !outcome.is_clean()
                 && let Some(line) = undo.to_line()
             {
                 left.push(line);
             }
-            report.items.push(CleanupItem { what: undo.describe(), manual: undo.manual_hint(), outcome });
+            report.items.push(CleanupItem { what: undo.describe(), manual, outcome });
         }
         if let Some(mut j) = journal {
             let result = if left.is_empty() {

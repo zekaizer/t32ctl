@@ -89,6 +89,12 @@ locked journal on the WSL side before they are registered; the next run replays 
 by dead processes. `VM:` restores stay in memory: they are captured per 4 KiB unit, written back,
 read back and compared, and a unit that was never initialized is cleared alone.
 
+A run's output directory (`out-<token>`) is the one undo that removes what it holds. Its script
+writes files no undo names in advance, and a run that fails or is interrupted fetches none, so
+cleanup lists the directory (`OS.FIRSTFILE`), removes each entry, contents before their
+directory, then the directory. Removals past a failure go on; the manual commands name each entry
+left, then the `RMDIR`.
+
 ## t32probe
 
 `registry` declares the catalogue once (ids, tiers, prerequisites, deadlines, `--list`, the README

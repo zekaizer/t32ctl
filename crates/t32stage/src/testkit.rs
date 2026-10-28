@@ -196,6 +196,15 @@ pub fn dir_removed(s: Script, path: &str) -> Script {
         .reply_bool(false)
 }
 
+/// A cleanup step that finds the run directory `path`, lists it empty and removes it.
+pub fn run_dir_removed(s: Script, path: &str) -> Script {
+    let check = format!("OS.DIR(\"{path}\")");
+    let s = s.expect_fn(&check).reply_bool(true);
+    let s = s.expect_fn(&format!("OS.FIRSTFILE(\"{path}\\*\")")).reply_text(&format!("{path}\\."));
+    let s = s.expect_fn("OS.NEXTFILE()").reply_text(&format!("{path}\\..")).expect_fn("OS.NEXTFILE()").reply_text("");
+    s.expect_cmd(&format!("RMDIR \"{path}\"")).reply_ok().expect_fn(&check).reply_bool(false)
+}
+
 /// Cleanup after `fetched(files)`, newest first: each file, the directories that held them, the
 /// archive's `.gz` (already gone) and the archive, then the output directory.
 pub fn outputs_removed(mut s: Script, files: &[(&str, &[u8])]) -> Script {
@@ -213,7 +222,7 @@ pub fn outputs_removed(mut s: Script, files: &[(&str, &[u8])]) -> Script {
         s = file_absent(s, &format!("{dir}.tar.gz"));
         s = file_removed(s, &format!("{dir}.tar"));
     }
-    dir_removed(s, &dir)
+    run_dir_removed(s, &dir)
 }
 
 /// `Stage::close` at its end: the PRACTICE unwind when `unwind` (it finds an empty stack), then

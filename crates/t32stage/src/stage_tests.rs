@@ -7,7 +7,7 @@ use t32rcl::{
 use super::*;
 use crate::{
     bundle::BundleLimits,
-    testkit::{closed, executed, get, idle, opened, outputs_removed, read_back, set, started_do},
+    testkit::{closed, executed, get, idle, opened, outputs_removed, read_back, run_dir_removed, set, started_do},
     testutil::{session_with, temp_dir},
 };
 
@@ -197,12 +197,13 @@ fn fetch_after_listing(tag: &str, names: &[&str]) -> Result<Outputs, StageError>
     for name in ["..", names.first().copied().unwrap_or_default()] {
         s = s.expect_fn("OS.NEXTFILE()").reply_text(name);
     }
-    if !names.is_empty() {
+    if names.is_empty() {
+        s = run_dir_removed(s, out);
+    } else {
         s = s.expect_cmd(&format!("TAR \"C:\\T\\t32ctl\\out-tok.tar\" \"{out}\\*\"")).reply_error(90, "refused");
         s = s.expect_fn("OS.FILE.readable(\"C:\\T\\t32ctl\\out-tok.tar\")").reply_bool(false);
+        s = emptied(s, out, names);
     }
-    s = s.expect_fn(&format!("OS.DIR(\"{out}\")")).reply_bool(true).expect_cmd(&format!("RMDIR \"{out}\"")).reply_ok();
-    s = s.expect_fn(&format!("OS.DIR(\"{out}\")")).reply_bool(false);
     s = closed(s, false);
     let mut session = session_with(vec![Ok(s)], |_| {});
 
@@ -224,11 +225,57 @@ fn fetch_after_listing(tag: &str, names: &[&str]) -> Result<Outputs, StageError>
     fetched
 }
 
+/// Cleanup of the run directory `out` that still holds the files `names`: listed, each removed,
+/// then the directory.
+fn emptied(mut s: Script, out: &str, names: &[&str]) -> Script {
+    s = s.expect_fn(&format!("OS.DIR(\"{out}\")")).reply_bool(true);
+    s = s.expect_fn(&format!("OS.FIRSTFILE(\"{out}\\*\")")).reply_text(&format!("{out}\\."));
+    for n in [".."].iter().chain(names).chain(&[""]) {
+        s = s.expect_fn("OS.NEXTFILE()").reply_text(n);
+    }
+    for n in names {
+        let file = format!("{out}\\{n}");
+        s = s.expect_fn(&format!("OS.DIR(\"{file}\")")).reply_bool(false);
+        s = crate::testkit::file_removed(s, &file);
+    }
+    s = s.expect_cmd(&format!("RMDIR \"{out}\"")).reply_ok();
+    s.expect_fn(&format!("OS.DIR(\"{out}\")")).reply_bool(false)
+}
+
 #[test]
 fn an_output_directory_with_only_dot_entries_is_empty_and_never_archived() {
     let outputs = fetch_after_listing("stage-out-empty", &[]).unwrap();
     assert!(outputs.files.is_empty());
     assert!(matches!(fetch_after_listing("stage-out-file", &["a.txt"]), Err(StageError::Rcl(_))));
+}
+
+#[test]
+fn a_run_directory_the_script_wrote_into_is_emptied_at_close_when_no_fetch_ran() {
+    let b = bundle();
+    let out = crate::testkit::out_dir();
+    let mut s = crate::testkit::cached(opened(Script::new().attach()), &b.key());
+    s = crate::testkit::run_started(s, &b.key(), "main.cmm", "", true, &[]);
+    s = read_back(crate::testkit::done(s), "", "", "", "");
+    s = closed(emptied(s, &out, &["verify.log"]), false);
+    let mut session = session_with(vec![Ok(s)], |_| {});
+
+    let cfg = config("stage-run-dir");
+    let state_dir = cfg.state_dir.clone();
+    let mut st = stage(&mut session, cfg);
+    let snap = st.ensure_snapshot(&mut session, &b).unwrap();
+    let req = RunRequest {
+        entry: RelPath::new("main.cmm").unwrap(),
+        args: vec![],
+        timeout: Duration::from_secs(5),
+        collect_outputs: true,
+        params: vec![],
+    };
+    st.run(&mut session, &snap, &req).unwrap();
+    let journal = std::fs::read_to_string(state_dir.join("journal/stage-run-dir.undo")).unwrap();
+    assert!(journal.lines().any(|l| l == "rm-run-dir\tLC:\\T\\t32ctl\tout-tok"), "{journal}");
+    let cleanup = st.close(&mut session);
+    assert!(cleanup.is_clean(), "{cleanup:?}");
+    let _ = std::fs::remove_dir_all(state_dir);
 }
 
 /// Open, cached snapshot, then the run request up to and including `DO` of the runner.

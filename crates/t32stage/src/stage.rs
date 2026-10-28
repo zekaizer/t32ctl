@@ -273,7 +273,7 @@ impl Stage {
         let out = if req.collect_outputs {
             let out = self.path(&format!("out-{token}"))?;
             let ledger = &mut self.ledger;
-            transfer::ensure_dir(session, &out, |p| ledger.push(Undo::RemoveDir(p.clone())))?;
+            transfer::ensure_dir(session, &out, |p| ledger.push(Undo::RemoveRunDir(p.clone())))?;
             session.macro_set(&Macro::Out.name(), &out.text())?;
             Some(out)
         } else {
