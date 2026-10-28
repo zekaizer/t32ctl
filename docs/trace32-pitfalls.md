@@ -78,8 +78,9 @@ gives `a.b.bak`, and `k.cmm` and `k.bin` share `k.bak` (`fs-semantics`: `bak_nam
 `bak_collide`). The backup holds the old content. `RM` before the write leaves no backup, and
 `/Append` makes none. A leftover `.bak` makes the directory's `RMDIR` fail.
 
-Rule: remove a file before writing it again, and include the `.bak` names in cleanup where a
-rewrite cannot be avoided.
+Rule: probes write each file once under a unique name. Where Stage rewrites a snapshot (a
+repair), it registers the predicted `.bak` names for cleanup. `RM` before the write is the
+alternative where a rewrite is routine.
 
 ### File commands are not idempotent
 
