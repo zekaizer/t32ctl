@@ -10,7 +10,7 @@ resolver = "3"
 members = ["crates/t32rcl", "crates/t32stage", "crates/t32probe", "crates/t32ctl"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # std::fs::File::try_lock (VM: lease, journal lock) is stable from 1.89.
 rust-version = "1.89"

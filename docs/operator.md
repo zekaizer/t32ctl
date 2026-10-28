@@ -75,7 +75,7 @@ Asking for an opt-in probe without its flag is a usage error before anything is 
 ## Reading the report
 
 ```text
-t32probe 0.1.0 PowerView build=172803/base 172138 ~DVD 02/2025+ 127.0.0.1:20000 run=a41c wsl=nat
+t32probe 0.2.0 PowerView build=172803/base 172138 ~DVD 02/2025+ 127.0.0.1:20000 run=a41c wsl=nat
 connect      PASS  tcp=0.40ms attach=3.10ms first=0.35ms host=127.0.0.1
 version      PASS  build=172803 base=172138 dvd=02/2025+ min=ok nrusedcons=y elfunzip=y clearvm=?
 reconnect    PASS  timeout=300.12ms kind=idle poisoned=ok revive=4.20ms first_call=2.98s

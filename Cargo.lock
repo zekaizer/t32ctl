@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "t32ctl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "serde",
@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "t32probe"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "flate2",
@@ -444,11 +444,11 @@ dependencies = [
 
 [[package]]
 name = "t32rcl"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "t32stage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "sha2",
