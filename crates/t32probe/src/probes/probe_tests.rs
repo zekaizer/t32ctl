@@ -315,6 +315,17 @@ fn a_corrupt_gzip_powerview_loads_counts_as_accepted() {
 }
 
 #[test]
+fn the_gzip_ceiling_unzips_under_a_data_budget() {
+    use super::storage::unzip_timed;
+    let f = t32stage::StageRoot::from_ptd("C:\\T").unwrap().path(t32stage::RelPath::new("z.gz").unwrap());
+    let load = "Data.LOAD.Binary \"C:\\T\\t32ctl\\z.gz\" VM:0x02000000 /UNZIP";
+    let s = Script::new().attach().expect_cmd(load).silence(Duration::from_secs(5)).reply_ok();
+    let mut session = connect(vec![Ok(s.expect_cmd(load).reply_error(90, "out of memory"))]);
+    assert_eq!(unzip_timed(&mut session, &f, 0x0200_0000, 4 << 20).unwrap(), (true, Duration::from_secs(5)));
+    assert!(!unzip_timed(&mut session, &f, 0x0200_0000, 4 << 20).unwrap().0);
+}
+
+#[test]
 fn the_macro_probe_falls_back_to_the_ampersand_spelling_and_keeps_it() {
     let set = |name: &str, value: &str| Request::MacroSet { name: name.into(), value: value.into() };
     let get = |name: &str| Request::MacroGet { name: name.into() };

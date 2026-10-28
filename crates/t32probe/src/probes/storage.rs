@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Probes about files and `VM:`: tempdir, vm-rw, vm-file, gzip, tar-download.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use t32rcl::{Session, Tuning};
 use t32stage::{
@@ -262,7 +262,7 @@ pub fn vm_file(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
 }
 
 /// gzip upload and `/UNZIP`: two payload kinds, four corruptions that must be refused, and the
-/// largest decompressed size up to `--gzip-max-mib`.
+/// largest decompressed size up to `--gzip-max-mib`, each step timed under a data-sized budget.
 pub fn gzip(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let max = ctx.env.cfg.gzip_max.max(MIB);
     let regions = scratch_regions(ctx, &[MIB + 4096, max])?;
@@ -311,25 +311,48 @@ pub fn gzip(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
 
     let mut ceiling = 0u32;
     let mut size = MIB;
+    let mut stop = "window";
     while size <= max {
         let gz = transfer::gzip(&vec![0u8; size as usize]);
         let f = ctx.staged_file(&format!("zeros-{}m.gz", size / MIB))?;
         transfer::put_file(ctx.session, &a, &gz, &f)?;
         let tail = b.slice(size - 16, 16).expect("inside region B");
         ctx.session.mem_write(&tail.addr(), &[0xA5; 16])?;
-        if !unzip_accepted(ctx.session, &f, b.start())? || ctx.session.mem_read(&tail.addr(), 16)? != [0u8; 16] {
+        let (taken, took) = unzip_timed(ctx.session, &f, b.start(), size)?;
+        ctx.measure(&format!("zeros_{}m_unzip", size / MIB), Value::Seconds(took.as_secs_f64()));
+        if !taken {
+            stop = "refused";
+            break;
+        }
+        if ctx.session.mem_read(&tail.addr(), 16)? != [0u8; 16] {
+            stop = "mismatch";
             break;
         }
         ceiling = size;
         size *= 2;
     }
     ctx.headline("unzip_max", Value::Bytes(ceiling.into()));
+    ctx.text("unzip_stop", stop);
     ctx.check(accepted.is_empty(), || format!("/UNZIP accepted corrupt gzip: {}", accepted.join(", ")))
 }
 
 /// `Data.LOAD.Binary <f> VM:<at> /UNZIP`: `true` when PowerView took it, `false` when it refused.
 pub(crate) fn unzip_accepted(session: &mut Session, f: &StagePath, at: u32) -> Result<bool, ProbeFail> {
     Ok(soft(session.cmd(&cmd::data_load_binary(f, at, true)))?.is_some())
+}
+
+/// `/UNZIP` of a file that inflates to `len` bytes under `data_budget(len)`: whether PowerView
+/// took it, and how long it took on the session clock.
+pub(crate) fn unzip_timed(
+    session: &mut Session,
+    f: &StagePath,
+    at: u32,
+    len: u32,
+) -> Result<(bool, Duration), ProbeFail> {
+    let budget = transfer::data_budget(session, len.into());
+    let t = session.now();
+    let taken = soft(session.with_budget(budget).cmd(&cmd::data_load_binary(f, at, true)))?.is_some();
+    Ok((taken, session.now().saturating_duration_since(t)))
 }
 
 /// `rejected(n/n)` when every corrupt stream was refused, else `ACCEPTED(<names>)`.
