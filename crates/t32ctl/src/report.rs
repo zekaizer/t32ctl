@@ -202,6 +202,7 @@ pub enum Body {
     Regs(RegsBody),
     Eval(EvalBody),
     Cmd(CmdBody),
+    Procs(ProcsBody),
 }
 
 impl Body {
@@ -209,7 +210,7 @@ impl Body {
     pub fn outcome(&self) -> Exit {
         match self {
             Body::Mem(MemBody { data: MemData::Stopped(_), .. }) => Exit::Outcome,
-            Body::Status(_) | Body::Mem(_) | Body::Regs(_) | Body::Eval(_) | Body::Cmd(_) => Exit::Ok,
+            Body::Status(_) | Body::Mem(_) | Body::Regs(_) | Body::Eval(_) | Body::Cmd(_) | Body::Procs(_) => Exit::Ok,
         }
     }
 
@@ -220,6 +221,7 @@ impl Body {
             Body::Regs(r) => r.lines(),
             Body::Eval(e) => vec![e.to_string()],
             Body::Cmd(_) => vec!["cmd: done".into()],
+            Body::Procs(p) => p.lines(),
         }
     }
 }
@@ -621,6 +623,136 @@ impl fmt::Display for ConfigView {
             write!(f, " ({a})")?;
         }
         write!(f, " port={}", self.port)
+    }
+}
+
+/// `read procs`: the profile's procedures, or the one named.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProcsBody {
+    pub profile: ProfileRef,
+    pub procs: Vec<ProcView>,
+    /// A name was asked for: the declaration in full instead of the table.
+    #[serde(skip)]
+    pub one: bool,
+}
+
+/// The profile directory as printed, its hash (all 64 digits) and its file count.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProfileRef {
+    pub dir: String,
+    pub hash: String,
+    pub files: usize,
+}
+
+impl fmt::Display for ProfileRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} profile={}", self.dir, &self.hash[..self.hash.len().min(8)])
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProcView {
+    pub name: String,
+    /// The effective grade: the word the caller types.
+    pub grade: &'static str,
+    pub timeout_ms: u64,
+    pub about: String,
+    pub effects: Vec<&'static str>,
+    pub outputs: Vec<String>,
+    pub params: Vec<ParamView>,
+    #[serde(skip)]
+    pub usage: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ParamView {
+    pub name: String,
+    pub flag: String,
+    #[serde(rename = "type")]
+    pub ty: &'static str,
+    pub about: String,
+    /// In the caller's notation; `{build}` stays literal.
+    pub default: Option<String>,
+    pub values: Vec<String>,
+    pub min: Option<i64>,
+    pub max: Option<i64>,
+    pub required: bool,
+}
+
+impl ParamView {
+    /// The about text with the enum values, the bounds, and the default or `(required)`.
+    fn described(&self) -> String {
+        let mut s = self.about.clone();
+        if !self.values.is_empty() {
+            s.push_str(&format!(": {}", self.values.join(", ")));
+        }
+        match (self.min, self.max) {
+            (Some(lo), Some(hi)) => s.push_str(&format!(", {lo} to {hi}")),
+            (Some(lo), None) => s.push_str(&format!(", at least {lo}")),
+            (None, Some(hi)) => s.push_str(&format!(", at most {hi}")),
+            (None, None) => {}
+        }
+        match &self.default {
+            Some(d) => s.push_str(&format!(" (default: {d})")),
+            None => s.push_str(" (required)"),
+        }
+        s
+    }
+}
+
+/// `none` for an empty list.
+fn listed(items: &[impl AsRef<str>]) -> String {
+    if items.is_empty() { "none".into() } else { items.iter().map(AsRef::as_ref).collect::<Vec<_>>().join(", ") }
+}
+
+impl ProcsBody {
+    fn lines(&self) -> Vec<String> {
+        match (self.one, self.procs.first()) {
+            (true, Some(p)) => self.declaration(p),
+            _ => self.table(),
+        }
+    }
+
+    fn table(&self) -> Vec<String> {
+        if self.procs.is_empty() {
+            return vec![format!("no procedures in {}", self.profile)];
+        }
+        let footer = format!("{}; parameters: t32ctl read procs NAME", self.profile);
+        let rows: Vec<[String; 4]> = std::iter::once(["proc", "grade", "timeout", "about"].map(String::from))
+            .chain(
+                self.procs
+                    .iter()
+                    .map(|p| [p.name.clone(), p.grade.to_string(), display_ms(p.timeout_ms), p.about.clone()]),
+            )
+            .collect();
+        let width = |i: usize| rows.iter().map(|r| r[i].len()).max().unwrap_or(0) + 2;
+        let (w0, w1, w2) = (width(0), width(1), width(2));
+        let mut v: Vec<String> =
+            rows.iter().map(|r| format!("{:<w0$}{:<w1$}{:<w2$}{}", r[0], r[1], r[2], r[3])).collect();
+        v.push(footer);
+        v
+    }
+
+    fn declaration(&self, p: &ProcView) -> Vec<String> {
+        let label = |l: &str, rest: String| format!("{l:<8} {rest}");
+        let mut v = vec![
+            label("proc", format!("{}  grade {}  timeout {}", p.name, p.grade, display_ms(p.timeout_ms))),
+            label("about", p.about.clone()),
+        ];
+        let flags: Vec<String> = p.params.iter().map(|a| format!("{} {}", a.flag, a.ty.to_ascii_uppercase())).collect();
+        let w = flags.iter().map(String::len).max().unwrap_or(0) + 2;
+        if p.params.is_empty() {
+            v.push(label("params", "none".into()));
+        }
+        for (i, (flag, a)) in flags.iter().zip(&p.params).enumerate() {
+            let rest = format!("{flag:<w$}{}", a.described());
+            v.push(if i == 0 { label("params", rest) } else { format!("{:9}{rest}", "") });
+        }
+        v.push(label("outputs", listed(&p.outputs)));
+        v.push(label("effects", listed(&p.effects)));
+        v.push(label("profile", self.profile.to_string()));
+        v.push(label("usage", p.usage.clone()));
+        v
     }
 }
 

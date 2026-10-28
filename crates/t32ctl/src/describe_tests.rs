@@ -24,10 +24,12 @@ fn the_schema_lists_every_leaf_grade_tag_and_exit() {
     );
     assert_eq!(status["args"][0]["flag"], "--full");
     assert_eq!(status["args"][0]["values"], serde_json::json!([]));
-    let describe = &doc["commands"][3];
+    let describe = &doc["commands"][4];
     assert_eq!(doc["commands"][1]["usage"], "t32ctl read mem LOC [--len SIZE] [--width 1|2|4|8] [--to NAME]");
     assert_eq!(doc["commands"][2]["usage"], "t32ctl read reg [NAME...]");
     assert_eq!(doc["commands"][2]["args"][0]["multiple"], true);
+    assert_eq!(doc["commands"][3]["usage"], "t32ctl read procs [NAME]");
+    assert_eq!(doc["commands"][3]["connects"], false);
     assert_eq!(describe["usage"], "t32ctl read describe [--format json|skill|permissions]");
     assert_eq!(strings(&describe["args"][0]["values"]), ["json", "skill", "permissions"]);
     assert_eq!(describe["connects"], false);
@@ -82,6 +84,7 @@ fn the_skill_blocks_are_tables_between_their_markers() {
          file in the output directory | `--to`: the transfer, bounded |\n\
          | `t32ctl read reg [NAME...]` | Registers of PowerView's selected core; no name: the general-purpose set | - \
          |\n\
+         | `t32ctl read procs [NAME]` | Board procedures, grade, parameters, `profile=<hash>` | no connection |\n\
          | `t32ctl read describe [--format json\\|skill\\|permissions]` | Static command schema | no connection |\n\
          | `t32ctl raw cmd 'TEXT'` | One PRACTICE command | the command |\n\
          | `t32ctl raw eval 'EXPR'` | One PRACTICE function | the function |\n\

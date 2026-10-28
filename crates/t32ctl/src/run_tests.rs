@@ -846,3 +846,123 @@ fn a_transfer_stopped_by_its_bound_is_exit_1_and_leaves_no_file() {
     assert!(out.text.contains("error[refused]: read of A:0x40000000:"), "{}", out.text);
     assert_eq!(run_dirs(&w), Vec::<PathBuf>::new());
 }
+
+/// `PROFILE` with the contract's procedures (without `lease`) and their scripts.
+const PROCS: &str = "\n[proc.attach]\nabout = \"Connect to the A53 cluster without resetting it\"\n\
+    script = \"attach.cmm\"\ngrade = \"run\"\ntimeout = \"30s\"\neffects = [\"debugger-config\"]\n\
+    \n[proc.selftest]\nabout = \"Read clock and PMIC status into selftest.txt\"\nscript = \"selftest.cmm\"\n\
+    grade = \"read\"\ntimeout = \"30s\"\neffects = []\noutputs = [\"selftest.txt\"]\n\
+    \n[proc.flash]\nabout = \"Write an image into eMMC and verify it by readback\"\nscript = \"flash_emmc.cmm\"\n\
+    grade = \"burn\"\ntimeout = \"45m\"\neffects = [\"flash\", \"target-reset\", \"target-memory\", \"target-registers\"]\n\
+    outputs = [\"verify.log\"]\n\
+    \n[proc.flash.params.image]\ntype = \"file\"\nabout = \"image to write\"\ndefault = \"{build}/zephyr/zephyr.bin\"\n\
+    \n[proc.flash.params.part]\ntype = \"enum\"\nvalues = [\"boot0\", \"boot1\", \"user\"]\n\
+    about = \"eMMC hardware partition\"\ndefault = \"user\"\n\
+    \n[proc.flash.params.offset]\ntype = \"integer\"\nabout = \"byte offset inside the partition\"\nmin = 0\ndefault = 0\n";
+
+fn with_procs(tag: &str) -> World {
+    let w = World::new(tag);
+    w.write("ws/board/support/t32ctl/profile.toml", &format!("{PROFILE}{PROCS}"));
+    for script in ["attach.cmm", "selftest.cmm", "flash_emmc.cmm"] {
+        w.write(&format!("ws/board/support/t32ctl/{script}"), "ENDDO\n");
+    }
+    w
+}
+
+fn profile_hash(w: &World) -> String {
+    profile::hash(&profile::walk(&w.0.join("ws/board/support/t32ctl")).unwrap()).to_string()
+}
+
+#[test]
+fn read_procs_lists_the_procedures_without_connecting() {
+    let w = with_procs("procs");
+    let hash = profile_hash(&w);
+    let out = call("t32ctl read procs", &deps(w.env(), vec![]));
+    assert_eq!(
+        out.text,
+        format!(
+            "proc      grade  timeout  about\n\
+             attach    run    30s      Connect to the A53 cluster without resetting it\n\
+             selftest  read   30s      Read clock and PMIC status into selftest.txt\n\
+             flash     burn   45m      Write an image into eMMC and verify it by readback\n\
+             board/support/t32ctl/ profile={}; parameters: t32ctl read procs NAME\n",
+            &hash[..8]
+        )
+    );
+    assert_eq!(out.code, 0);
+    assert!(!w.pv_dir().exists(), "no state directory: nothing connects");
+    let none = World::new("procs-none");
+    let out = call("t32ctl read procs", &deps(none.env(), vec![]));
+    assert_eq!(out.text, format!("no procedures in board/support/t32ctl/ profile={}\n", &profile_hash(&none)[..8]));
+}
+
+#[test]
+fn read_procs_name_prints_the_declaration_and_its_usage() {
+    let w = with_procs("procs-one");
+    let hash = profile_hash(&w);
+    let out = call("t32ctl read procs flash", &deps(w.env(), vec![]));
+    assert_eq!(
+        out.text,
+        format!(
+            "proc     flash  grade burn  timeout 45m\n\
+             about    Write an image into eMMC and verify it by readback\n\
+             params   --image FILE      image to write (default: {{build}}/zephyr/zephyr.bin)\n         \
+             --part ENUM       eMMC hardware partition: boot0, boot1, user (default: user)\n         \
+             --offset INTEGER  byte offset inside the partition, at least 0 (default: 0)\n\
+             outputs  verify.log\n\
+             effects  flash, target-reset, target-memory, target-registers\n\
+             profile  board/support/t32ctl/ profile={}\n\
+             usage    t32ctl burn proc flash [--image FILE] [--part boot0|boot1|user] [--offset N]\n",
+            &hash[..8]
+        )
+    );
+    let out = call("t32ctl read procs attach", &deps(w.env(), vec![]));
+    let lines: Vec<&str> = out.text.lines().collect();
+    assert_eq!(lines[2..5], ["params   none", "outputs  none", "effects  debugger-config"]);
+    assert_eq!(lines[6], "usage    t32ctl run proc attach");
+}
+
+#[test]
+fn read_procs_json_carries_every_declared_field() {
+    let w = with_procs("procs-json");
+    let out = call("t32ctl read procs flash --json", &deps(w.env(), vec![]));
+    let v: Value = serde_json::from_str(&out.text).unwrap();
+    assert_eq!(v["header"], Value::Null);
+    let files = profile::walk(&w.0.join("ws/board/support/t32ctl")).unwrap().len();
+    assert_eq!(
+        v["body"]["profile"],
+        serde_json::json!({"dir": "board/support/t32ctl/", "hash": profile_hash(&w), "files": files})
+    );
+    assert_eq!(
+        v["body"]["procs"][0],
+        serde_json::json!({
+            "name": "flash", "grade": "burn", "timeout_ms": 2_700_000,
+            "about": "Write an image into eMMC and verify it by readback",
+            "effects": ["flash", "target-reset", "target-memory", "target-registers"], "outputs": ["verify.log"],
+            "params": [
+                {"name": "image", "flag": "--image", "type": "file", "about": "image to write",
+                 "default": "{build}/zephyr/zephyr.bin", "values": [], "min": null, "max": null, "required": false},
+                {"name": "part", "flag": "--part", "type": "enum", "about": "eMMC hardware partition",
+                 "default": "user", "values": ["boot0", "boot1", "user"], "min": null, "max": null, "required": false},
+                {"name": "offset", "flag": "--offset", "type": "integer", "about": "byte offset inside the partition",
+                 "default": "0", "values": [], "min": 0, "max": null, "required": false},
+            ]
+        })
+    );
+    let out = call("t32ctl read procs --json", &deps(w.env(), vec![]));
+    let v: Value = serde_json::from_str(&out.text).unwrap();
+    let names: Vec<&str> = v["body"]["procs"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["attach", "selftest", "flash"]);
+}
+
+#[test]
+fn an_undeclared_procedure_is_unknown_proc_and_names_the_declared_ones() {
+    let w = with_procs("procs-unknown");
+    let out = call("t32ctl read procs flsh", &deps(w.env(), vec![]));
+    assert_eq!(
+        out.text,
+        "error[unknown-proc]: the board profile declares no procedure \"flsh\"; t32ctl read procs lists them\n  \
+         declared: attach, selftest, flash\n"
+    );
+    assert_eq!(out.code, 2);
+}

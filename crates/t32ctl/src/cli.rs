@@ -62,6 +62,8 @@ pub enum ReadLeaf {
     Mem(ReadMem),
     /// Registers of PowerView's selected core; no name: the general-purpose set
     Reg(ReadReg),
+    /// Board procedures, grade, parameters, `profile=<hash>`
+    Procs(ReadProcs),
     /// Static command schema
     Describe(ReadDescribe),
 }
@@ -117,6 +119,13 @@ pub struct ReadReg {
     /// Register names as PowerView spells them, in any case: `x0`, `sp`, `esr_el1`
     #[arg(value_name = "NAME", value_parser = reg_name)]
     pub names: Vec<RegName>,
+}
+
+#[derive(Debug, Args)]
+pub struct ReadProcs {
+    /// A procedure: its parameters, outputs, effects and usage
+    #[arg(value_name = "NAME")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -217,6 +226,8 @@ leaf!(Read, ReadMem, path: ["read", "mem"], waits: "`--to`: the transfer, bounde
                  "t32ctl read mem 0x40000000 --len 64M --to ddr.bin"]);
 leaf!(Read, ReadReg, path: ["read", "reg"], waits: "-", connects: true,
       examples: ["t32ctl read reg", "t32ctl read reg x0 sp", "t32ctl read reg esr_el1 far_el1 --json"]);
+leaf!(Read, ReadProcs, path: ["read", "procs"], waits: "no connection", connects: false,
+      examples: ["t32ctl read procs", "t32ctl read procs flash", "t32ctl read procs --json"]);
 leaf!(Read, ReadDescribe, path: ["read", "describe"], waits: "no connection", connects: false,
       examples: ["t32ctl read describe", "t32ctl read describe --format permissions"]);
 
@@ -229,6 +240,7 @@ leaves! {
     (Read, ReadStatus),
     (Read, ReadMem),
     (Read, ReadReg),
+    (Read, ReadProcs),
     (Read, ReadDescribe),
     (Raw, RawCommand),
     (Raw, RawEval),
@@ -243,6 +255,7 @@ impl Cli {
                 ReadLeaf::Status(_) => &<ReadStatus as Leaf<Read>>::SPEC,
                 ReadLeaf::Mem(_) => &<ReadMem as Leaf<Read>>::SPEC,
                 ReadLeaf::Reg(_) => &<ReadReg as Leaf<Read>>::SPEC,
+                ReadLeaf::Procs(_) => &<ReadProcs as Leaf<Read>>::SPEC,
                 ReadLeaf::Describe(_) => &<ReadDescribe as Leaf<Read>>::SPEC,
             },
             GradeCmd::Raw(g) => match g.leaf {

@@ -15,6 +15,7 @@ pub mod error;
 pub mod grade;
 pub mod notation;
 pub mod out;
+pub mod procs;
 pub mod profile;
 pub mod raw;
 pub mod read;
@@ -80,6 +81,7 @@ pub fn run(argv: &[OsString], deps: &Deps) -> Output {
                 prepared::<Read, _, _>(a, &g.globals, deps, CpuCheck::Refuse, read::mem_prepare, read::mem)
             }
             ReadLeaf::Reg(a) => connected::<Read, _>(a, &g.globals, deps, CpuCheck::Refuse, read::reg),
+            ReadLeaf::Procs(a) => offline::<Read, _>(a, &g.globals, deps, procs::list),
             ReadLeaf::Describe(a) => document::<Read, _>(a, |a| describe::render(a.format)),
         },
         GradeCmd::Raw(g) => match &g.leaf {
@@ -103,6 +105,21 @@ fn render(report: &Report, json: bool) -> Output {
 /// A leaf whose output is a document, not a report: it ignores `--json` and connects nowhere.
 fn document<G: Grade, L: Leaf<G>>(args: &L, body: impl FnOnce(&L) -> String) -> Output {
     Output { text: body(args), code: 0 }
+}
+
+/// A leaf that reads the profile and connects nowhere.
+fn offline<G: Grade, L: Leaf<G>>(
+    args: &L,
+    globals: &Globals,
+    deps: &Deps,
+    body: fn(&L, &Setup<'_>) -> Result<Body, CtlError>,
+) -> Output {
+    let mut report = Report::new(L::SPEC.path.join(" "));
+    match Setup::resolve(&deps.env, globals).and_then(|setup| body(args, &setup)) {
+        Ok(b) => report.body = Some(b),
+        Err(e) => report.error = Some(e),
+    }
+    render(&report, globals.json)
 }
 
 /// What every connecting call resolves before it connects.

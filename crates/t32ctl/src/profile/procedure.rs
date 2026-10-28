@@ -95,6 +95,17 @@ impl ProcDecl {
     pub fn param_by_flag(&self, flag: &str) -> Option<&ParamDecl> {
         self.params.iter().find(|p| p.flag() == flag)
     }
+
+    /// `t32ctl <grade> proc <name>` and each parameter, optional ones in brackets:
+    /// `[--part boot0|boot1|user]`.
+    pub fn usage(&self, grade: GradeId) -> String {
+        let mut words = vec![format!("t32ctl {} proc {}", grade.name(), self.name)];
+        for p in &self.params {
+            let word = format!("{} {}", p.flag(), p.ty.placeholder());
+            words.push(if p.required() { word } else { format!("[{word}]") });
+        }
+        words.join(" ")
+    }
 }
 
 /// One `[proc.<name>.params.<param>]`.

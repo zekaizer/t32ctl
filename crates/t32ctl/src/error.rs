@@ -83,6 +83,7 @@ pub enum ErrorKind {
     Notation,
     MemoryPolicy,
     Refused,
+    UnknownProc,
     NotHalted,
     TargetDown,
     RclLocked,
@@ -100,11 +101,12 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// In the order of the error-tag table.
-    pub const ALL: [ErrorKind; 17] = [
+    pub const ALL: [ErrorKind; 18] = [
         ErrorKind::Usage,
         ErrorKind::Notation,
         ErrorKind::MemoryPolicy,
         ErrorKind::Refused,
+        ErrorKind::UnknownProc,
         ErrorKind::NotHalted,
         ErrorKind::TargetDown,
         ErrorKind::RclLocked,
@@ -126,6 +128,7 @@ impl ErrorKind {
             ErrorKind::Notation => "notation",
             ErrorKind::MemoryPolicy => "memory-policy",
             ErrorKind::Refused => "refused",
+            ErrorKind::UnknownProc => "unknown-proc",
             ErrorKind::NotHalted => "not-halted",
             ErrorKind::TargetDown => "target-down",
             ErrorKind::RclLocked => "rcl-locked",
@@ -144,7 +147,11 @@ impl ErrorKind {
 
     pub fn exit(self) -> Exit {
         match self {
-            ErrorKind::Usage | ErrorKind::Notation | ErrorKind::MemoryPolicy | ErrorKind::Refused => Exit::Fix,
+            ErrorKind::Usage
+            | ErrorKind::Notation
+            | ErrorKind::MemoryPolicy
+            | ErrorKind::Refused
+            | ErrorKind::UnknownProc => Exit::Fix,
             ErrorKind::NotHalted | ErrorKind::TargetDown => Exit::State,
             ErrorKind::RclLocked => Exit::Wait,
             ErrorKind::Unreachable
@@ -172,6 +179,9 @@ impl ErrorKind {
                  access class is not accepted; the message names the first refused byte."
             }
             ErrorKind::Refused => "PowerView refused the command, function, or memory read; its message is shown.",
+            ErrorKind::UnknownProc => {
+                "The board profile declares no procedure by that name; `t32ctl read procs` lists them."
+            }
             ErrorKind::NotHalted => {
                 "The command needs a stopped target, or every touched region must declare `running = true`."
             }
