@@ -14,7 +14,8 @@ t32ctl, t32probe  ->  t32stage  ->  t32rcl  ->  std
   It depends on `std` only, so any tool can reuse it.
 - `t32stage` is the only place that formats PRACTICE command text (`practice`), defines the
   bundle format, the runner script, and the cleanup ledger.
-- `t32probe` measures. `t32ctl` is the Phase 1 CLI; in this PR it has `status` only.
+- `t32probe` measures. `t32ctl` is the Phase 1 CLI: a library with a thin binary, so tests run
+  whole calls in-process. It implements the MVP subset of the contract.
 
 ## t32rcl: one request in flight
 
@@ -141,8 +142,8 @@ literal sessions in [cli-sessions.md](cli-sessions.md), and the decisions in
 `t32rcl`: a command body receives a `Ctx<G>` typed by its grade and never sees a `Session` or a
 `Stage`. The per-PowerView state directory, `pv/<host>-<port>/` keyed by the endpoint as
 configured, is passed to `t32stage` as its state directory, so journal replay and the `VM:` lease
-are per PowerView. `t32probe` must key its state directory by the same rule, or the two tools
-lock and journal different directories.
+are per PowerView. `t32probe` keys its default `--state-dir` by the same rule
+(`t32stage::pv_state_dir`), so the two tools lock and journal the same directory.
 
 `t32ctl` walks a board's profile directory itself: it skips hidden files and editor leftovers,
 refuses symlinks and special files, hashes the rest into the profile hash, and builds the bundle
@@ -152,14 +153,20 @@ The contract needs these additions below `t32ctl`. Where an addition relies on P
 behavior, its code is marked `ASSUMED(<probe>)` until a probe report confirms it, like the
 assumptions under [Open questions](#open-questions).
 
-| Addition | Crate | Assumed until |
+| Addition | Crate | Status |
 |---|---|---|
-| Debugger builders in `practice`: run, run to a location, step, halt, the return register after a step out, breakpoints with condition and count, on-chip watchpoints, register and variable writes, core select, address translation to physical, `Frame.view`, symbol and source-line queries, window printing with a printer restore undo, `Data.LOAD.Elf` with code | `t32stage` | `ASSUMED(run-control)`, which gains cases for step, breakpoint options and counts, software breakpoints in RAM, address translation, source lines, and printer routing |
-| Parameter macros `t32ctl_p_<name>`: validated dynamic names, set over EXP 2 with the `&` spelling before the run (no `GLOBAL`), cleared through `Undo::ClearMacros`, carried by `RunRequest` | `t32stage` | none: `macro-visibility` holds on build 168999 |
-| Sliced append upload: a file larger than the `VM:` window is saved slice by slice with `Data.SAVE.Binary /Append`, then size-checked | `t32stage` | `ASSUMED(vm-file)`, which gains an append case |
-| Result macros `t32ctl_rc` and `t32ctl_msg`: emptied over EXP 2 before a run, read after it; `0`, `0.` and `0x0` are zero, and an empty rc is success except for a `burn` procedure | `t32stage` | none: `macro-visibility` and `macro-return` hold on build 168999 |
-| An instance marker macro; a missing marker reads as unknown, because `PMACRO.RESet` deletes it as well as a restart | `t32stage` | `ASSUMED(macro)` |
-| One per-PowerView state directory rule, `pv/<host>-<port>/` with the host as configured, beside `default_state_dir()`; `t32probe` uses it as its default `--state-dir` | `t32stage`, `t32probe` | none: no PowerView behavior |
+| Read builders in `practice`: `Register(<name>)` with a validated `RegName`, `CORE()`, `CORE.NUMBER()`, `SYStem.CPU()`, and `MMU.PHYSICAL(<class>:0x...)` for address translation | `t32stage` | done; `MMU.PHYSICAL` is `ASSUMED(target-read)` |
+| An access width in the memory address object (`WI` and a u16 after the access class, as pyrcl serializes it), so an `mmio` read uses its region's width in one bulk read | `t32rcl` | done; PowerView honoring it is `ASSUMED(target-read)` |
+| Parameter macros `t32ctl_p_<name>`: validated dynamic names, set over EXP 2 with the `&` spelling before the run (no `GLOBAL`), cleared through `Undo::ClearMacros`, carried by `RunRequest` | `t32stage` | done; `macro-visibility` holds on build 168999 |
+| Runner v2: the entry script owns `&t32ctl_rc`; the runner writes nothing on the success path and flags a caught error in `&t32ctl_fail`, with the message in `&t32ctl_msg`; the token is the last write on both paths. `Stage` empties `Done`, `Fail`, `Rc`, `Msg`, and `Ret` over EXP 2 before the `DO`. `RUNNER_VERSION = 2` changes every bundle key once | `t32stage` | done; rerun `t32probe --only bundle` once on build 168999 to confirm v2 |
+| Result macros `t32ctl_rc` and `t32ctl_msg`, read after a run: `0`, `0.` and `0x0` are zero (`ScriptRc`), and an empty rc is success except for a `burn` procedure | `t32stage` | done; `macro-visibility` and `macro-return` hold on build 168999 |
+| Sliced append upload (`Stage::upload_file`): a local file goes to `in-<token>/` slice by slice through the `VM:` window, `Data.SAVE.Binary` for the first slice and `/Append` for the rest, then `OS.FILE.SIZE` must match | `t32stage` | done; `ASSUMED(fs-semantics)` until the append result is in the record |
+| Output listing before `TAR`: `OS.FIRSTFILE` and `OS.NEXTFILE`, dropping `.` and `..`; an empty output directory returns no files without `TAR`, which was never measured on an empty directory | `t32stage` | done |
+| Script arguments capped at 4 KiB, the PRACTICE macro limit | `t32stage` | done |
+| One per-PowerView state directory rule, `pv/<host>-<port>/` with the host as configured, beside `default_state_dir()`; the auto host candidates move from `t32probe` to `t32stage::host`; `t32probe` uses the rule for its default `--state-dir` | `t32stage`, `t32probe` | done; no PowerView behavior |
+| `testkit` feature: scripted stage conversations for `t32ctl`'s tests | `t32stage` | done; tests only |
+| Debugger builders in `practice`: run, run to a location, step, halt, the return register after a step out, breakpoints with condition and count, on-chip watchpoints, register and variable writes, core select, `Frame.view`, symbol and source-line queries, window printing with a printer restore undo, `Data.LOAD.Elf` with code | `t32stage` | planned; `ASSUMED(run-control)`, which gains cases for step, breakpoint options and counts, software breakpoints in RAM, source lines, and printer routing |
+| An instance marker macro; a missing marker reads as unknown, because `PMACRO.RESet` deletes it as well as a restart | `t32stage` | planned with the epoch; `ASSUMED(macro)` |
 
 `toml` is the one new workspace dependency. `t32ctl` also starts to depend on `t32stage`, `serde`,
 `serde_json`, `sha2`, and `signal-hook`, which the workspace already has.
@@ -171,6 +178,10 @@ No PowerView stand-in exists. Tests use canned frames at the transport boundary
 nothing sleeps), golden byte vectors from pyrcl, sans-IO units for framing, matching, waiting and
 script watching, and loopback sockets as raw byte sources for connect classification. CI runs the
 socket smoke tests against the static musl binary.
+
+`t32ctl` runs whole calls in-process through its library entry point against the same scripted
+transport, with `t32stage::testkit` for scripted stage conversations (snapshot, runner, outputs),
+so every exit code and report line of the MVP commands is tested without PowerView.
 
 Probe bodies are tested where a script of reasonable size can drive their decisions: `connect`
 (smoke tests), `version`, `clients`, `keepalive`, `reconnect`, `tempdir`, `macro`, the `vm-rw`
@@ -225,6 +236,11 @@ probe that has not run yet.
 | A modal dialog reads as state 2 and `T32_Stop` ends the wait (and whether the window closes). | `dialog` | `runner::ScriptWatch` | |
 | Two `STOre <file> Break` lists differ only when breakpoints differ. | `run-control` | `practice::cmd::store_breakpoints` | |
 | `Data.LOAD.Elf ... /UNZIP` exists. | `elf-unzip` | `practice::cmd::load_elf_symbols` | |
+| `MMU.PHYSICAL(<class>:0x<addr>)` translates a virtual address, and its reply names the physical address after the last `:`. | `target-read` | `practice::fnc::physical`, `t32ctl` `read mem` | |
+| PowerView honors the access width (`WI`) of a memory read object, so an `mmio` read uses the region's width. | `target-read` (case to add) | `t32rcl::MemAddr::with_width` | |
+| A read with the `E` class prefix (`ED:`, `EA:`) works while the cores run. | `target-read` (case to add) | `t32ctl` `read mem` | |
+| `Register(<name>)` answers for system registers (`esr_el1`, `sctlr_el1`) as it does for `x0`. | `target-read` | `practice::fnc::register` | |
+| Memory read over RCL is little-endian per cell on this AArch64 target. | `target-read` (case to add) | `t32ctl::report::cells` | |
 
 Questions that only the operator can answer:
 

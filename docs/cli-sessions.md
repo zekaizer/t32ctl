@@ -1,16 +1,23 @@
 # t32ctl sessions
 
 Literal agent sessions against the Phase 1 contract in [cli.md](cli.md). Each block is a command,
-its full output, and its exit code; the implementation renders these blocks from report values
-and compares them verbatim, so they are golden tests. Lines that start with `A$` and `B$` are two
-agents sharing one debugger.
+its full output, and its exit code. Lines that start with `A$` and `B$` are two agents sharing one
+debugger.
+
+Each session has a status line. An `MVP` session runs on the binary as it is, and a test renders
+its blocks (marked `transcript: mvp`) from report values and compares them verbatim, so they are
+golden tests. A `planned` session is the contract of commands that wait on a target opt-in probe
+or the state file ([cli.md](cli.md#planned-commands)); its command lines parse or name a planned
+command.
 
 Every session uses one example board, `acme_evb` (4 x Cortex-A53, Zephyr), whose `worker_loop`
 thread writes through a NULL `item`. Its profile is the one in
-[profiles.md](profiles.md#target-profile). Sessions 3, 4, and 5 continue one another; the others
-stand alone.
+[profiles.md](profiles.md#target-profile). The sessions stand alone.
 
 ## 1. Crash on a halted target
+
+Status: planned: needs `read stack`, `read var`, and `read sym` (`target-read`, `elf-unzip`), and
+the stop record of the state file.
 
 Earlier, the agent set `b1` on `k_sys_fatal_error_handler` and left the target running with
 `run go --detach`. It now comes back.
@@ -99,6 +106,8 @@ type name, and the variable names came from the output as printed; nothing was c
 cell of the dump is a valid argument as printed. The agent stops here and reports.
 
 ## 2. Break and inspect: step and a conditional breakpoint
+
+Status: planned: needs run control and breakpoints (`run-control`).
 
 ```console
 $ t32ctl run bp set worker_loop
@@ -222,6 +231,8 @@ go: started all cores; not waiting. The next call reports any stop.
 
 ## 3. Stale epoch: the target changed under the agent
 
+Status: planned: needs the epoch (the state file) and `write var`.
+
 The agent read `g_mode` and planned to write it. Meanwhile the operator pressed Go and Break in
 the PowerView GUI.
 
@@ -269,6 +280,8 @@ for this agent too. Agents that share the debugger take a lease before a write s
 
 ## 4. A failing repository script
 
+Status: MVP.
+
 The agent runs a team script set from the repository. `raw` asks the human every time, because a
 repository script is text an agent can write. Before the approval, the agent says in one
 sentence what the script does and what it changes: it writes test patterns into the `0x100000`
@@ -294,6 +307,8 @@ script that opens a dialog ends with exit 5 (`error[dialog]`) instead, because o
 can close a PowerView window.
 
 ## 5. A procedure under the wrong grade
+
+Status: MVP.
 
 The agent wants to reset the board. It copies the shape of `t32ctl run proc attach` from earlier
 in its context.
@@ -322,6 +337,8 @@ permission snippet keeps agents from editing and the team reviews in git; Phase 
 operator trust beyond that ([profiles.md](profiles.md#profile-changes)).
 
 ## 6. Two agents and the lease
+
+Status: planned: needs the lease (the state file).
 
 Agent A is stepping through `worker_loop` and must not have the target resumed under it.
 
@@ -418,6 +435,8 @@ lease take` reports how the previous lease ended. A token that matches neither t
 previous lease is exit 2 `unknown-lease`. A token that is dead or missing never acts.
 
 ## 7. eMMC flashing
+
+Status: MVP, without the lease, `run symbols`, and `run go`, which are planned.
 
 The agent rebuilt the application. The board boots from eMMC, and PowerView still holds the
 symbols of the previous build (`elf=stale`). The flash procedure needs the lease, so the agent
@@ -523,30 +542,31 @@ Had the flash died halfway, every later call would print this notice until a fla
 
 Each sequence is what the agent types, without the leading `t32ctl`. "Friction" lists every
 conversion, re-typed value, bookkeeping call, or inconsistent notation in it; "none" means every
-argument was copied from the previous output or is a name the agent chose.
+argument was copied from the previous output or is a name the agent chose. "Status" says which
+steps the MVP binary has.
 
-| # | Workflow | Sequence | Friction |
-|---|---|---|---|
-| 1 | Bring-up, code load | `read status` -> `read procs` -> `run proc attach` -> `write proc reset` -> `write load` -> `run go main` | None. `attach` and `reset` are well-known names, and `read procs` shows which ones the board has; without `reset`, the agent asks its human. The CPU check is skipped for `attach`, which declares `debugger-config`. |
-| 1b | Bring-up, boots from flash | `read status` -> `read procs` -> `run proc attach` -> `write proc reset` -> `run symbols` -> `run go main` | None. |
-| 2 | Crash on a halted target | `read status` (stop, decoded fault registers, faulting location) -> `read stack` -> `read stack --frame N` -> `read sym TYPE` or `read var EXPR --frame N` -> `read mem @sp --len 64` | None. `N` is the frame marked `fault`, copied as printed. Memory cells print `0x`-prefixed, so a pointer in a dump pastes as an argument. |
-| 3 | Break and inspect | `run bp set worker_loop` -> `run go` -> `read stack` -> `run step over`, `run step`, `run step out` (reports the return value) -> `read var 'EXPR'` -> `run go` (next hit) -> `run bp clear b2` | Expressions with `->`, `*`, `&`, or spaces need single quotes (shell). |
-| 3b | Conditional or counted breakpoint | `run bp set src/worker.c:61 --if 'item == 0'` or `--count 5` -> `run go --wait 90s` | Same quoting. `--count` counts the hits where the condition is true. |
-| 4 | Hang on a running target | `read status` (running) -> `run halt` (per-core report) -> `read stack --core N` -> `read var X` -> `run go --detach` | None. `N` is copied from the halt report. |
-| 5 | Data corruption | `run bp set g_cfg --on write` (or `0x40100000 --on write --len 64`) -> `run go --wait 90s` -> the stop names the writer's pc, sym, and src -> `read stack` | The stop is reported as `watchpoint b4 (inferred)`; the PC is the instruction after the store, and the report says so. Watchpoints are on-chip and few (`no-hw-resource` when none is free), and a DMA writer does not trigger them. Forgetting `--on write` is exit 2 `not-code`. |
-| 6 | Hypothesis test | `read status` -> `write var g_mode MODE_IDLE` (or `write reg x0 0x1`, `write mem 0x40100010 0x5`) -> `run go` -> `read var g_status` | None. Each write reports old, new, and read-back values. `read status` first keeps an exit 3 from wasting the approval; with other agents on the debugger, the agent takes a lease first. |
-| 7 | Reset and rerun after a rebuild | (agent rebuilds) -> the header shows `elf=stale` -> `write proc reset` -> `write load` -> `run go src/main.c:88` -> `read var x` | None. The `elf=stale` hint is `run symbols`; loading new code with `write load` is the agent's decision, and it asks each time by design. |
-| 8 | Peripheral and system registers | `read reg sctlr_el1 mpidr_el1` -> `read mem 0x08000000 --len 0x40` (the region's width, 4) -> `read window --list` -> `read window per.gicd` | None for listed views. Any other window is `raw window`, which asks. |
-| 9 | SMP | `read status` (all cores) -> `read stack --core 3` -> `run halt` -> `run go --detach` | None. Run control acts on all cores (TRACE32 SMP mode). |
-| 10 | Team scripts | `raw script tools/t32/ddr_stress.cmm -- 0x40000000 0x100000` -> read the printed output files | Asks every time: a repository script is text an agent can write. The agent may read the script to describe it, and says what it does and changes before the approval. Arguments are positional and may not contain spaces or quotes (runner rule). A script the team runs often belongs in the profile as a procedure. |
-| 11 | Bulk data | `read mem 0x40000000 --len 64M --to ddr.bin`; `write mem 0x40200000 --from blob.bin` | None. `--to` takes a plain file name, and the report prints the path under `~/.local/state/t32ctl/out/`. A transfer is bounded (10 minutes by default), and a large one runs in the background. |
-| 12 | Symbol questions | `read sym 0x40080b1c`; `read sym worker_loop`; `read sym src/worker.c:61`; `read sym work_item` | None. Works without running the target. |
-| 13 | eMMC flashing | `read procs flash` -> `run lease take --purpose "flash user partition and boot it"` -> `burn proc flash --part user --lease T` -> `write proc reset --lease T` -> `run symbols --lease T` -> `run go main --lease T` -> `run lease release --lease T` | The token is repeated on each call: the cost of identity across fresh processes. The flash can outlast the agent's command timeout, so the agent runs it in the background. The human approves the flash and the reset. |
-| 14 | Attach to a live target without stopping it | `run proc attach` -> `run symbols` -> `read status` (running) -> `read var` on regions with `running = true` | Reads elsewhere refuse with exit 3 `not-halted` until `run halt`. |
-| 15 | Recover after an interrupted call | `read status`: notices for replayed journals, an interrupted call's intent, an incomplete flash, a missing instance marker, and residue with the PowerView command to type | None. Every call repairs first, so no recovery command exists. |
-| 16 | Hand the target back | `run bp clear --all` -> `run go --detach` -> `run lease release` | None. `--all` clears every t32ctl breakpoint, other agents' too. |
-| 17 | Procedure under the wrong grade | `run proc reset` -> exit 2 `grade-mismatch` -> `write proc reset` (asks) | None. The hint is the call under the declared grade. |
-| 18 | Debugger held by another agent | `read status` (`lease=<id>:other`) -> `run lease take --purpose "..." --wait 90s`, or work that does not need the target | One wait, then other work; never a loop. Short reads work meanwhile. |
+| # | Workflow | Sequence | Friction | Status |
+|---|---|---|---|---|
+| 1 | Bring-up, code load | `read status` -> `read procs` -> `run proc attach` -> `write proc reset` -> `write load` -> `run go main` | None. `attach` and `reset` are well-known names, and `read procs` shows which ones the board has; without `reset`, the agent asks its human. The CPU check is skipped for `attach`, which declares `debugger-config`. | partly: `write load`, `run go` planned |
+| 1b | Bring-up, boots from flash | `read status` -> `read procs` -> `run proc attach` -> `write proc reset` -> `run symbols` -> `run go main` | None. | partly: `run symbols`, `run go` planned |
+| 2 | Crash on a halted target | `read status` (stop, decoded fault registers, faulting location) -> `read stack` -> `read stack --frame N` -> `read sym TYPE` or `read var EXPR --frame N` -> `read mem @sp --len 64` | None. `N` is the frame marked `fault`, copied as printed. Memory cells print `0x`-prefixed, so a pointer in a dump pastes as an argument. | planned: `read stack`, `read sym`, `read var` |
+| 3 | Break and inspect | `run bp set worker_loop` -> `run go` -> `read stack` -> `run step over`, `run step`, `run step out` (reports the return value) -> `read var 'EXPR'` -> `run go` (next hit) -> `run bp clear b2` | Expressions with `->`, `*`, `&`, or spaces need single quotes (shell). | planned: `run-control` |
+| 3b | Conditional or counted breakpoint | `run bp set src/worker.c:61 --if 'item == 0'` or `--count 5` -> `run go --wait 90s` | Same quoting. `--count` counts the hits where the condition is true. | planned: `run-control` |
+| 4 | Hang on a running target | `read status` (running) -> `run halt` (per-core report) -> `read stack --core N` -> `read var X` -> `run go --detach` | None. `N` is copied from the halt report. | planned: `run halt`, `read stack`, `read var` |
+| 5 | Data corruption | `run bp set g_cfg --on write` (or `0x40100000 --on write --len 64`) -> `run go --wait 90s` -> the stop names the writer's pc, sym, and src -> `read stack` | The stop is reported as `watchpoint b4 (inferred)`; the PC is the instruction after the store, and the report says so. Watchpoints are on-chip and few (`no-hw-resource` when none is free), and a DMA writer does not trigger them. Forgetting `--on write` is exit 2 `not-code`. | planned: `run-control` |
+| 6 | Hypothesis test | `read status` -> `write var g_mode MODE_IDLE` (or `write reg x0 0x1`, `write mem 0x40100010 0x5`) -> `run go` -> `read var g_status` | None. Each write reports old, new, and read-back values. `read status` first keeps an exit 3 from wasting the approval; with other agents on the debugger, the agent takes a lease first. | planned: `write var`, `write reg`, `write mem`, `run go` |
+| 7 | Reset and rerun after a rebuild | (agent rebuilds) -> the header shows `elf=stale` -> `write proc reset` -> `write load` -> `run go src/main.c:88` -> `read var x` | None. The `elf=stale` hint is `run symbols`; loading new code with `write load` is the agent's decision, and it asks each time by design. | planned: `write load`, `run go`, `elf=stale` |
+| 8 | Peripheral and system registers | `read reg sctlr_el1 mpidr_el1` -> `read mem 0x08000000 --len 0x40` (the region's width, 4) -> `read window --list` -> `read window per.gicd` | None for listed views. Any other window is `raw window`, which asks. | partly: `read reg` and `read mem` MVP; `read window` planned |
+| 9 | SMP | `read status` (all cores) -> `read stack --core 3` -> `run halt` -> `run go --detach` | None. Run control acts on all cores (TRACE32 SMP mode). | planned: `read stack --core`, `run halt`, `run go` |
+| 10 | Team scripts | `raw script tools/t32/ddr_stress.cmm -- 0x40000000 0x100000` -> read the printed output files | Asks every time: a repository script is text an agent can write. The agent may read the script to describe it, and says what it does and changes before the approval. Arguments are positional and may not contain spaces or quotes (runner rule). A script the team runs often belongs in the profile as a procedure. | MVP |
+| 11 | Bulk data | `read mem 0x40000000 --len 64M --to ddr.bin`; `write mem 0x40200000 --from blob.bin` | None. `--to` takes a plain file name, and the report prints the path under `~/.local/state/t32ctl/out/`. A transfer is bounded (10 minutes by default), and a large one runs in the background. | partly: `read mem --to` MVP; `write mem --from` planned |
+| 12 | Symbol questions | `read sym 0x40080b1c`; `read sym worker_loop`; `read sym src/worker.c:61`; `read sym work_item` | None. Works without running the target. | planned: `elf-unzip` |
+| 13 | eMMC flashing | `read procs flash` -> `run lease take --purpose "flash user partition and boot it"` -> `burn proc flash --part user --lease T` -> `write proc reset --lease T` -> `run symbols --lease T` -> `run go main --lease T` -> `run lease release --lease T` | The token is repeated on each call: the cost of identity across fresh processes. The flash can outlast the agent's command timeout, so the agent runs it in the background. The human approves the flash and the reset. | MVP without the lease: `read procs flash` -> `read status` -> `burn proc flash --part user` -> `write proc reset`; `run symbols`, `run go` planned |
+| 14 | Attach to a live target without stopping it | `run proc attach` -> `run symbols` -> `read status` (running) -> `read var` on regions with `running = true` | Reads elsewhere refuse with exit 3 `not-halted` until `run halt`. | partly: `run proc attach`, `read mem` on `running = true` regions MVP; `run symbols`, `read var`, `run halt` planned |
+| 15 | Recover after an interrupted call | `read status`: notices for replayed journals, an interrupted call's intent, an incomplete flash, a missing instance marker, and residue with the PowerView command to type | None. Every call repairs first, so no recovery command exists. | partly: replayed journals and residue MVP; intents, an incomplete flash, the instance marker planned |
+| 16 | Hand the target back | `run bp clear --all` -> `run go --detach` -> `run lease release` | None. `--all` clears every t32ctl breakpoint, other agents' too. | planned: `run bp clear`, `run go`, the lease |
+| 17 | Procedure under the wrong grade | `run proc reset` -> exit 2 `grade-mismatch` -> `write proc reset` (asks) | None. The hint is the call under the declared grade. | MVP |
+| 18 | Debugger held by another agent | `read status` (`lease=<id>:other`) -> `run lease take --purpose "..." --wait 90s`, or work that does not need the target | One wait, then other work; never a loop. Short reads work meanwhile. | planned: the lease |
 
 Not served in Phase 1, deliberately: live variable watching and stop notifications (`watch`,
 Phase 2), trace and FDX, OS-aware thread lists (Phase 3), independent per-core run control (AMP),
