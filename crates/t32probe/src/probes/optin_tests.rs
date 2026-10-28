@@ -177,3 +177,58 @@ fn run_control_writes_every_number_it_sends_with_a_radix() {
     let want = ["+0.)", "+4.)", "+8.)", "+12.)", "+16.)"].map(|t| format!("(Var.ADDRESS(counter){t}"));
     assert_eq!(got, want);
 }
+
+const BP_OPERATOR: &str = "B::\nBreak.RESet\nBreak.Set main.c\\42 /COUNT 2\n";
+
+fn restores(ctx: &mut crate::ctx::ProbeCtx<'_>) -> crate::ctx::ProbeResult {
+    use crate::probes::{scratch_regions, stage_root, workdir};
+    let root = stage_root(ctx)?;
+    let dir = workdir(ctx, &root, "rc")?;
+    let region = scratch_regions(ctx, &[STORE_LEN])?[0];
+    let mut rc = Rc { dir, region, v: Verified::default(), clean: true, base: breakpoint_lines(BP_OPERATOR) };
+    let t = restore_breakpoints(ctx, &mut rc)?;
+    ctx.text("bp_restore", t);
+    Ok(())
+}
+
+#[test]
+fn run_control_restores_a_changed_breakpoint_list_from_bp0() {
+    let s = Script::new().attach().expect_fn("OS.PTD()").reply_text("C:\\T");
+    let s = s.expect_fn("OS.DIR(\"C:\\T\\t32ctl\")").reply_bool(true);
+    let s = s.expect_fn(&format!("OS.DIR(\"{RC}\")")).reply_bool(false).expect_cmd(&format!("MKDIR \"{RC}\""));
+    let mut s = s.reply_ok().expect_fn(&format!("OS.DIR(\"{RC}\")")).reply_bool(true);
+    for u in 0..STORE_UNITS {
+        s = s
+            .expect_req(Request::MemRead { access: "VM".into(), addr: BASE + u * 4096, len: 1008 })
+            .reply_error(113, "");
+    }
+    s = s.expect_fn(DEPTH).reply_decimal(0).expect_cmd(&format!("DO \"{RC}\\bp0.cmm\"")).reply_ok();
+    s = stored(s.expect_fn(DEPTH).reply_decimal(0), "bp10.cmm", BP_OPERATOR);
+    s = removed(s, "bp10.cmm", true);
+    for u in 0..STORE_UNITS {
+        s = s.expect_cmd(&format!("Data.CLEARVM VM:0x{:08X}++0x00000FFF", BASE + u * 4096)).reply_ok();
+    }
+    for u in 0..STORE_UNITS {
+        s = s
+            .expect_req(Request::MemRead { access: "VM".into(), addr: BASE + u * 4096, len: 1008 })
+            .reply_error(113, "");
+    }
+    s = s.expect_fn(&format!("OS.DIR(\"{RC}\")")).reply_bool(true).expect_cmd(&format!("RMDIR \"{RC}\"")).reply_ok();
+    let s = s.expect_fn(&format!("OS.DIR(\"{RC}\")")).reply_bool(false);
+    let mut session = connect(vec![Ok(s)]);
+    let mut env = test_env("run-control-restore");
+    let def: &'static crate::registry::ProbeDef = Box::leak(Box::new(crate::registry::ProbeDef {
+        id: ProbeId::RunControl,
+        tier: crate::registry::Tier::Safe,
+        requires: &[],
+        needs_connection: true,
+        deadline: Duration::from_secs(5),
+        about: "",
+        run: restores,
+    }));
+    let r = run(&mut env, &mut session, &[def]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
+    assert_eq!(o.lookup("bp_restore"), Some(&Value::Text("yes".into())));
+    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+}

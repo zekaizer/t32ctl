@@ -161,7 +161,7 @@ probes! {
     MultiClient = "multi-client", Tier::OptIn(MultiClient), [ScriptLab], true, 60, optin::multi_client,
         "second connection: attach and latency while A's script waits, NrUsedCons, attach while A blocks in WAIT";
     RunControl = "run-control", Tier::OptIn(RunControl), [VmFile], true, 180, optin::run_control,
-        "Go/Break and every core's PC, Go to --symbol, steps and step-out, breakpoint kind, write and /COUNT breakpoints, a reverted RAM and register write, breakpoint list unchanged (changes target state)";
+        "Go/Break and every core's PC, Go to --symbol, steps and step-out, breakpoint kind, write and /COUNT breakpoints, a reverted RAM and register write, breakpoint list unchanged or restored from its STOre script (changes target state)";
     TargetRead = "target-read", Tier::OptIn(TargetRead), [VmFile], true, 180, target::target_read,
         "registers, symbol memory and chunk reads, address translation, Var functions, a memory range over RCL and through a file, epoch reads, windows printed to a file (reads only; leave no printer file open)";
     LoadCode = "load-code", Tier::OptIn(LoadCode), [VmFile], true, 300, target::load_code,

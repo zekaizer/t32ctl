@@ -18,7 +18,7 @@ use t32stage::{
 use super::{
     functions::command,
     hex,
-    lab::{Case, Ending, Expect, Lab, LabSizes, Seen, Until, eval_text},
+    lab::{Case, Ending, Expect, Lab, LabSizes, Seen, Until, eval_text, stack_depth},
     nr_used_cons, ok, scratch_regions, soft, stage_root, workdir,
 };
 use crate::{
@@ -396,10 +396,41 @@ pub fn run_control(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let end = rc.store(ctx, "bp9.cmm")?;
     let unchanged = rc.same_as_base(&end);
     ctx.text("bp_unchanged", if unchanged { "yes" } else { "NO" });
+    let restore = if unchanged { "-".into() } else { restore_breakpoints(ctx, &mut rc)? };
+    ctx.text("bp_restore", restore);
     ctx.measure("reverts", Value::Text(ok(rc.clean).into()));
     ctx.check(unchanged && rc.clean, || {
         format!("breakpoint list unchanged: {unchanged}, every revert clean: {}", rc.clean)
     })
+}
+
+/// `DO` of `bp0.cmm`, the list before the first change: `STOre` writes settings as a script for
+/// `DO` (ide_ref `STOre`). Only on an empty stack, which our script must leave empty again within
+/// `RUN_POLLS`; else its unwind stays for cleanup. `busy`, `refused`, `stuck`, or whether the
+/// list then matches: `yes`/`no`.
+fn restore_breakpoints(ctx: &mut ProbeCtx<'_>, rc: &mut Rc) -> Result<String, ProbeFail> {
+    if stack_depth(ctx)? != 0 {
+        return Ok("busy".into());
+    }
+    ctx.push(Undo::UnwindPractice)?;
+    let sent = soft(ctx.session.cmd(&cmd::do_script(&rc.dir.join("bp0.cmm")?)))?.is_some();
+    let mut left = stack_depth(ctx)?;
+    for _ in 1..RUN_POLLS {
+        if left == 0 {
+            break;
+        }
+        nap(ctx, POLL);
+        left = stack_depth(ctx)?;
+    }
+    if left != 0 {
+        return Ok("stuck".into());
+    }
+    ctx.ledger.withdraw_unwind()?;
+    if !sent {
+        return Ok("refused".into());
+    }
+    let after = rc.store(ctx, "bp10.cmm")?;
+    Ok(if rc.same_as_base(&after) { "yes" } else { "no" }.into())
 }
 
 /// `Go`, the target state sampled for 1 s, then the probe's `Break`: milliseconds until halted.
