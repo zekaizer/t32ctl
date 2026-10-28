@@ -7,9 +7,8 @@ use t32rcl::{
     CallBudget, Endpoint, Error, Feature, Health, Op, PoisonCause, Session,
     version::{BASE_FUNCTIONS, BUILD_FUNCTIONS, FEATURES},
 };
-use t32stage::practice::fnc;
 
-use super::{hex, ok};
+use super::{hex, nr_used_cons, ok};
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
     outcome::{Value, key},
@@ -105,7 +104,7 @@ pub fn latency(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
 }
 
 pub fn clients(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
-    match ctx.session.eval(fnc::NR_USED_CONS).and_then(|v| v.into_int(fnc::NR_USED_CONS)) {
+    match nr_used_cons(ctx.session) {
         Ok(n) => {
             ctx.headline("NrUsedCons", Value::Count(n.max(0) as u64));
             ctx.check(n >= 1, || format!("NrUsedCons is {n} while this client is connected"))

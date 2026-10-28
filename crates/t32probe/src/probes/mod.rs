@@ -21,6 +21,7 @@ use std::time::Duration;
 use t32rcl::{ErrorClass, Session};
 use t32stage::{
     Bundle, BundleLimits, RelPath, RunReport, RunRequest, Snapshot, Stage, StageError, Undo, VmRegion, VmSnapshot,
+    practice::fnc,
 };
 
 use crate::ctx::{ProbeCtx, ProbeFail};
@@ -69,6 +70,19 @@ pub(crate) fn run_entry(
     let args = args.iter().map(|a| a.to_string()).collect();
     let req = RunRequest { entry: RelPath::new(entry)?, args, timeout, collect_outputs: false };
     Ok(stage.run(session, snap, &req)?)
+}
+
+/// Connected Remote API clients, from the first spelling in `fnc::NR_USED_CONS` PowerView does
+/// not refuse. When every spelling is refused, the last refusal.
+pub(crate) fn nr_used_cons(session: &mut Session) -> Result<i64, t32rcl::Error> {
+    let mut refused = None;
+    for expr in fnc::NR_USED_CONS {
+        match session.eval(expr).and_then(|v| v.into_int(expr)) {
+            Err(e) if e.remote().is_some() => refused = Some(e),
+            answered => return answered,
+        }
+    }
+    Err(refused.expect("NR_USED_CONS is not empty"))
 }
 
 pub(crate) fn hex(bytes: &[u8]) -> String {

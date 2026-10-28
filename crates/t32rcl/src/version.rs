@@ -21,7 +21,7 @@ pub struct PowerViewBuild {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Feature {
-    /// `api.RCL.TCP.NrUsedCons()`.
+    /// `RCL.TCP.NrUsedCons()`, or `api.RCL.TCP.NrUsedCons()` from build 171257.
     NrUsedCons,
     /// `Data.LOAD.Elf <file>.gz /UNZIP`.
     ElfUnzip,
