@@ -130,6 +130,8 @@ probes! {
         "availability of commands and functions, & in functions, command length, EVAL slot, status codes and ERROR.ID per failure, epoch and CPU reads, path functions";
     FsSemantics = "fs-semantics", Safe, [VmFile], true, 120, files::fs_semantics,
         ".bak naming on overwrite, pre-RM, /Append, RMDIR of a full directory, idempotent cleanup, path punctuation, OS.FIRSTFILE listing, ABSPATH identity";
+    VmLarge = "vm-large", Safe, [VmFile], true, 300, files::vm_large,
+        "VM: window at full size: RCL write, Data.SAVE/LOAD.Binary time and keepalives at 4 MiB, 8 MiB and the whole window (blocks the GUI for seconds)";
     Bundle = "bundle", Safe, [Gzip, Macro], true, 90, scripts::bundle,
         "self-extracting bundle, nested DO chain, marker, runner rc, state during the chain";
     ScriptLab = "script-lab", Safe, [VmFile], true, 180, scriptlab::script_lab,
@@ -270,6 +272,7 @@ mod tests {
             "macro",
             "fn-table",
             "fs-semantics",
+            "vm-large",
             "bundle",
             "script-lab",
             "script-halt",
@@ -296,7 +299,7 @@ mod tests {
         let names = |v: Vec<&ProbeDef>| v.iter().map(|d| d.id.name()).collect::<Vec<_>>();
         assert_eq!(names(select(&[ProbeId::VmFile], &[], &none).unwrap()), ["connect", "tempdir", "vm-rw", "vm-file"]);
         let default = select(&[], &[ProbeId::Latency], &none).unwrap();
-        assert_eq!(default.len(), 21);
+        assert_eq!(default.len(), 22);
         assert!(default.iter().all(|d| d.tier == Tier::Safe));
         assert_eq!(select(&[ProbeId::Dialog], &[], &none).unwrap_err(), "dialog needs --allow-dialog");
         let gates = Gates { dialog: true, ..Gates::default() };

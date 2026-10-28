@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Probes about files PowerView writes: fs-semantics, vm-large.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, time::Duration};
 
-use t32rcl::RemoteError;
+use t32rcl::{Op, RemoteError};
 use t32stage::{
     RelPath, StagePath, Undo, VmRegion,
     practice::{cmd, fnc},
@@ -18,9 +18,11 @@ use super::{
 use crate::{
     ctx::{ProbeCtx, ProbeFail, ProbeResult},
     outcome::Value,
+    stats::mb_per_sec,
 };
 
 const KIB: u32 = 1024;
+const MIB: u32 = 1024 * KIB;
 
 /// `err<status>/<kind>` of a refusal, `ok` otherwise.
 fn status<T>(r: &Result<T, RemoteError>) -> String {
@@ -342,6 +344,95 @@ fn strays(ctx: &mut ProbeCtx<'_>, fs: &Fs) -> ProbeResult {
         ctx.headline("stray", Value::Count(stray.len() as u64));
     }
     Ok(())
+}
+
+/// One rung of vm-large: time and keepalive offsets of the `SAVE` and the `LOAD`.
+struct Rung {
+    save: (Duration, Vec<Duration>),
+    load: (Duration, Vec<Duration>),
+    verified: bool,
+}
+
+fn rung_token(t: &(Duration, Vec<Duration>)) -> String {
+    format!("{:.2}s:ka{}", t.0.as_secs_f64(), t.1.len())
+}
+
+/// A blocking command under `data_budget(bytes)`: how long it took on the session clock and
+/// when each keepalive arrived.
+fn timed(ctx: &mut ProbeCtx<'_>, line: &str, bytes: u32) -> Result<(Duration, Vec<Duration>), ProbeFail> {
+    let budget = transfer::data_budget(ctx.session, bytes.into());
+    ctx.session.take_trace();
+    let t = ctx.session.now();
+    ctx.session.with_budget(budget).cmd(line)?;
+    let took = ctx.session.now().saturating_duration_since(t);
+    let ka =
+        ctx.session.take_trace().keepalives.iter().filter(|k| k.op == Op::Command).map(|k| k.since_request).collect();
+    Ok((took, ka))
+}
+
+/// The scratch window at 4 MiB, 8 MiB and its whole length: RCL write, `Data.SAVE.Binary`,
+/// `Data.CLEARVM`, `Data.LOAD.Binary`, the last MiB read back. A timeout ends the ladder.
+pub fn vm_large(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+    let len = ctx.env.scratch_window().len();
+    let root = stage_root(ctx)?;
+    let dir = workdir(ctx, &root, "large")?;
+    let region = scratch_regions(ctx, &[len])?[0];
+    ctx.text("len", (len / MIB).to_string());
+    let mut sizes: Vec<u32> = [4 * MIB, 8 * MIB, len].into_iter().filter(|&s| s <= len).collect();
+    sizes.dedup();
+    let mut rungs = Vec::new();
+    let mut stopped = None;
+    for s in sizes {
+        match rung(ctx, &dir, &region, s) {
+            Ok(r) => rungs.push(r),
+            Err(e) => {
+                stopped = Some(e);
+                break;
+            }
+        }
+    }
+    let join = |f: fn(&Rung) -> String| rungs.iter().map(f).collect::<Vec<_>>().join("/");
+    ctx.text("save", join(|r| rung_token(&r.save)));
+    ctx.text("load", join(|r| rung_token(&r.load)));
+    let first =
+        rungs.last().and_then(|r| r.save.1.first()).map_or("none".into(), |d| format!("{:.2}", d.as_secs_f64()));
+    ctx.text("ka_first", first);
+    let verified = !rungs.is_empty() && rungs.iter().all(|r| r.verified);
+    ctx.text("verify", if verified { "ok" } else { "FAIL" });
+    if let Some(e) = stopped {
+        return Err(e);
+    }
+    ctx.check(verified, || "a VM: rung read back different after SAVE and LOAD".into())
+}
+
+fn rung(ctx: &mut ProbeCtx<'_>, dir: &StagePath, region: &VmRegion, s: u32) -> Result<Rung, ProbeFail> {
+    let mib = s / MIB;
+    let name = format!("w{mib}m.bin");
+    let f = dir.join(&name)?;
+    ctx.push(Undo::RemoveFile(f.clone()))?;
+    for c in RelPath::new(&name)?.bak_candidates() {
+        ctx.push(Undo::RemoveFile(dir.join(c.as_str())?))?;
+    }
+    let slice = region.slice(0, s).expect("each rung fits the window");
+    let data = pattern(u64::from(s), s as usize);
+    let t = ctx.session.now();
+    ctx.session.mem_write(&slice.addr(), &data)?;
+    if let Some(w) = mb_per_sec(s.into(), ctx.session.now().saturating_duration_since(t)) {
+        ctx.measure(&format!("w.{mib}"), Value::MbPerSec(w));
+        if s == region.len() {
+            ctx.headline("w", Value::MbPerSec(w));
+        }
+    }
+    let save = timed(ctx, &cmd::data_save_binary(&f, &slice, false), s)?;
+    ctx.measure(&format!("save.{mib}"), Value::Text(format!("{} at {:?}", rung_token(&save), save.1)));
+    ctx.session.cmd(&cmd::clear_vm(&slice))?;
+    let load = timed(ctx, &cmd::data_load_binary(&f, slice.start(), false), s)?;
+    ctx.measure(&format!("load.{mib}"), Value::Text(format!("{} at {:?}", rung_token(&load), load.1)));
+    let tail = s.min(MIB);
+    let back = ctx.session.mem_read(&slice.slice(s - tail, tail).expect("inside").addr(), tail as usize)?;
+    let verified = back == data[(s - tail) as usize..];
+    soft(ctx.session.cmd(&cmd::rm(&f)))?;
+    Ok(Rung { save, load, verified })
 }
 
 #[cfg(test)]
