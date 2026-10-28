@@ -5,14 +5,14 @@ Windows PC. The only channel is the TRACE32 Remote API (RCL) over TCP. Files and
 through TRACE32 virtual memory (`VM:`), `Data.SAVE.Binary` and `Data.LOAD.Binary`; PowerView runs
 them; results come back the same way.
 
-This repository holds the foundation and the Phase 0 measurement tool:
+This repository holds the foundation, the Phase 0 measurement tool, and the Phase 1 CLI:
 
 | Crate | What it is |
 |---|---|
 | `t32rcl` | RCL client over NETTCP: framing, attach, keepalive, commands, functions, PRACTICE state, memory, global macros. Reusable outside the CLI. |
 | `t32stage` | Staging over RCL: `VM:` transfer, self-extracting bundles, the script runner, cleanup with a write-ahead journal. |
 | `t32probe` | Phase 0 binary. Measures how a live PowerView behaves and prints a report short enough to paste. |
-| `t32ctl` | Phase 1 CLI. Its contract is specified in [docs/cli.md](docs/cli.md); the binary is still the skeleton with `t32ctl status` only. |
+| `t32ctl` | Phase 1 CLI for coding agents. The MVP reads status, memory, and registers, runs board procedures and repository scripts, and sends single PRACTICE commands; the rest of the contract in [docs/cli.md](docs/cli.md) is planned. |
 
 Phase 0 exists because the build machine has no TRACE32: every behavior the design depends on
 and the manuals do not settle is measured by `t32probe` on the operator's PC. The design is in
@@ -20,21 +20,56 @@ and the manuals do not settle is measured by `t32probe` on the operator's PC. Th
 [docs/operator.md](docs/operator.md). What the probe runs taught about PowerView is in
 [docs/trace32-pitfalls.md](docs/trace32-pitfalls.md).
 
-## Phase 1 contract
+## Phase 1: t32ctl
 
-The Phase 1 command line is specified before it is built; the implementation follows on the same
-branch.
+`t32ctl` is the command a coding agent calls once per action. The first word after `t32ctl` is a
+permission grade (`read`, `run`, `write`, `sys`, `burn`, `raw`), so a Claude Code rule on the
+first two words covers exactly one grade. The binary implements the MVP: the commands whose
+PowerView behavior the Phase 0 probe proved on build 168999, plus memory and register reads.
+
+- `read status`: whether PowerView answers, the connected CPU against the board profile, the run
+  state, and PowerView's PRACTICE state; `--full` adds the profile hash, the binding, the config,
+  and the state directory.
+- `read mem`, `read reg`: target memory, checked against the profile's memory map, and registers
+  of PowerView's selected core.
+- `read procs`, `<grade> proc NAME`: the board's procedures and their run at the grade the profile
+  declares, with typed parameters and collected output files. An eMMC flash is a `burn`
+  procedure.
+- `raw script`, `raw cmd`, `raw eval`: a `.cmm` set from the repository, or one PRACTICE command
+  or function. They always ask.
+- `read describe`: the command schema, the generated Markdown blocks, and the permission rules.
+
+Run control, breakpoints, symbols, variables and the stack, memory and register writes, code
+loading, PowerView windows, and the lease are planned. They wait for the target opt-in probes
+(`run-control`, `target-read`, `load-code`, `elf-unzip`) and for the state file;
+[docs/cli.md](docs/cli.md#planned-commands) lists them.
+
+### Set up
+
+1. Put the static `t32ctl` binary ([Build](#build)) on the `PATH` in WSL, and enable RCL in
+   PowerView as for the probe ([Run the probe](#run-the-probe)).
+2. Optionally write `~/.config/t32ctl/config.toml` with `schema = 1` and the keys you change: the
+   endpoint (`host = "auto"` and port 20000 by default), the `VM:` staging window, the transfer
+   bounds ([profiles.md](docs/profiles.md#connection-config)).
+3. Give the board a profile: `<board dir>/support/t32ctl/profile.toml` with `[target]` (`name`,
+   `cpu`, `cores`, `word`), the memory map, and the procedures, beside the `.cmm` scripts they
+   run ([profiles.md](docs/profiles.md#target-profile)). t32ctl finds it through the build's
+   `CMakeCache.txt` (`BOARD_DIR`), `T32CTL_PROFILE`, or `<repo>/.t32ctl.toml`. Review changes to
+   that directory like code: Phase 1 runs a procedure at the grade its profile declares and has no
+   operator trust yet.
+4. Merge the output of `t32ctl read describe --format permissions` into `.claude/settings.json`,
+   and give the agent the skill in [skills/t32ctl/](skills/t32ctl/SKILL.md).
+5. Check with `t32ctl read status`.
+
+The contract and its decisions:
 
 - [docs/cli.md](docs/cli.md): grades and permission rules, commands, notation, output, exit
   codes, state between calls, and the lease.
-- [docs/profiles.md](docs/profiles.md): the connection config, board profiles, and procedures.
+- [docs/profiles.md](docs/profiles.md): the connection config, board profiles, procedures, and
+  the rules for writing their scripts.
 - [docs/cli-sessions.md](docs/cli-sessions.md): literal agent sessions and workflow coverage.
-- [skills/t32ctl/SKILL.md](skills/t32ctl/SKILL.md): the agent skill draft.
+- [skills/t32ctl/SKILL.md](skills/t32ctl/SKILL.md): the agent skill.
 - [ADR 0002](docs/adr/0002-phase1-cli-contract.md): the decisions behind the contract.
-
-A board's profile and scripts live in `<board dir>/support/t32ctl/`. Phase 1 runs a procedure at
-the grade its profile declares and has no operator trust yet, so review changes to that directory
-like code.
 
 ## Build
 
