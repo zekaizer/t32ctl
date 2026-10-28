@@ -12,7 +12,10 @@ use crate::{
     outcome::{Value, Verdict},
     probes::lab::{
         Fill,
-        lab_tests::{closed_down, dir, files_removed, listed, opened, readable, sampled, staged, test_fill},
+        lab_tests::{
+            closed_down, closed_down_large, dir, files_removed, listed, opened, opened_large, readable, sampled,
+            staged, test_fill,
+        },
         render,
     },
     registry::ProbeId,
@@ -24,7 +27,8 @@ const OUTS: [ScriptOut; 3] = [ScriptOut::VmSet, ScriptOut::Write, ScriptOut::Off
 /// Every case and sub-script of the S3 probes, by probe tag.
 pub(crate) fn s3_cases() -> Vec<(&'static str, Vec<Case>, Vec<Sub>)> {
     let (cases, subs) = in_cases(&dir("in"));
-    vec![("in", cases, subs)]
+    let (out, out_subs) = out_cases();
+    vec![("in", cases, subs), ("out", out, out_subs)]
 }
 
 fn fill_with_large(tag: &str) -> Fill {
@@ -53,6 +57,26 @@ fn every_s3_case_renders_and_passes_lint() {
             }
         }
     }
+}
+
+#[test]
+fn no_template_uses_one_line_repeat_except_rp1() {
+    let mut one_line = Vec::new();
+    for (tag, cases, subs) in s3_cases() {
+        let f = fill_with_large(tag);
+        let mut texts: Vec<(String, String)> =
+            cases.iter().map(|c| (c.id.clone(), render(c, &f, ScriptOut::Off).unwrap().text)).collect();
+        texts.extend(subs.iter().map(|(_, name, body)| (name.to_string(), body.to_string())));
+        for (id, text) in texts {
+            for line in text.lines() {
+                let words: Vec<&str> = line.split_whitespace().collect();
+                if words.first().is_some_and(|w| w.eq_ignore_ascii_case("repeat")) && words.len() > 2 {
+                    one_line.push(id.clone());
+                }
+            }
+        }
+    }
+    assert_eq!(one_line, ["rp1"]);
 }
 
 /// Commands that write to a path they name.
@@ -145,9 +169,27 @@ pub(crate) fn do_line(tag: &str, case: &Case) -> String {
     line
 }
 
-/// A case that ends before the first sample with every marker written; `yes` asks answer yes,
-/// the others no. `sub` is the body of a sub-script it `DO`s.
-pub(crate) fn ran(s: Script, tag: &str, case: &Case, yes: &[&str], sub: Option<&str>) -> Script {
+fn halt_marker(case: &Case) -> Option<&'static str> {
+    match case.expect {
+        Expect::HaltAfter(m) if m != "a" && m != "z" => Some(m),
+        _ => None,
+    }
+}
+
+/// Staged, started and ended at the first sample: `a`, the halt marker and `z` exist.
+pub(crate) fn ended_now(s: Script, tag: &str, case: &Case) -> Script {
+    let id = case.id.as_str();
+    let mut s = staged(s, tag, case, ScriptOut::Off);
+    s = sampled(sampled(s, 0, 0).expect_cmd(&do_line(tag, case)).reply_ok(), 0, 0);
+    for m in ["a"].into_iter().chain(halt_marker(case)).chain(["z"]) {
+        s = readable(s, tag, &format!("{id}-{m}.bin"), true);
+    }
+    s
+}
+
+/// `finish` after `ended_now`: every other marker exists; `yes` asks answer yes, the others no.
+/// `sub` is the body of a sub-script the case `DO`s.
+pub(crate) fn finished(s: Script, tag: &str, case: &Case, yes: &[&str], sub: Option<&str>) -> Script {
     let f = test_fill(tag);
     let r = render(case, &f, ScriptOut::Off).unwrap();
     let (mut markers, mut asks) = (r.markers.clone(), r.asks.clone());
@@ -157,21 +199,9 @@ pub(crate) fn ran(s: Script, tag: &str, case: &Case, yes: &[&str], sub: Option<&
         asks.extend(sr.asks);
     }
     let id = case.id.as_str();
-    let mut s = staged(s, tag, case, ScriptOut::Off);
-    s = sampled(sampled(s, 0, 0).expect_cmd(&do_line(tag, case)).reply_ok(), 0, 0);
-    let mut wanted = vec!["a"];
-    if let Expect::HaltAfter(m) = case.expect
-        && m != "a"
-        && m != "z"
-    {
-        wanted.push(m);
-    }
-    wanted.push("z");
-    for m in &wanted {
-        s = readable(s, tag, &format!("{id}-{m}.bin"), true);
-    }
-    s = s.expect_fn(DEPTH).reply_decimal(0);
-    for m in markers.iter().filter(|m| !wanted.contains(&m.as_str())) {
+    let seen: Vec<&str> = ["a"].into_iter().chain(halt_marker(case)).chain(["z"]).collect();
+    let mut s = s.expect_fn(DEPTH).reply_decimal(0);
+    for m in markers.iter().filter(|m| !seen.contains(&m.as_str())) {
         s = readable(s, tag, &format!("{id}-{m}.bin"), true);
     }
     for k in asks {
@@ -179,6 +209,11 @@ pub(crate) fn ran(s: Script, tag: &str, case: &Case, yes: &[&str], sub: Option<&
         s = readable(readable(s, tag, &format!("{id}-{k}-yes.bin"), y), tag, &format!("{id}-{k}-no.bin"), !y);
     }
     s
+}
+
+/// A case that ends before the first sample with every marker written.
+pub(crate) fn ran(s: Script, tag: &str, case: &Case, yes: &[&str], sub: Option<&str>) -> Script {
+    finished(ended_now(s, tag, case), tag, case, yes, sub)
 }
 
 fn yes_no(s: Script, expr: &str, v: bool) -> Script {
@@ -312,6 +347,158 @@ fn channel_in_records_every_case_on_a_build_that_answers_everything() {
         ("ppd", "ok"),
         ("tilde4", "ok"),
         ("tilde3", "ok"),
+    ] {
+        assert_eq!(o.lookup(k), Some(&Value::Text(v.into())), "{k}");
+    }
+    assert!(o.cleanup.iter().all(|c| c.clean), "{:?}", o.cleanup);
+}
+
+const OUT: &str = "out";
+const AREA: &str = "T32PQR1";
+
+fn area_line(s: Script, n: &str, v: &str) -> Script {
+    s.expect_fn(&format!("AREA.LINE(\"{AREA}\",{n}.)")).reply_text(v)
+}
+
+/// `area` with its lines read back: the text, the directory, a 1024-column cut.
+fn area_read(mut s: Script) -> Script {
+    s = s.expect_cmd(&format!("AREA.Create {AREA} 1024. 50. /NoSELect")).reply_ok();
+    s = ran(s, OUT, &ar(), &[], None);
+    let wide: String = "0123456789abcdef".repeat(64);
+    for (n, v) in [("1", "area-v-r1"), ("2", "C:\\T"), ("3", wide.as_str()), ("4", ""), ("0", wide.as_str())] {
+        s = area_line(s, n, v);
+    }
+    area_line(s, "-1", "C:\\T").expect_cmd(&format!("AREA.Delete {AREA}")).reply_ok()
+}
+
+fn area_only(ctx: &mut crate::ctx::ProbeCtx<'_>) -> crate::ctx::ProbeResult {
+    let (mut lab, _) = Lab::open(ctx, OUT, LabSizes::default())?;
+    area(ctx, &mut lab)?;
+    let pending = ctx.ledger.pending().iter().any(|u| matches!(u, Undo::Revert { .. }));
+    ctx.check(!pending, || "a Revert is still pending after the area step".into())?;
+    lab.close(ctx)
+}
+
+fn leak(run: fn(&mut crate::ctx::ProbeCtx<'_>) -> crate::ctx::ProbeResult) -> &'static crate::registry::ProbeDef {
+    Box::leak(Box::new(crate::registry::ProbeDef {
+        id: ProbeId::ChannelOut,
+        tier: crate::registry::Tier::Safe,
+        requires: &[],
+        needs_connection: true,
+        deadline: Duration::from_secs(60),
+        about: "",
+        run,
+    }))
+}
+
+#[test]
+fn channel_out_deletes_its_area_through_revert_only_after_create_succeeded() {
+    let s = opened(Script::new().attach(), OUT);
+    let s = s.expect_cmd(&format!("AREA.Create {AREA} 1024. 50. /NoSELect")).reply_error(90, "no areas");
+    let mut session = connect(vec![Ok(closed_down(listed(s, OUT, &[]), OUT))]);
+    let mut env = test_env("channel-out-area-refused");
+    let r = run(&mut env, &mut session, &[leak(area_only)]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
+    assert_eq!(o.lookup("area"), Some(&Value::Text("refused".into())));
+    assert!(o.cleanup.iter().all(|c| !c.what.starts_with("revert")), "{:?}", o.cleanup);
+
+    let s = listed(area_read(opened(Script::new().attach(), OUT)), OUT, &[]);
+    let s = files_removed(s, OUT, &ar(), ScriptOut::Off, &[]);
+    let mut session = connect(vec![Ok(closed_down(s, OUT))]);
+    let mut env = test_env("channel-out-area");
+    let r = run(&mut env, &mut session, &[leak(area_only)]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
+    assert_eq!(o.lookup("area"), Some(&Value::Text("ok".into())));
+    assert_eq!(o.lookup("areacol"), Some(&Value::Text("1024".into())));
+    assert_eq!(o.lookup("area_delete"), Some(&Value::Text("done".into())));
+    assert!(o.cleanup.iter().all(|c| !c.what.starts_with("revert")), "{:?}", o.cleanup);
+}
+
+/// `fetch`: present, its size, loaded into the blob region, read back.
+fn fetched(s: Script, tag: &str, name: &str, bytes: &[u8]) -> Script {
+    let p = format!("{}\\{name}", dir(tag));
+    let s = readable(s, tag, name, true).expect_fn(&format!("OS.FILE.SIZE(\"{p}\")")).reply_decimal(bytes.len() as i64);
+    let s = s.expect_cmd(&format!("Data.LOAD.Binary \"{p}\" VM:0x01026000")).reply_ok();
+    s.expect_req(Request::MemRead { access: "VM".into(), addr: B, len: bytes.len() as u16 }).reply_mem(bytes)
+}
+
+fn enddo_reads(mut s: Script, size: i64, first: &str, second: &str) -> Script {
+    for k in 0..2 {
+        s = s.expect_fn("PRACTICE.ARG.SIZE()").reply_decimal(size).expect_fn("PRACTICE.ARG(0.)").reply_text(first);
+        s = s.expect_fn("PRACTICE.ARG(1.)").reply_text(second);
+        if k == 0 {
+            s = s.expect_cmd("PRINT \"\"").reply_ok();
+        }
+    }
+    s
+}
+
+#[test]
+fn channel_out_records_every_case_on_a_build_that_answers_everything() {
+    let large = 64 * 1024;
+    let mut s = opened_large(Script::new().attach(), OUT, large);
+    s = fetched(ran(s, OUT, &fo(), &[], None), OUT, "fo.txt", b"file-v2\r\n");
+    s = fetched(listed(s, OUT, &["fo.txt", "fo.bak", "fo.cmm"]), OUT, "fb.bin", &[0x41, 0]);
+    s = ended_now(s, OUT, &eo()).expect_req(Request::EvalString).reply_string("stale");
+    s = finished(s.expect_fn("EVAL.STRing()").reply_text("eval-out-r1"), OUT, &eo(), &[], None);
+    for (c, n) in [(eo4000(), 4000usize), (eo4095(), 4095)] {
+        s = ended_now(s, OUT, &c).expect_fn("STRing.LENgth(EVAL.STRing())").reply_decimal(n as i64);
+        s = finished(s.expect_req(Request::EvalString).reply_string(&"x".repeat(n)), OUT, &c, &["len"], None);
+    }
+    s = ran(ran(s, OUT, &rp1(), &["once"], None), OUT, &rpb(), &["each"], None);
+    s = ran(s, OUT, &m8k(), &["l4k", "trunc"], None);
+    s = area_read(s);
+    s = finished(enddo_reads(ended_now(s, OUT, &rt()), 2, "ret-v", "r2"), OUT, &rt(), &[], None);
+    s = finished(enddo_reads(ended_now(s, OUT, &rn()), 0, "", ""), OUT, &rn(), &[], None);
+    for (name, text) in [("callee.cmm", CALLEE), ("ret.cmm", RET), ("ret2.cmm", RET2)] {
+        s = file_staged(s, OUT, name, text);
+    }
+    s = ran(s, OUT, &fw(), &["arg", "r"], None);
+    for (k, yes) in [(1, &[][..]), (2, &["r"][..]), (3, &["r1"][..]), (4, &["z0"][..])] {
+        s = ran(s, OUT, &el(k), yes, None);
+    }
+    s = ran(ran(s, OUT, &cs_a(), &["dq"], None), OUT, &cs_u(), &["u2"], None);
+    s = mkdir(s, OUT, "p_-.+@=,() d");
+    s = readable(ran(s, OUT, &pu(), &[], None), OUT, "p_-.+@=,() d/s_-.+@=,() t.bin", true);
+    s = listed(s, OUT, &[]);
+
+    s = dir_gone(files_removed(s, OUT, &pu(), ScriptOut::Off, &[]), OUT, "p_-.+@=,() d");
+    for c in [cs_u(), cs_a(), el(4), el(3), el(2), el(1), fw()] {
+        s = files_removed(s, OUT, &c, ScriptOut::Off, &[]);
+    }
+    for name in ["ret2.cmm", "ret.cmm", "callee.cmm"] {
+        s = readable(s, OUT, name, false);
+    }
+    for c in [rn(), rt(), ar(), m8k(), rpb(), rp1(), eo4095(), eo4000(), eo(), fo()] {
+        s = files_removed(s, OUT, &c, ScriptOut::Off, &[]);
+    }
+    let mut session = connect(vec![Ok(closed_down_large(s, OUT, large))]);
+    let mut env = test_env("channel-out");
+    let r = run(&mut env, &mut session, &[ProbeId::ChannelOut.def()]);
+    let o = &r.outcomes[0];
+    assert_eq!(o.verdict, Verdict::Pass, "{o:?}");
+    for (k, v) in [
+        ("file", "crlf"),
+        ("create_bak", "fo.bak"),
+        ("writeb", "ok"),
+        ("evalout", "ok"),
+        ("eval4k", "4000,4000/4095,4095"),
+        ("rp1", "once"),
+        ("rpb", "ok"),
+        ("m8k", "trunc4096"),
+        ("area", "ok"),
+        ("areacol", "1024"),
+        ("enddo_top", "ret"),
+        ("fw", "ok"),
+        ("entryline", "raw"),
+        ("entry_plain", "first-word"),
+        ("retfalse", "0"),
+        ("dq", "ok"),
+        ("utf8", "chars2"),
+        ("vmsetlen", "n/a"),
+        ("punct", "ok"),
     ] {
         assert_eq!(o.lookup(k), Some(&Value::Text(v.into())), "{k}");
     }

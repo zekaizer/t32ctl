@@ -850,6 +850,11 @@ impl Lab {
         Ok((lab, extra))
     }
 
+    /// `{S}`.
+    pub fn dir(&self) -> &StagePath {
+        &self.dir
+    }
+
     pub fn path(&self, name: &str) -> Result<StagePath, ProbeFail> {
         Ok(self.dir.join(name)?)
     }
@@ -925,7 +930,7 @@ impl Lab {
         Ok(ctx.session.mem_write(&self.r.addr(), &[UNTOUCHED; RESULT_LEN as usize])?)
     }
 
-    fn readable(&self, ctx: &mut ProbeCtx<'_>, name: &str) -> Result<bool, ProbeFail> {
+    pub fn readable(&self, ctx: &mut ProbeCtx<'_>, name: &str) -> Result<bool, ProbeFail> {
         let p = self.path(name)?;
         let e = ctx.exists_fn();
         Ok(ctx.session.eval(&e.call(&p))?.into_bool(e.name())?)

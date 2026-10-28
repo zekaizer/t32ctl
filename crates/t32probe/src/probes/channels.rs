@@ -8,11 +8,16 @@
 use std::time::Duration;
 
 use t32rcl::MacroName;
-use t32stage::Undo;
+use t32stage::{RelPath, Undo};
 
-use super::lab::{Answer, Case, CaseRecord, Expect, Lab, LabSizes, Slot, eval_text};
+use super::{
+    Listing,
+    lab::{Answer, Case, CaseRecord, Expect, Lab, LabSizes, Run, Slot, Until, eval_text},
+    list_dir, soft,
+};
 use crate::{
-    ctx::{ProbeCtx, ProbeResult},
+    ctx::{ProbeCtx, ProbeFail, ProbeResult},
+    env::ScriptOut,
     outcome::Value,
 };
 
@@ -351,8 +356,8 @@ fn channel_in_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
     };
     ctx.text("semi", semi);
 
-    super::soft(ctx.session.cmd(&format!("GLOBAL {}", ca.amp())))?;
-    super::soft(ctx.session.cmd(&lab.fill("&{q}_ca=\"ca-{run}\"")?))?;
+    soft(ctx.session.cmd(&format!("GLOBAL {}", ca.amp())))?;
+    soft(ctx.session.cmd(&lab.fill("&{q}_ca=\"ca-{run}\"")?))?;
     let a6 = lab.run(ctx, &a6())?;
     ctx.text("reexp", if yes(&a6, "re") { "yes" } else { "no" });
 
@@ -367,7 +372,7 @@ fn channel_in_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
     }
     ctx.text("dolen", dolen.to_string());
 
-    super::soft(ctx.session.cmd(&lab.fill("EVAL \"eval-in-{run}\"")?))?;
+    soft(ctx.session.cmd(&lab.fill("EVAL \"eval-in-{run}\"")?))?;
     let ei = lab.run(ctx, &ei())?;
     let evalin = match () {
         _ if yes(&ei, "e") => "ok",
@@ -384,7 +389,7 @@ fn channel_in_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
     ctx.session.mem_write(&lab.blob().addr(), &[0])?;
     lab.stage_sub(ctx, "t4", "t4/sub/b.cmm", T4_SUB)?;
     let t4 = lab.run(ctx, &t4())?;
-    let b0 = super::soft(ctx.session.mem_read(&lab.blob().addr(), 1))?;
+    let b0 = soft(ctx.session.mem_read(&lab.blob().addr(), 1))?;
     let loaded = t4.has("load") && b0.as_deref() == Some(&[0x31]);
     let pwd = eval_text(ctx, "OS.DIR(OS.PWD()+\"\\~~~~\")")?;
     ctx.measure("tilde4_pwd", Value::Text(format!("{pwd:?}")));
@@ -402,6 +407,449 @@ fn channel_in_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
     ctx.measure("tilde3_raw", Value::Text(format!("{abs:?} {ptd:?}")));
     let same = matches!((&abs, &ptd), (Some(a), Some(p)) if !a.is_empty() && a.eq_ignore_ascii_case(p));
     ctx.text("tilde3", if same { "ok" } else { "no" });
+    Ok(())
+}
+
+const FO: &str = r#"@a
+@z
+OPEN #1 "{S}\fo.txt" /Create
+WRITE #1 "file-v"
+WRITE #1 OS.PPD()
+CLOSE #1
+@mark w1
+OPEN #1 "{S}\fo.txt" /Create
+WRITE #1 "file-v2"
+CLOSE #1
+@mark w2
+OPEN #1 "{S}\fb.bin" /Create /Binary
+WRITEB #1 %Byte 0x41
+WRITEB #1 %Byte 0x00
+CLOSE #1
+@v
+ENDDO"#;
+const EO: &str = r#"@a
+@z
+EVAL "eval-out-{run}"
+@v
+ENDDO"#;
+/// 16 characters, then `n` blocks of 16 appended one by one.
+fn eo4k(id: &str, start: &str, n: u32, len: u32) -> Case {
+    let body = format!(
+        "@a\nPRIVATE &s\n&s=\"{start}\"\nRePeaT {n}.\n(\n  &s=\"&s0123456789abcdef\"\n)\n\
+         @ask len STRing.LENgth(\"&s\") == {len}.\n@z\nEVAL \"&s\"\n@v\nENDDO"
+    );
+    Case::new(id, body, Expect::HaltAfter("a"), Duration::from_secs(20))
+}
+const RPB: &str = r#"@a
+PRIVATE &s
+&s="ab"
+RePeaT 3.
+(
+  &s="&s&s"
+)
+@ask each STRing.LENgth("&s") == 16.
+@z
+ENDDO"#;
+/// The one-line `RePeaT` form, measured here and used nowhere else.
+const RP1: &str = r#"@a
+PRIVATE &s
+&s="ab"
+RePeaT 3. &s="&s&s"
+@ask each STRing.LENgth("&s") == 16.
+@ask once STRing.LENgth("&s") == 4.
+@z
+ENDDO"#;
+const M8K: &str = r#"@a
+PRIVATE &s
+&s="0123456789abcdef"
+RePeaT 8.
+(
+  &s="&s&s"
+)
+@ask l4k STRing.LENgth("&s") == 4096.
+&s="&s&s"
+@ask l8k STRing.LENgth("&s") == 8192.
+@ask trunc STRing.LENgth("&s") == 4096.
+@z
+ENDDO"#;
+const AR: &str = r#"@a
+@z
+PRINT %AREA {A} "area-v-{run}"
+PRINT %AREA {A} OS.PPD()
+PRIVATE &s
+&s="0123456789abcdef"
+RePeaT 7.
+(
+  &s="&s&s"
+)
+PRINT %AREA {A} "&s"
+@v
+ENDDO"#;
+const RT: &str = "@a\n@z\nENDDO \"ret-v\" \"r2\"";
+const RN: &str = "@a\n@z\nENDDO";
+pub(crate) const CALLEE: &str = "PARAMETERS &a &b\nENDDO \"got:&a|&b\"\n";
+pub(crate) const RET: &str = "ENDDO \"chain ok\"\n";
+pub(crate) const RET2: &str = "ENDDO FALSE()\n";
+/// `d` follows the last `DO`: a case may halt only after every `DO` returned.
+const FW: &str = r#"@a
+LOCAL &l &r
+ENTRY %LINE &l
+DO &l
+@mark d
+@ask arg PRACTICE.ARG(0.) == "got:x1|y 2"
+ENTRY %LINE &r
+@ask r "&r" == "got:x1|y 2"
+@z
+@put 0 "[&r]"
+@v
+ENDDO"#;
+const EL1: &str = r#"@a
+LOCAL &r
+DO "{S}\ret.cmm"
+@mark d
+ENTRY %LINE &r
+@ask q &r == "chain ok"
+@z
+ENDDO"#;
+const EL2: &str = r#"@a
+LOCAL &r
+DO "{S}\ret.cmm"
+@mark d
+ENTRY %LINE &r
+@ask r "&r" == "chain ok"
+@z
+ENDDO"#;
+const EL3: &str = r#"@a
+LOCAL &r
+DO "{S}\ret.cmm"
+@mark d
+ENTRY &r
+@ask r "&r" == "chain ok"
+@ask r1 "&r" == "chain"
+@z
+ENDDO"#;
+const EL4: &str = r#"@a
+LOCAL &r
+DO "{S}\ret2.cmm"
+@mark d
+ENTRY %LINE &r
+@ask f "&r" == "FALSE()"
+@ask z0 "&r" == "0"
+@ask fx "&r" == "0x0"
+@z
+@put 0 "[&r]"
+@v
+ENDDO"#;
+const CS_A: &str = r#"@a
+@ask dq STRing.LENgth("x""y") == 3.
+@z
+@put 0 "x""y"
+@v
+ENDDO"#;
+const CS_U: &str = "@a\n@z\n@ask u5 STRing.LENgth(\"ü한\") == 5.\n@ask u2 STRing.LENgth(\"ü한\") == 2.\n\
+                    @put 0 \"ü한\"\n@v\nENDDO";
+const PU_DIR: &str = "p_-.+@=,() d";
+const PU_FILE: &str = "p_-.+@=,() d/s_-.+@=,() t.bin";
+const PU: &str = r#"@a
+@z
+Data.SAVE.Binary "{S}\p_-.+@=,() d\s_-.+@=,() t.bin" VM:{M}++0x0
+@v
+ENDDO"#;
+const VMSET_LEN: [u32; 2] = [1000, 4000];
+
+pub(crate) fn fo() -> Case {
+    let mut names = vec!["fo.txt".to_string(), "fb.bin".to_string()];
+    let fo = RelPath::new("fo.txt").expect("a valid name");
+    names.extend(fo.bak_candidates().iter().map(|c| c.as_str().to_string()));
+    let mut c = case("fo", FO, Expect::HaltAfter("z"));
+    c.outputs = names;
+    c
+}
+pub(crate) fn eo() -> Case {
+    case("eo", EO, Expect::HaltAfter("z"))
+}
+pub(crate) fn eo4000() -> Case {
+    eo4k("eo4000", "0123456789abcdef", 249, 4000)
+}
+pub(crate) fn eo4095() -> Case {
+    eo4k("eo4095", "012345678901234", 255, 4095)
+}
+pub(crate) fn rpb() -> Case {
+    case("rpb", RPB, Expect::HaltAfter("a"))
+}
+pub(crate) fn rp1() -> Case {
+    case("rp1", RP1, Expect::HaltAfter("a"))
+}
+pub(crate) fn m8k() -> Case {
+    Case::new("m8k", M8K, Expect::HaltAfter("a"), Duration::from_secs(20))
+}
+pub(crate) fn ar() -> Case {
+    case("ar", AR, Expect::HaltAfter("z"))
+}
+pub(crate) fn rt() -> Case {
+    case("rt", RT, Expect::End)
+}
+pub(crate) fn rn() -> Case {
+    case("rn", RN, Expect::End)
+}
+pub(crate) fn fw() -> Case {
+    case("fw", FW, Expect::HaltAfter("d")).args(r#""{S}\callee.cmm" "x1" "y 2""#)
+}
+pub(crate) fn el(k: u32) -> Case {
+    let body = [EL1, EL2, EL3, EL4][k as usize - 1];
+    case(format!("el{k}"), body, Expect::HaltAfter("d"))
+}
+pub(crate) fn cs_a() -> Case {
+    case("cs-a", CS_A, Expect::HaltAfter("a"))
+}
+pub(crate) fn cs_u() -> Case {
+    case("cs-u", CS_U, Expect::HaltAfter("z"))
+}
+pub(crate) fn dn(n: u32) -> Case {
+    let text: String = (0..n).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    case(format!("d{n}"), &format!("@a\n@z\nData.Set VM:{{L}} \"{text}\" 0\n@v\nENDDO"), Expect::HaltAfter("z"))
+}
+pub(crate) fn pu() -> Case {
+    case("pu", PU, Expect::HaltAfter("z")).outputs(&[PU_FILE])
+}
+
+/// Every channel-out case with its helper files, in run order.
+#[cfg(test)]
+pub(crate) fn out_cases() -> (Vec<Case>, Vec<Sub>) {
+    let mut v = vec![fo(), eo(), eo4000(), eo4095(), rpb(), rp1(), m8k(), ar(), rt(), rn(), fw()];
+    v.extend((1..=4).map(el));
+    v.extend([cs_a(), cs_u()]);
+    v.extend(VMSET_LEN.map(dn));
+    v.push(pu());
+    (v, Vec::new())
+}
+
+/// Script to client without macros: files written with `WRITE`/`WRITEB`, `EVAL`, a message
+/// `AREA`, `ENDDO` values, `ENTRY` after `DO`, `Data.Set` lengths and loop expansion. Every case is
+/// recorded; nothing here decides the verdict.
+pub fn channel_out(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
+    let (mut lab, _) = Lab::open(ctx, "out", LabSizes { large: Some(64 * 1024), extra: Vec::new() })?;
+    let result = channel_out_cases(ctx, &mut lab);
+    let closed = lab.close(ctx);
+    result.and(closed)
+}
+
+/// `stage` + `start` + `wait(Done)`; `None` when the case did not start.
+fn ended(ctx: &mut ProbeCtx<'_>, lab: &mut Lab, case: &Case) -> Result<Option<Run>, ProbeFail> {
+    let Some(mut run) = lab.begin(ctx, case)? else { return Ok(None) };
+    lab.wait(ctx, &mut run, Until::Done)?;
+    Ok(Some(run))
+}
+
+fn channel_out_cases(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
+    let fo = lab.run(ctx, &fo())?;
+    let text = if fo.ran() { lab.fetch(ctx, "fo.txt")? } else { None };
+    let file = match text.as_deref() {
+        Some(b"file-v2\r\n") => "crlf",
+        Some(b"file-v2\n") => "lf",
+        _ => "FAIL",
+    };
+    ctx.measure("file_raw", Value::Text(super::lab::raw_note(text.as_deref().unwrap_or_default())));
+    ctx.text("file", file);
+    let create_bak = match list_dir(ctx.session, lab.dir())? {
+        Listing::Names { names, .. } => {
+            let bak: Vec<String> = names
+                .into_iter()
+                .filter(|n| {
+                    let l = n.to_ascii_lowercase();
+                    l.starts_with("fo.") && l != "fo.txt" && l != "fo.cmm"
+                })
+                .collect();
+            if bak.is_empty() { "no".to_string() } else { bak.join(",") }
+        }
+        Listing::Unavailable(_) => "?".to_string(),
+    };
+    ctx.text("create_bak", create_bak);
+    let fb = if fo.ran() { lab.fetch(ctx, "fb.bin")? } else { None };
+    ctx.text("writeb", if fb.as_deref() == Some(&[0x41, 0x00]) { "ok" } else { "FAIL" });
+
+    let want = lab.fill("eval-out-{run}")?;
+    let mut evalout = "cleared";
+    if let Some(run) = ended(ctx, lab, &eo())? {
+        let slot = soft(ctx.session.eval_last_string())?;
+        let func = eval_text(ctx, "EVAL.STRing()")?;
+        ctx.measure("evalout_raw", Value::Text(format!("slot={slot:?} fn={func:?}")));
+        if slot.as_deref() == Some(&want) || func.as_deref() == Some(&want) {
+            evalout = "ok";
+        }
+        lab.finish(ctx, run)?;
+    }
+    ctx.text("evalout", evalout);
+    let mut eval4k = Vec::new();
+    for c in [eo4000(), eo4095()] {
+        let mut token = "-,-".to_string();
+        if let Some(run) = ended(ctx, lab, &c)? {
+            let func = eval_text(ctx, "STRing.LENgth(EVAL.STRing())")?;
+            let slot = soft(ctx.session.eval_last_string())?;
+            token = format!("{},{}", func.unwrap_or("-".into()), slot.map_or("-".into(), |s| s.len().to_string()));
+            lab.finish(ctx, run)?;
+        }
+        eval4k.push(token);
+    }
+    ctx.text("eval4k", eval4k.join("/"));
+
+    let rp1 = lab.run(ctx, &rp1())?;
+    let rp1 = match () {
+        _ if yes(&rp1, "each") => "each",
+        _ if yes(&rp1, "once") => "once",
+        _ => "other",
+    };
+    ctx.text("rp1", rp1);
+    let rpb = lab.run(ctx, &rpb())?;
+    ctx.text("rpb", if yes(&rpb, "each") { "ok" } else { "FAIL" });
+    let m8k = lab.run(ctx, &m8k())?;
+    let m8k = match () {
+        _ if yes(&m8k, "l8k") => "8192",
+        _ if yes(&m8k, "trunc") => "trunc4096",
+        _ if m8k.has("a") && !m8k.has("z") => "halt",
+        _ => "other",
+    };
+    ctx.text("m8k", m8k);
+
+    area(ctx, lab)?;
+
+    for c in [rt(), rn()] {
+        let Some(run) = ended(ctx, lab, &c)? else { continue };
+        const ARGS: [&str; 3] = ["PRACTICE.ARG.SIZE()", "PRACTICE.ARG(0.)", "PRACTICE.ARG(1.)"];
+        let mut reads = Vec::new();
+        for e in ARGS {
+            reads.push(eval_text(ctx, e)?);
+        }
+        soft(ctx.session.cmd("PRINT \"\""))?;
+        for e in ARGS {
+            reads.push(eval_text(ctx, e)?);
+        }
+        ctx.measure(&format!("enddo.{}", c.id), Value::Text(format!("{reads:?}")));
+        if c.id == "rt" {
+            let top = match reads[1].as_deref() {
+                None => "err",
+                Some("") => "empty",
+                Some(v) if v.contains("ret-v") => "ret",
+                Some(_) => "other",
+            };
+            ctx.text("enddo_top", top);
+        }
+        lab.finish(ctx, run)?;
+    }
+
+    for (name, text) in [("callee.cmm", CALLEE), ("ret.cmm", RET), ("ret2.cmm", RET2)] {
+        lab.stage_file(ctx, name, text)?;
+    }
+    let fw = lab.run(ctx, &fw())?;
+    let fw = match () {
+        _ if yes(&fw, "r") => "ok",
+        _ if fw.has("d") && fw.has("z") => "noret",
+        _ => "halt",
+    };
+    ctx.text("fw", fw);
+    let [el1, el2, el3, el4] = [1, 2, 3, 4].map(el);
+    let (el1, el2) = (lab.run(ctx, &el1)?, lab.run(ctx, &el2)?);
+    let entryline = match () {
+        _ if yes(&el2, "r") => "raw",
+        _ if yes(&el1, "q") => "quoted",
+        _ => "?",
+    };
+    ctx.text("entryline", entryline);
+    let el3 = lab.run(ctx, &el3)?;
+    let plain = match () {
+        _ if yes(&el3, "r") => "ok",
+        _ if yes(&el3, "r1") => "first-word",
+        _ if !el3.has("z") => "halt",
+        _ => "other",
+    };
+    ctx.text("entry_plain", plain);
+    let el4 = lab.run(ctx, &el4)?;
+    let retfalse = match () {
+        _ if yes(&el4, "f") => "FALSE()".to_string(),
+        _ if yes(&el4, "z0") => "0".into(),
+        _ if yes(&el4, "fx") => "0x0".into(),
+        _ => put(&el4, 0).map_or("?".into(), |t| t.trim_start_matches('[').trim_end_matches(']').to_string()),
+    };
+    ctx.text("retfalse", retfalse);
+
+    let cs_a = lab.run(ctx, &cs_a())?;
+    ctx.text("dq", if yes(&cs_a, "dq") { "ok" } else { "FAIL" });
+    let cs_u = lab.run(ctx, &cs_u())?;
+    let utf8 = match () {
+        _ if yes(&cs_u, "u5") => "bytes5",
+        _ if yes(&cs_u, "u2") => "chars2",
+        _ if !cs_u.has("v") => "halt",
+        _ => "other",
+    };
+    ctx.text("utf8", utf8);
+
+    let vmsetlen = match lab.l {
+        Some(l) if lab.out == ScriptOut::VmSet => {
+            let mut max = 0;
+            for n in VMSET_LEN {
+                ctx.session.mem_write(&l.addr(), &vec![0xEE; n as usize + 1])?;
+                if !lab.run(ctx, &dn(n))?.ran() {
+                    continue;
+                }
+                let got = soft(ctx.session.mem_read(&l.addr(), n as usize + 1))?;
+                let want: Vec<u8> = (0..n).map(|i| b'a' + (i % 26) as u8).chain([0]).collect();
+                if got.as_deref() == Some(&want[..]) {
+                    max = n;
+                }
+            }
+            max.to_string()
+        }
+        _ => "n/a".into(),
+    };
+    ctx.text("vmsetlen", vmsetlen);
+
+    lab.mkdir(ctx, PU_DIR)?;
+    let pu = lab.run(ctx, &pu())?;
+    let saved = pu.ran() && lab.readable(ctx, PU_FILE)?;
+    ctx.text("punct", if saved { "ok" } else { "FAIL" });
+    Ok(())
+}
+
+/// A message area created with a run-unique name, written by a script and read back; its
+/// deletion is registered only once `AREA.Create` succeeded and is applied right after the reads.
+pub(crate) fn area(ctx: &mut ProbeCtx<'_>, lab: &mut Lab) -> ProbeResult {
+    let name = lab.fill("{A}")?;
+    let what = format!("area {name}");
+    if soft(ctx.session.cmd(&format!("AREA.Create {name} 1024. 50. /NoSELect")))?.is_none() {
+        ctx.text("area", "refused");
+        ctx.text("areacol", "-");
+        return Ok(());
+    }
+    ctx.push(Undo::Revert { what: what.clone(), commands: vec![format!("AREA.Delete {name}")] })?;
+    let ar = lab.run(ctx, &ar())?;
+    let mut lines: Vec<String> = Vec::new();
+    if ar.ran() {
+        let mut quoted = true;
+        for n in 1..=10 {
+            let arg = if quoted { format!("\"{name}\"") } else { name.clone() };
+            let mut line = eval_text(ctx, &format!("AREA.LINE({arg},{n}.)"))?;
+            if line.is_none() && n == 1 {
+                quoted = false;
+                line = eval_text(ctx, &format!("AREA.LINE({name},1.)"))?;
+            }
+            match line {
+                Some(l) if !l.is_empty() => lines.push(l),
+                _ => break,
+            }
+        }
+        let arg = if quoted { format!("\"{name}\"") } else { name.clone() };
+        let bottom =
+            [eval_text(ctx, &format!("AREA.LINE({arg},0.)"))?, eval_text(ctx, &format!("AREA.LINE({arg},-1.)"))?];
+        ctx.measure("area_bottom", Value::Text(format!("{bottom:?}")));
+        ctx.measure("area_quoted", Value::Flag(quoted));
+    }
+    let outcome = ctx.ledger.revert_now(ctx.session, &what);
+    ctx.measure("area_delete", Value::Text(outcome.label()));
+    ctx.measure("area_lines", Value::Text(format!("{lines:?}")));
+    let ok = lines.first().is_some_and(|l| *l == lab.fill("area-v-{run}").unwrap_or_default());
+    ctx.text("area", if ok { "ok" } else { "empty" });
+    let col = lines.iter().find(|l| l.starts_with("0123456789abcdef")).map_or("-".into(), |l| l.len().to_string());
+    ctx.text("areacol", col);
     Ok(())
 }
 

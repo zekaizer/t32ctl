@@ -48,11 +48,16 @@ pub(crate) fn readable(s: Script, tag: &str, name: &str, v: bool) -> Script {
 
 /// `Lab::open` without `{L}`: work directory, a snapshot of never-initialized units, the marker.
 pub(crate) fn opened(s: Script, tag: &str) -> Script {
+    opened_large(s, tag, 0)
+}
+
+/// `Lab::open` with `large` bytes of `{L}` after the blob region.
+pub(crate) fn opened_large(s: Script, tag: &str, large: u32) -> Script {
     let d = dir(tag);
     let mut s = yes_no(s.expect_fn("OS.PTD()").reply_text("C:\\T"), &format!("OS.DIR(\"{ROOT}\")"), true);
     s = yes_no(s, &format!("OS.DIR(\"{d}\")"), false).expect_cmd(&format!("MKDIR \"{d}\"")).reply_ok();
     s = yes_no(s, &format!("OS.DIR(\"{d}\")"), true);
-    for u in 0..UNITS {
+    for u in 0..UNITS + large / 4096 {
         let addr = u64::from(BASE + u * 4096);
         s = s.expect_req(Request::MemRead { access: "VM".into(), addr, len: 1008 }).reply_error(113, "");
     }
@@ -61,11 +66,16 @@ pub(crate) fn opened(s: Script, tag: &str) -> Script {
 }
 
 /// Cleanup of what `opened` made: the snapshot cleared back unit by unit, then the directory.
-pub(crate) fn closed_down(mut s: Script, tag: &str) -> Script {
-    for u in 0..UNITS {
+pub(crate) fn closed_down(s: Script, tag: &str) -> Script {
+    closed_down_large(s, tag, 0)
+}
+
+pub(crate) fn closed_down_large(mut s: Script, tag: &str, large: u32) -> Script {
+    let units = UNITS + large / 4096;
+    for u in 0..units {
         s = s.expect_cmd(&format!("Data.CLEARVM VM:0x{:08X}++0x00000FFF", BASE + u * 4096)).reply_ok();
     }
-    for u in 0..UNITS {
+    for u in 0..units {
         let addr = u64::from(BASE + u * 4096);
         s = s.expect_req(Request::MemRead { access: "VM".into(), addr, len: 1008 }).reply_error(113, "");
     }
