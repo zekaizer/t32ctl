@@ -203,4 +203,8 @@ fn the_effective_grade_is_the_declared_one_and_none_for_an_undeclared_procedure(
     };
     assert_eq!(effective_grade(&p, "reset"), Some(GradeId::Write));
     assert_eq!(effective_grade(&p, "flash"), None);
+    assert_eq!(admit::<crate::grade::Write>(&p, "reset").map(|a| a.decl().name.clone()), Ok("reset".into()));
+    let e = admit::<crate::grade::Raw>(&p, "reset").unwrap_err();
+    assert_eq!((e.kind, e.message.as_str()), (ErrorKind::GradeMismatch, "proc reset runs at grade write, not raw"));
+    assert_eq!(admit::<crate::grade::Read>(&p, "flash").unwrap_err().kind, ErrorKind::UnknownProc);
 }

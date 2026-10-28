@@ -19,6 +19,7 @@ toml.workspace = true
 
 [dev-dependencies]
 t32rcl = { workspace = true, features = ["testkit"] }
+t32stage = { workspace = true, features = ["testkit"] }
 
 [lints]
 workspace = true

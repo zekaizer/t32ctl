@@ -86,6 +86,12 @@ fn the_skill_blocks_are_tables_between_their_markers() {
          |\n\
          | `t32ctl read procs [NAME]` | Board procedures, grade, parameters, `profile=<hash>` | no connection |\n\
          | `t32ctl read describe [--format json\\|skill\\|permissions]` | Static command schema | no connection |\n\
+         | `t32ctl read proc NAME [--PARAM VALUE...]` | Run a read-grade board procedure | the script |\n\
+         | `t32ctl run proc NAME [--PARAM VALUE...]` | Run a run-grade board procedure | the script |\n\
+         | `t32ctl write proc NAME [--PARAM VALUE...]` | Run a write-grade board procedure | the script |\n\
+         | `t32ctl sys proc NAME [--PARAM VALUE...]` | Run a sys-grade board procedure | the script |\n\
+         | `t32ctl burn proc NAME [--PARAM VALUE...]` | Run a burn-grade board procedure (persistent storage) | the \
+         script |\n\
          | `t32ctl raw cmd 'TEXT'` | One PRACTICE command | the command |\n\
          | `t32ctl raw eval 'EXPR'` | One PRACTICE function | the function |\n\
          \nFlags on every command: `--json`, `--build DIR`.\n<!-- commands:end -->\n\n"

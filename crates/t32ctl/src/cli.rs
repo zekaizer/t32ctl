@@ -30,6 +30,14 @@ pub struct Cli {
 pub enum GradeCmd {
     /// Read target and debugger state; nothing changes
     Read(ReadCmd),
+    /// Run-grade board procedures: the target may run, no target data is written
+    Run(RunCmd),
+    /// Write-grade board procedures: target memory and registers
+    Write(WriteCmd),
+    /// Sys-grade board procedures, such as DDR or clock setup
+    Sys(SysCmd),
+    /// Burn-grade board procedures: persistent storage; always asks
+    Burn(BurnCmd),
     /// PRACTICE text and scripts outside every policy; always asks
     Raw(RawCmd),
 }
@@ -66,6 +74,8 @@ pub enum ReadLeaf {
     Procs(ReadProcs),
     /// Static command schema
     Describe(ReadDescribe),
+    /// Run a read-grade board procedure
+    Proc(ProcArgs),
 }
 
 #[derive(Debug, Args)]
@@ -135,6 +145,43 @@ pub struct ReadDescribe {
     #[arg(long, value_enum, default_value_t = DescribeFormat::Json)]
     pub format: DescribeFormat,
 }
+
+/// A procedure call: the name and the tokens after it, which a second parser matches against the
+/// profile's declaration (`procs::split`). `--json`, `--build` and `--help` after the name are
+/// taken out there.
+#[derive(Debug, Args)]
+pub struct ProcArgs {
+    /// The procedure, as `t32ctl read procs` lists it
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// `--PARAM VALUE` as the profile declares them
+    #[arg(value_name = "PARAM", trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+    pub tokens: Vec<String>,
+}
+
+/// A grade whose only leaf in this t32ctl is `proc`.
+macro_rules! proc_grade {
+    ($cmd:ident, $leaf:ident, $doc:literal) => {
+        #[derive(Debug, Args)]
+        pub struct $cmd {
+            #[command(flatten)]
+            pub globals: Globals,
+            #[command(subcommand)]
+            pub leaf: $leaf,
+        }
+
+        #[derive(Debug, Subcommand)]
+        pub enum $leaf {
+            #[doc = $doc]
+            Proc(ProcArgs),
+        }
+    };
+}
+
+proc_grade!(RunCmd, RunLeaf, "Run a run-grade board procedure");
+proc_grade!(WriteCmd, WriteLeaf, "Run a write-grade board procedure");
+proc_grade!(SysCmd, SysLeaf, "Run a sys-grade board procedure");
+proc_grade!(BurnCmd, BurnLeaf, "Run a burn-grade board procedure (persistent storage)");
 
 #[derive(Debug, Args)]
 pub struct RawCmd {
@@ -231,6 +278,19 @@ leaf!(Read, ReadProcs, path: ["read", "procs"], waits: "no connection", connects
 leaf!(Read, ReadDescribe, path: ["read", "describe"], waits: "no connection", connects: false,
       examples: ["t32ctl read describe", "t32ctl read describe --format permissions"]);
 
+leaf!(Read, ProcArgs, path: ["read", "proc"], waits: "the script", connects: true,
+      examples: ["t32ctl read proc selftest", "t32ctl read proc selftest --json"],
+      usage_tail: "NAME [--PARAM VALUE...]");
+leaf!(Run, ProcArgs, path: ["run", "proc"], waits: "the script", connects: true,
+      examples: ["t32ctl run proc attach"], usage_tail: "NAME [--PARAM VALUE...]");
+leaf!(Write, ProcArgs, path: ["write", "proc"], waits: "the script", connects: true,
+      examples: ["t32ctl write proc reset"], usage_tail: "NAME [--PARAM VALUE...]");
+leaf!(Sys, ProcArgs, path: ["sys", "proc"], waits: "the script", connects: true,
+      examples: ["t32ctl sys proc ddr_init --speed 1600"], usage_tail: "NAME [--PARAM VALUE...]");
+leaf!(Burn, ProcArgs, path: ["burn", "proc"], waits: "the script", connects: true,
+      examples: ["t32ctl burn proc flash --part user", "t32ctl burn proc flash --image build/zephyr/zephyr.bin --json"],
+      usage_tail: "NAME [--PARAM VALUE...]");
+
 leaf!(Raw, RawCommand, path: ["raw", "cmd"], waits: "the command", connects: true,
       examples: ["t32ctl raw cmd 'PRINT \"hello\"'", "t32ctl raw cmd 'SYStem.Mode Attach' --json"]);
 leaf!(Raw, RawEval, path: ["raw", "eval"], waits: "the function", connects: true,
@@ -242,14 +302,31 @@ leaves! {
     (Read, ReadReg),
     (Read, ReadProcs),
     (Read, ReadDescribe),
+    (Read, ProcArgs),
+    (Run, ProcArgs),
+    (Write, ProcArgs),
+    (Sys, ProcArgs),
+    (Burn, ProcArgs),
     (Raw, RawCommand),
     (Raw, RawEval),
 }
 
 impl Cli {
+    /// The arguments of a `proc` leaf, under any grade.
+    pub fn proc_args_mut(&mut self) -> Option<&mut ProcArgs> {
+        match &mut self.grade {
+            GradeCmd::Read(ReadCmd { leaf: ReadLeaf::Proc(a), .. })
+            | GradeCmd::Run(RunCmd { leaf: RunLeaf::Proc(a), .. })
+            | GradeCmd::Write(WriteCmd { leaf: WriteLeaf::Proc(a), .. })
+            | GradeCmd::Sys(SysCmd { leaf: SysLeaf::Proc(a), .. })
+            | GradeCmd::Burn(BurnCmd { leaf: BurnLeaf::Proc(a), .. }) => Some(a),
+            _ => None,
+        }
+    }
+
     /// The spec of the leaf this command line names.
     pub fn spec(&self) -> &'static LeafSpec {
-        use crate::grade::{Raw, Read};
+        use crate::grade::{Burn, Raw, Read, Run, Sys, Write};
         match &self.grade {
             GradeCmd::Read(g) => match g.leaf {
                 ReadLeaf::Status(_) => &<ReadStatus as Leaf<Read>>::SPEC,
@@ -257,6 +334,19 @@ impl Cli {
                 ReadLeaf::Reg(_) => &<ReadReg as Leaf<Read>>::SPEC,
                 ReadLeaf::Procs(_) => &<ReadProcs as Leaf<Read>>::SPEC,
                 ReadLeaf::Describe(_) => &<ReadDescribe as Leaf<Read>>::SPEC,
+                ReadLeaf::Proc(_) => &<ProcArgs as Leaf<Read>>::SPEC,
+            },
+            GradeCmd::Run(g) => match g.leaf {
+                RunLeaf::Proc(_) => &<ProcArgs as Leaf<Run>>::SPEC,
+            },
+            GradeCmd::Write(g) => match g.leaf {
+                WriteLeaf::Proc(_) => &<ProcArgs as Leaf<Write>>::SPEC,
+            },
+            GradeCmd::Sys(g) => match g.leaf {
+                SysLeaf::Proc(_) => &<ProcArgs as Leaf<Sys>>::SPEC,
+            },
+            GradeCmd::Burn(g) => match g.leaf {
+                BurnLeaf::Proc(_) => &<ProcArgs as Leaf<Burn>>::SPEC,
             },
             GradeCmd::Raw(g) => match g.leaf {
                 RawLeaf::Cmd(_) => &<RawCommand as Leaf<Raw>>::SPEC,
@@ -290,13 +380,23 @@ pub enum Parsed {
     Usage(CtlError),
 }
 
+/// `--help` after a procedure's name is the procedure's help: clap takes it when it follows the
+/// name directly, so a command line that is a `proc` call without it gets it back as a token.
 pub fn parse(argv: &[OsString]) -> Parsed {
-    let parsed = command().try_get_matches_from(argv).and_then(|m| Cli::from_arg_matches(&m));
-    match parsed {
+    let parse_cli = |argv: &[OsString]| command().try_get_matches_from(argv).and_then(|m| Cli::from_arg_matches(&m));
+    match parse_cli(argv) {
         Ok(cli) => Parsed::Cli(cli),
-        Err(e) if matches!(e.kind(), ClapKind::DisplayHelp | ClapKind::DisplayVersion) => {
+        Err(e) if e.kind() == ClapKind::DisplayHelp => {
+            let without: Vec<OsString> = argv.iter().filter(|a| *a != "--help").cloned().collect();
+            if let Ok(mut cli) = parse_cli(&without)
+                && let Some(args) = cli.proc_args_mut()
+            {
+                args.tokens.push("--help".into());
+                return Parsed::Cli(cli);
+            }
             Parsed::Print(e.render().to_string())
         }
+        Err(e) if e.kind() == ClapKind::DisplayVersion => Parsed::Print(e.render().to_string()),
         Err(e) => Parsed::Usage(usage_error(&e)),
     }
 }

@@ -55,11 +55,12 @@ pub fn leaves() -> Vec<LeafDoc> {
 }
 
 /// `t32ctl` and the path, positionals in index order, options in definition order, `last`
-/// positionals, then the spec's tail. `sep` joins possible values.
+/// positionals, then the spec's tail. `sep` joins possible values. A tail replaces the positionals:
+/// `proc` captures its name and raw tokens, which only the tail describes.
 pub fn usage(path: &[String], cmd: &Command, tail: Option<&str>, sep: &str) -> String {
     let mut parts = vec!["t32ctl".to_string()];
     parts.extend(path.iter().cloned());
-    let positionals: Vec<&Arg> = cmd.get_positionals().collect();
+    let positionals: Vec<&Arg> = if tail.is_some() { Vec::new() } else { cmd.get_positionals().collect() };
     parts.extend(positionals.iter().filter(|a| !a.is_last_set()).map(|a| positional(a)));
     parts.extend(cmd.get_arguments().filter(|a| !a.is_positional() && !a.is_global_set()).map(|a| option(a, sep)));
     parts.extend(positionals.iter().filter(|a| a.is_last_set()).map(|a| format!("[-- {}...]", value_name(a))));

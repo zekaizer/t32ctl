@@ -13,14 +13,15 @@ use super::*;
 use crate::cli::tests::words;
 
 /// The board profile every world starts with.
-const PROFILE: &str = "schema = 1\n[target]\nname = \"acme_evb\"\ncpu = \"CortexA53\"\ncores = 4\nword = 8\n";
+pub(crate) const PROFILE: &str =
+    "schema = 1\n[target]\nname = \"acme_evb\"\ncpu = \"CortexA53\"\ncores = 4\nword = 8\n";
 
 /// A home and a workspace in a fresh temp directory, removed when dropped. `T32CTL_PROFILE`
 /// names `board/support/t32ctl`, which holds `PROFILE`.
-struct World(PathBuf);
+pub(crate) struct World(pub(crate) PathBuf);
 
 impl World {
-    fn new(tag: &str) -> Self {
+    pub(crate) fn new(tag: &str) -> Self {
         let root = std::env::temp_dir().join(format!("t32ctl-run-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("ws")).unwrap();
@@ -30,7 +31,7 @@ impl World {
         w
     }
 
-    fn env(&self) -> Env {
+    pub(crate) fn env(&self) -> Env {
         Env {
             cwd: self.0.join("ws"),
             home: Some(self.0.join("home")),
@@ -40,11 +41,11 @@ impl World {
         }
     }
 
-    fn pv_dir(&self) -> PathBuf {
+    pub(crate) fn pv_dir(&self) -> PathBuf {
         self.0.join("home/.local/state/t32ctl/pv/auto-20000")
     }
 
-    fn write(&self, rel: &str, text: &str) {
+    pub(crate) fn write(&self, rel: &str, text: &str) {
         let p = self.0.join(rel);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, text).unwrap();
@@ -57,23 +58,25 @@ impl Drop for World {
     }
 }
 
-fn deps(env: Env, connects: Vec<Result<Script, ConnectFailure>>) -> Deps {
+pub(crate) fn deps(env: Env, connects: Vec<Result<Script, ConnectFailure>>) -> Deps {
     let clock = ManualClock::new();
     let connector = connects.into_iter().fold(ScriptedConnector::new(clock.clone()), |c, s| c.push(s));
-    Deps { env, connector: Arc::new(connector), clock: Arc::new(clock), cancel: Cancel::new() }
+    let poll = PollSchedule { initial: Duration::ZERO, max: Duration::ZERO, start_grace: Duration::ZERO };
+    let stage_token = Some(t32stage::testkit::TOKEN.to_string());
+    Deps { env, connector: Arc::new(connector), clock: Arc::new(clock), cancel: Cancel::new(), poll, stage_token }
 }
 
-fn call(line: &str, deps: &Deps) -> Output {
+pub(crate) fn call(line: &str, deps: &Deps) -> Output {
     let argv: Vec<OsString> = words(line).into_iter().map(OsString::from).collect();
     run(&argv, deps)
 }
 
 /// Attach, then the prelude: `T32_GetState`, and `SYStem.CPU()` unless the target is down.
-fn connected(state: u8) -> Script {
+pub(crate) fn connected(state: u8) -> Script {
     connected_to(state, "CortexA53")
 }
 
-fn connected_to(state: u8, cpu: &str) -> Script {
+pub(crate) fn connected_to(state: u8, cpu: &str) -> Script {
     let s = Script::new().attach().expect_req(Request::TargetState).reply_state(state);
     if state == 0 { s } else { s.expect_fn("SYStem.CPU()").reply_text(cpu) }
 }
@@ -105,7 +108,7 @@ fn pv(s: Script, clients: Option<i64>, practice: u8, depth: i64) -> Script {
 }
 
 /// The header of a stopped target: `T32_GetState`, `CORE()`, `Register(PC)`.
-fn stopped_header(s: Script) -> Script {
+pub(crate) fn stopped_header(s: Script) -> Script {
     s.expect_req(Request::TargetState)
         .reply_state(2)
         .expect_fn("CORE()")
@@ -795,7 +798,7 @@ fn a_running_target_reads_regions_that_allow_it_with_the_e_class_and_refuses_the
 }
 
 /// The one run directory below `out/`, if any.
-fn run_dirs(w: &World) -> Vec<PathBuf> {
+pub(crate) fn run_dirs(w: &World) -> Vec<PathBuf> {
     let out = w.0.join("home/.local/state/t32ctl/out");
     let Ok(dir) = out.read_dir() else { return Vec::new() };
     dir.map(|e| e.unwrap().path()).collect()
@@ -848,7 +851,7 @@ fn a_transfer_stopped_by_its_bound_is_exit_1_and_leaves_no_file() {
 }
 
 /// `PROFILE` with the contract's procedures (without `lease`) and their scripts.
-const PROCS: &str = "\n[proc.attach]\nabout = \"Connect to the A53 cluster without resetting it\"\n\
+pub(crate) const PROCS: &str = "\n[proc.attach]\nabout = \"Connect to the A53 cluster without resetting it\"\n\
     script = \"attach.cmm\"\ngrade = \"run\"\ntimeout = \"30s\"\neffects = [\"debugger-config\"]\n\
     \n[proc.selftest]\nabout = \"Read clock and PMIC status into selftest.txt\"\nscript = \"selftest.cmm\"\n\
     grade = \"read\"\ntimeout = \"30s\"\neffects = []\noutputs = [\"selftest.txt\"]\n\
@@ -860,7 +863,7 @@ const PROCS: &str = "\n[proc.attach]\nabout = \"Connect to the A53 cluster witho
     about = \"eMMC hardware partition\"\ndefault = \"user\"\n\
     \n[proc.flash.params.offset]\ntype = \"integer\"\nabout = \"byte offset inside the partition\"\nmin = 0\ndefault = 0\n";
 
-fn with_procs(tag: &str) -> World {
+pub(crate) fn with_procs(tag: &str) -> World {
     let w = World::new(tag);
     w.write("ws/board/support/t32ctl/profile.toml", &format!("{PROFILE}{PROCS}"));
     for script in ["attach.cmm", "selftest.cmm", "flash_emmc.cmm"] {
@@ -869,7 +872,7 @@ fn with_procs(tag: &str) -> World {
     w
 }
 
-fn profile_hash(w: &World) -> String {
+pub(crate) fn profile_hash(w: &World) -> String {
     profile::hash(&profile::walk(&w.0.join("ws/board/support/t32ctl")).unwrap()).to_string()
 }
 

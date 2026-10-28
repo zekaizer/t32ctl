@@ -4,7 +4,7 @@
 
 use std::{
     fs::{self, File},
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -53,6 +53,16 @@ impl OutDir {
         let path = self.path.join(name.as_str());
         let file = File::options().write(true).create_new(true).open(&path).map_err(|e| state_dir(&path, &e))?;
         Ok((path, file))
+    }
+
+    /// `bytes` as the new file `rel` (`/` separated, no `..`), its directories made.
+    pub fn write(&self, rel: &str, bytes: &[u8]) -> Result<(), CtlError> {
+        let path = rel.split('/').fold(self.path.clone(), |p, c| p.join(c));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| state_dir(parent, &e))?;
+        }
+        let mut file = File::options().write(true).create_new(true).open(&path).map_err(|e| state_dir(&path, &e))?;
+        file.write_all(bytes).map_err(|e| state_dir(&path, &e))
     }
 }
 

@@ -45,17 +45,22 @@ use t32rcl::{
     AccessClass, Cancel, CancelReason, ConnectError, ConnectOpts, Endpoint, Error, FuncValue, Health, MemAddr,
     PracticeState, Session, TargetState,
 };
-use t32stage::{CleanupReport, ExistsFn, RegName, practice::fnc, replay_leftovers};
+use t32stage::{
+    CleanupReport, ExistsFn, Ledger, OpenError, RegName, Stage, StageConfig, Undo, practice::fnc, replay_leftovers,
+};
 
 use crate::{
-    error::{Context, CtlError, ErrorKind, from_connect, from_rcl},
+    error::{Context, CtlError, ErrorKind, from_connect, from_rcl, from_stage},
     grade::{Grade, Raw},
     notation::{Place, PracticeText, Size},
     profile::{
         Profile, RegionKind,
-        policy::{Piece, Segment, effective_memory},
+        policy::{Admitted, Piece, Segment, effective_memory},
     },
-    report::{At, CmdBody, CpuMatch, Header, Hex, Notice, Practice, PvStatus, Reg64, RegValue, RegsBody, TargetView},
+    report::{
+        At, Body, CmdBody, CpuMatch, Header, Hex, Notice, Practice, PvStatus, Reg64, RegValue, RegsBody, TargetView,
+    },
+    script::{self, Prepared},
 };
 
 /// What a call does when the connected CPU is not the profile's.
@@ -65,6 +70,8 @@ pub enum CpuCheck {
     Refuse,
     /// A notice; only `read status`, which shows both CPUs.
     Report,
+    /// No check: a procedure that declares `debugger-config` may select the CPU.
+    Skip,
 }
 
 /// One PowerView connection for the length of a call.
@@ -73,11 +80,28 @@ pub struct Conn {
     session: Session,
     /// The candidate host that attached.
     host: String,
-    /// `SYStem.CPU()` as the prelude read it; `None` while the target is down.
+    /// `SYStem.CPU()` as the prelude read it; `None` while the target is down or unchecked.
     cpu: Option<String>,
     /// The call's cancel, restored after a bounded transfer.
     cancel: Cancel,
     notices: Vec<Notice>,
+    /// How the staging layer opens when a leaf first needs it.
+    stage_cfg: Option<StageConfig>,
+    stage: Option<Stage>,
+    /// What a failed `Stage::open` registered; cleanup runs it.
+    open_cleanup: Option<Ledger>,
+    /// The run token a scripted conversation expects.
+    #[cfg(test)]
+    stage_token: Option<String>,
+}
+
+/// What cleanup at the end of a call left.
+#[derive(Debug, Default)]
+pub struct Closed {
+    /// Steps that ended clean.
+    pub clean: usize,
+    /// Our script could not be unwound: `residue`, which overrides exit 0 and 1.
+    pub residue: Option<CtlError>,
 }
 
 impl Conn {
@@ -87,8 +111,18 @@ impl Conn {
         for host in hosts {
             match Session::connect(Endpoint::new(host, port), opts.clone()) {
                 Ok(session) => {
-                    let cancel = opts.cancel.clone();
-                    return Ok(Self { session, host: host.clone(), cpu: None, cancel, notices: Vec::new() });
+                    return Ok(Self {
+                        session,
+                        host: host.clone(),
+                        cpu: None,
+                        cancel: opts.cancel.clone(),
+                        notices: Vec::new(),
+                        stage_cfg: None,
+                        stage: None,
+                        open_cleanup: None,
+                        #[cfg(test)]
+                        stage_token: None,
+                    });
                 }
                 Err(e @ ConnectError::Cancelled { .. }) => return Err(from_connect(&e)),
                 Err(e) => failed.push(e),
@@ -118,7 +152,7 @@ impl Conn {
         let replayed = replay_leftovers(&mut self.session, pv_dir, ExistsFn::OsFileReadable);
         self.notices.extend(replay_notices(&replayed));
         let run = self.session.target_state().map_err(|e| from_rcl(&e, Context::Read, "T32_GetState"))?;
-        if run == TargetState::Down {
+        if run == TargetState::Down || check == CpuCheck::Skip {
             return Ok(run);
         }
         let cpu = system_cpu(&mut self.session, Context::Stage)?;
@@ -128,6 +162,7 @@ impl Conn {
             match check {
                 CpuCheck::Refuse => return Err(CtlError::new(ErrorKind::CpuMismatch, text)),
                 CpuCheck::Report => self.notices.push(Notice::new(format!("{text}: every other command refuses"))),
+                CpuCheck::Skip => {}
             }
         }
         self.cpu = Some(cpu);
@@ -159,7 +194,75 @@ impl Conn {
     pub(crate) fn take_notices(&mut self) -> Vec<Notice> {
         std::mem::take(&mut self.notices)
     }
+
+    /// How the stage opens if a leaf needs it.
+    pub(crate) fn set_stage(&mut self, cfg: StageConfig) {
+        self.stage_cfg = Some(cfg);
+    }
+
+    /// The run token of a scripted conversation.
+    #[cfg(test)]
+    pub(crate) fn set_stage_token(&mut self, token: Option<String>) {
+        self.stage_token = token;
+    }
+
+    /// Run a prepared bundle, opening the stage first if no step of this call opened it.
+    fn run_bundle(&mut self, run: Prepared) -> Result<Body, CtlError> {
+        if self.stage.is_none() {
+            let cfg = self.stage_cfg.clone().expect("a connecting call configures the stage");
+            match Stage::open(&mut self.session, cfg) {
+                #[cfg_attr(not(test), allow(unused_mut))]
+                Ok(mut st) => {
+                    #[cfg(test)]
+                    if let Some(t) = &self.stage_token {
+                        st.set_token(t.clone());
+                    }
+                    self.stage = Some(st);
+                }
+                Err(e) => {
+                    let OpenError { error, cleanup } = *e;
+                    self.open_cleanup = Some(cleanup);
+                    return Err(from_stage(&error, "opening the stage"));
+                }
+            }
+        }
+        let stage = self.stage.as_mut().expect("the stage is open");
+        script::execute(&mut self.session, stage, &self.cancel, run)
+    }
+
+    /// Run the stage's cleanup under a fresh 30 s deadline, not tied to Ctrl-C, reviving a dead
+    /// link once. Residue becomes notices; our own script left on the stack is the call's error.
+    pub(crate) fn close(&mut self) -> Closed {
+        if self.stage.is_none() && self.open_cleanup.is_none() {
+            return Closed::default();
+        }
+        let deadline = self.session.now() + CLEANUP;
+        self.session.set_cancel(Cancel::new().with_deadline(deadline));
+        let mut report = CleanupReport::default();
+        if let Some(ledger) = self.open_cleanup.take() {
+            report.extend(ledger.run(&mut self.session));
+        }
+        if let Some(stage) = self.stage.take() {
+            report.extend(stage.close(&mut self.session));
+        }
+        self.notices.extend(residue_notices(&report));
+        let unwind = report.residue().find(|i| i.what == Undo::UnwindPractice.describe());
+        let residue = unwind.map(|i| {
+            CtlError::new(
+                ErrorKind::Residue,
+                format!(
+                    "the script t32ctl started could not be unwound ({}); in PowerView type: END (END also closes \
+                     every dialog and OPEN file)",
+                    i.outcome.label()
+                ),
+            )
+        });
+        Closed { clean: report.items.iter().filter(|i| i.outcome.is_clean()).count(), residue }
+    }
 }
+
+/// The deadline of a call's cleanup.
+const CLEANUP: Duration = Duration::from_secs(30);
 
 /// A count of what replay cleaned, and one line per command a human must type for the rest.
 fn replay_notices(report: &CleanupReport) -> Vec<Notice> {
@@ -169,6 +272,13 @@ fn replay_notices(report: &CleanupReport) -> Vec<Notice> {
         let steps = if clean == 1 { "step" } else { "steps" };
         v.push(Notice::new(format!("cleaned up after an interrupted call: {clean} {steps}")));
     }
+    v.extend(residue_notices(report));
+    v
+}
+
+/// One line per command a human must type for what cleanup could not do.
+fn residue_notices(report: &CleanupReport) -> Vec<Notice> {
+    let mut v = Vec::new();
     for item in report.residue() {
         match &item.manual {
             Some(commands) => v.extend(commands.lines().map(|c| {
@@ -311,6 +421,13 @@ impl<'c, G: Grade> Ctx<'c, G> {
     /// The run state the call found when it connected.
     pub fn run_state(&self) -> TargetState {
         self.run
+    }
+
+    /// Run a procedure the grade check admitted at this grade. It runs whatever the target state:
+    /// an `attach` procedure brings the target up.
+    pub fn run_procedure(&mut self, adm: Admitted<G>, run: Prepared) -> Result<Body, CtlError> {
+        let _admitted = adm;
+        self.conn.run_bundle(run)
     }
 
     /// The host that attached.

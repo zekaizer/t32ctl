@@ -4,10 +4,12 @@
 
 use t32rcl::AccessClass;
 
-use super::{Profile, Region, RegionKind};
+use std::marker::PhantomData;
+
+use super::{ProcDecl, Profile, Region, RegionKind};
 use crate::{
     error::{CtlError, ErrorKind},
-    grade::GradeId,
+    grade::{Grade, GradeId},
     notation::Size,
 };
 
@@ -15,6 +17,41 @@ use crate::{
 /// declares no such procedure.
 pub fn effective_grade(p: &Profile, proc: &str) -> Option<GradeId> {
     p.proc(proc).map(|d| d.grade)
+}
+
+/// Proof that procedure `decl` runs at grade `G`: its effective grade is `G`. Built only by
+/// [`admit`], so no leaf runs a procedure past the grade check:
+///
+/// ```compile_fail,E0451
+/// use t32ctl::{grade::Read, profile::policy::Admitted};
+/// fn forge(decl: t32ctl::profile::ProcDecl) -> Admitted<Read> {
+///     Admitted { decl, _grade: std::marker::PhantomData }
+/// }
+/// ```
+#[derive(Debug)]
+pub struct Admitted<G: Grade> {
+    decl: ProcDecl,
+    _grade: PhantomData<G>,
+}
+
+impl<G: Grade> Admitted<G> {
+    pub fn decl(&self) -> &ProcDecl {
+        &self.decl
+    }
+}
+
+/// Admit procedure `name` under the grade word `G`. An undeclared name is `unknown-proc`; another
+/// grade is `grade-mismatch`, whose message names the declared grade. `raw` is never declared, so
+/// `admit::<Raw>` never succeeds.
+pub fn admit<G: Grade>(p: &Profile, name: &str) -> Result<Admitted<G>, CtlError> {
+    let (Some(decl), Some(grade)) = (p.proc(name), effective_grade(p, name)) else {
+        return Err(crate::procs::unknown(p, name));
+    };
+    if grade != G::ID {
+        let message = format!("proc {name} runs at grade {}, not {}", grade.name(), G::ID.name());
+        return Err(CtlError::new(ErrorKind::GradeMismatch, message));
+    }
+    Ok(Admitted { decl: decl.clone(), _grade: PhantomData })
 }
 
 /// The memory policy a call works under.

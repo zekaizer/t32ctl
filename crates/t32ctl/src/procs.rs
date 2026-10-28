@@ -1,12 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Board procedures: `read procs` and the `<grade> proc` leaves.
 
+use std::{fs, path::PathBuf};
+
+use t32stage::{Bundle, BundleLimits};
+
 use crate::{
     Setup,
     cli::ReadProcs,
+    ctx::Ctx,
     error::{CtlError, ErrorKind},
-    profile::{ParamType, ProcDecl, Profile, policy::effective_grade},
-    report::{Body, ParamView, ProcView, ProcsBody, ProfileRef},
+    grade::{Grade, GradeId},
+    notation::shell_word,
+    out::OutDir,
+    profile::{
+        ParamCx, ParamType, ParamValue, ProcDecl, Profile,
+        policy::{Admitted, admit, effective_grade},
+    },
+    report::{Body, Bundled, Hint, ParamView, ProcView, ProcsBody, ProfileRef, Subject},
+    script::{Param, Prepared},
 };
 
 /// `unknown-proc`, with the names the profile declares.
@@ -72,3 +84,190 @@ pub fn list(args: &ReadProcs, setup: &Setup<'_>) -> Result<Body, CtlError> {
     };
     Ok(Body::Procs(ProcsBody { profile: profile_ref(setup), procs, one: args.name.is_some() }))
 }
+
+/// The tokens after a procedure's name: `--PARAM VALUE` or `--PARAM=VALUE` pairs, and the global
+/// flags clap left in them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcCall {
+    pub params: Vec<(String, String)>,
+    pub json: bool,
+    pub build: Option<PathBuf>,
+    pub help: bool,
+    /// Tokens that are not a pair, each as a message.
+    pub stray: Vec<String>,
+}
+
+/// Take `--json`, `--build DIR`, `--build=DIR` and `--help` out of `tokens`; the rest are
+/// parameter pairs.
+pub fn split(tokens: &[String]) -> ProcCall {
+    let mut call = ProcCall::default();
+    let mut it = tokens.iter();
+    while let Some(t) = it.next() {
+        match t.as_str() {
+            "--json" => call.json = true,
+            "--help" => call.help = true,
+            "--build" => match it.next() {
+                Some(dir) => call.build = Some(dir.into()),
+                None => call.stray.push("--build needs DIR".into()),
+            },
+            flag if flag.starts_with("--build=") => call.build = Some(flag["--build=".len()..].into()),
+            flag if flag.starts_with("--") && flag.len() > 2 => match flag.split_once('=') {
+                Some((f, v)) => call.params.push((f.to_string(), v.to_string())),
+                None => match it.next() {
+                    Some(v) => call.params.push((flag.to_string(), v.clone())),
+                    None => call.stray.push(format!("{flag} needs a value")),
+                },
+            },
+            other => call.stray.push(format!("{} is not a --PARAM VALUE pair", shell_word(other))),
+        }
+    }
+    call
+}
+
+fn params_error(decl: &ProcDecl, message: String) -> CtlError {
+    CtlError::new(ErrorKind::ProcParams, message).with_details(vec![format!("usage: {}", decl.usage(decl.grade))])
+}
+
+/// Every declared parameter's value: as typed, else its default. Typed values are checked before
+/// defaults, so the caller's own mistake is reported first. A file must be a non-empty regular
+/// file.
+fn values(decl: &ProcDecl, call: &ProcCall, cx: &ParamCx<'_>, setup: &Setup<'_>) -> Result<Vec<Param>, CtlError> {
+    if let Some(stray) = call.stray.first() {
+        return Err(params_error(decl, stray.clone()));
+    }
+    for (i, (flag, _)) in call.params.iter().enumerate() {
+        if decl.param_by_flag(flag).is_none() {
+            return Err(params_error(decl, format!("proc {} declares no parameter {flag}", decl.name)));
+        }
+        if call.params[..i].iter().any(|(f, _)| f == flag) {
+            return Err(params_error(decl, format!("{flag} is given twice")));
+        }
+    }
+    let typed: Vec<Option<ParamValue>> = decl
+        .params
+        .iter()
+        .map(|p| {
+            let text = call.params.iter().find(|(f, _)| *f == p.flag()).map(|(_, v)| v);
+            text.map(|t| p.parse(t, cx)).transpose()
+        })
+        .collect::<Result<_, _>>()
+        .map_err(|m| params_error(decl, m))?;
+    let mut out = Vec::with_capacity(decl.params.len());
+    for (p, typed) in decl.params.iter().zip(typed) {
+        let flag = p.flag();
+        let value = match typed {
+            Some(v) => v,
+            None => p
+                .default_value(cx)
+                .unwrap_or_else(|| Err(format!("{flag} is required")))
+                .map_err(|m| params_error(decl, m))?,
+        };
+        let shown = value.shown(setup.env);
+        let file_len = match &value {
+            ParamValue::File(path) => {
+                let bad = |why: String| params_error(decl, format!("{flag} {}: {why}", shell_word(&shown)));
+                let meta = fs::metadata(path).map_err(|e| bad(e.to_string()))?;
+                if !meta.is_file() {
+                    return Err(bad("not a regular file".into()));
+                }
+                if meta.len() == 0 {
+                    return Err(bad("an empty file".into()));
+                }
+                Some(meta.len())
+            }
+            _ => None,
+        };
+        out.push(Param { name: p.name.clone(), flag, value, shown, file_len });
+    }
+    Ok(out)
+}
+
+/// What a procedure call settled before connecting: the grade check's proof and the run.
+#[derive(Debug)]
+pub struct ProcPrep<G: Grade> {
+    pub adm: Admitted<G>,
+    pub run: Prepared,
+}
+
+/// The profile directory's files as one bundle; a file PowerView cannot take is `profile-invalid`.
+fn profile_bundle(profile: &Profile, setup: &Setup<'_>) -> Result<Bundle, CtlError> {
+    let mut bundle = Bundle::new(BundleLimits::default());
+    for f in &profile.files {
+        bundle.insert(f.rel.clone(), f.bytes.clone()).map_err(|e| {
+            CtlError::new(
+                ErrorKind::ProfileInvalid,
+                format!("{}: {e}", setup.env.display(&profile.dir.join(f.rel.as_str()))),
+            )
+        })?;
+    }
+    Ok(bundle)
+}
+
+/// The grade check, the parameters, the bundle and the output directory: everything before
+/// connecting. A grade mismatch hints the same call under the declared grade.
+pub fn prepare<G: Grade>(name: &str, call: &ProcCall, setup: &Setup<'_>) -> Result<ProcPrep<G>, CtlError> {
+    let profile = &setup.profile;
+    let adm = admit::<G>(profile, name).map_err(|e| {
+        if e.kind != ErrorKind::GradeMismatch {
+            return e;
+        }
+        let declared = effective_grade(profile, name).expect("a mismatch has a declared grade");
+        let mut words = vec![declared.name().to_string(), "proc".into(), name.to_string()];
+        words.extend(call.params.iter().flat_map(|(f, v)| [f.clone(), v.clone()]));
+        if let Some(b) = &call.build {
+            words.extend(["--build".to_string(), b.to_string_lossy().into_owned()]);
+        }
+        e.with_next(vec![Hint(words)])
+    })?;
+    let decl = adm.decl();
+    let build = setup.binding.build.as_ref().map(|b| b.value.as_path());
+    let cx = ParamCx { target: &profile.target, cwd: &setup.env.cwd, build };
+    let params = values(decl, call, &cx, setup)?;
+    let bundle = profile_bundle(profile, setup)?;
+    let out = OutDir::create(&setup.paths.out_base(), "p")?;
+    let out_shown = format!("{}/", setup.env.display(out.path()));
+    let subject = Subject::Proc {
+        name: decl.name.clone(),
+        grade: decl.grade.name(),
+        profile: Bundled {
+            hash: Some(profile.hash.to_string()),
+            root: None,
+            files: profile.files.len(),
+            cached: false,
+        },
+        params: Vec::new(),
+    };
+    let run = Prepared {
+        subject,
+        bundle,
+        entry: decl.script.clone(),
+        args: Vec::new(),
+        timeout: decl.timeout.as_duration(),
+        params,
+        out,
+        out_shown,
+        declared: decl.outputs.clone(),
+        transfer_bound: setup.config.transfer_timeout.as_duration(),
+        burn: G::ID == GradeId::Burn,
+    };
+    Ok(ProcPrep { adm, run })
+}
+
+/// Run the admitted procedure. An interrupted `burn` says what the storage may hold.
+pub fn run<G: Grade>(prep: ProcPrep<G>, ctx: &mut Ctx<'_, G>, _setup: &Setup<'_>) -> Result<Body, CtlError> {
+    ctx.run_procedure(prep.adm, prep.run).map_err(|mut e| {
+        if e.kind == ErrorKind::Interrupted && G::ID == GradeId::Burn {
+            e.details.push("the burn procedure was interrupted: the storage may hold a partial image".into());
+        }
+        e
+    })
+}
+
+/// `<grade> proc NAME --help`: the declaration, as `read procs NAME` prints it.
+pub fn help(name: &str, setup: &Setup<'_>) -> Result<Body, CtlError> {
+    list(&ReadProcs { name: Some(name.to_string()) }, setup)
+}
+
+#[cfg(test)]
+#[path = "procs_tests.rs"]
+mod tests;

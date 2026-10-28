@@ -5,8 +5,12 @@
 use std::fmt;
 
 use t32rcl::{CancelReason, ConnectError, Error, LocalError, RemoteKind};
+use t32stage::{LeaseError, StageError};
 
-use crate::notation::NotationError;
+use crate::{
+    notation::NotationError,
+    report::{Body, Hint},
+};
 
 /// What the caller does next. The code is the process exit status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -83,41 +87,57 @@ pub enum ErrorKind {
     Notation,
     MemoryPolicy,
     Refused,
+    GradeMismatch,
     UnknownProc,
+    ProcParams,
     NotHalted,
     TargetDown,
+    PvScriptRunning,
+    VmBusy,
     RclLocked,
     Unreachable,
     NoAnswer,
+    Dialog,
+    ScriptVanished,
+    PvScriptHalted,
     CpuMismatch,
     ProfileInvalid,
     NoProfile,
     TargetPower,
     ConnectionLost,
     PvError,
+    Residue,
     StateDir,
     Interrupted,
 }
 
 impl ErrorKind {
     /// In the order of the error-tag table.
-    pub const ALL: [ErrorKind; 18] = [
+    pub const ALL: [ErrorKind; 26] = [
         ErrorKind::Usage,
         ErrorKind::Notation,
         ErrorKind::MemoryPolicy,
         ErrorKind::Refused,
+        ErrorKind::GradeMismatch,
         ErrorKind::UnknownProc,
+        ErrorKind::ProcParams,
         ErrorKind::NotHalted,
         ErrorKind::TargetDown,
+        ErrorKind::PvScriptRunning,
+        ErrorKind::VmBusy,
         ErrorKind::RclLocked,
         ErrorKind::Unreachable,
         ErrorKind::NoAnswer,
+        ErrorKind::Dialog,
+        ErrorKind::ScriptVanished,
+        ErrorKind::PvScriptHalted,
         ErrorKind::CpuMismatch,
         ErrorKind::ProfileInvalid,
         ErrorKind::NoProfile,
         ErrorKind::TargetPower,
         ErrorKind::ConnectionLost,
         ErrorKind::PvError,
+        ErrorKind::Residue,
         ErrorKind::StateDir,
         ErrorKind::Interrupted,
     ];
@@ -128,18 +148,26 @@ impl ErrorKind {
             ErrorKind::Notation => "notation",
             ErrorKind::MemoryPolicy => "memory-policy",
             ErrorKind::Refused => "refused",
+            ErrorKind::GradeMismatch => "grade-mismatch",
             ErrorKind::UnknownProc => "unknown-proc",
+            ErrorKind::ProcParams => "proc-params",
             ErrorKind::NotHalted => "not-halted",
             ErrorKind::TargetDown => "target-down",
+            ErrorKind::PvScriptRunning => "pv-script-running",
+            ErrorKind::VmBusy => "vm-busy",
             ErrorKind::RclLocked => "rcl-locked",
             ErrorKind::Unreachable => "unreachable",
             ErrorKind::NoAnswer => "no-answer",
+            ErrorKind::Dialog => "dialog",
+            ErrorKind::ScriptVanished => "script-vanished",
+            ErrorKind::PvScriptHalted => "pv-script-halted",
             ErrorKind::CpuMismatch => "cpu-mismatch",
             ErrorKind::ProfileInvalid => "profile-invalid",
             ErrorKind::NoProfile => "no-profile",
             ErrorKind::TargetPower => "target-power",
             ErrorKind::ConnectionLost => "connection-lost",
             ErrorKind::PvError => "pv-error",
+            ErrorKind::Residue => "residue",
             ErrorKind::StateDir => "state-dir",
             ErrorKind::Interrupted => "interrupted",
         }
@@ -151,17 +179,23 @@ impl ErrorKind {
             | ErrorKind::Notation
             | ErrorKind::MemoryPolicy
             | ErrorKind::Refused
-            | ErrorKind::UnknownProc => Exit::Fix,
+            | ErrorKind::GradeMismatch
+            | ErrorKind::UnknownProc
+            | ErrorKind::ProcParams => Exit::Fix,
             ErrorKind::NotHalted | ErrorKind::TargetDown => Exit::State,
-            ErrorKind::RclLocked => Exit::Wait,
+            ErrorKind::PvScriptRunning | ErrorKind::VmBusy | ErrorKind::RclLocked => Exit::Wait,
             ErrorKind::Unreachable
             | ErrorKind::NoAnswer
+            | ErrorKind::Dialog
+            | ErrorKind::ScriptVanished
+            | ErrorKind::PvScriptHalted
             | ErrorKind::CpuMismatch
             | ErrorKind::ProfileInvalid
             | ErrorKind::NoProfile
             | ErrorKind::TargetPower
             | ErrorKind::ConnectionLost
             | ErrorKind::PvError
+            | ErrorKind::Residue
             | ErrorKind::StateDir => Exit::Human,
             ErrorKind::Interrupted => Exit::Interrupted,
         }
@@ -179,8 +213,14 @@ impl ErrorKind {
                  access class is not accepted; the message names the first refused byte."
             }
             ErrorKind::Refused => "PowerView refused the command, function, or memory read; its message is shown.",
+            ErrorKind::GradeMismatch => {
+                "The grade word differs from the grade the profile declares for this procedure."
+            }
             ErrorKind::UnknownProc => {
                 "The board profile declares no procedure by that name; `t32ctl read procs` lists them."
+            }
+            ErrorKind::ProcParams => {
+                "Procedure parameters do not match the declaration, or a file parameter cannot be read."
             }
             ErrorKind::NotHalted => {
                 "The command needs a stopped target, or every touched region must declare `running = true`."
@@ -188,9 +228,24 @@ impl ErrorKind {
             ErrorKind::TargetDown => {
                 "The debug port is down: attach first, with the board's `attach` procedure or in PowerView."
             }
+            ErrorKind::PvScriptRunning => {
+                "A PRACTICE script runs in PowerView: another t32ctl call's, or someone else's."
+            }
+            ErrorKind::VmBusy => {
+                "Another t32ctl or t32probe process on this PowerView's state directory holds the `VM:` staging \
+                 window."
+            }
             ErrorKind::RclLocked => "PowerView's API lock is held by another RCL client (status 123).",
             ErrorKind::Unreachable => "PowerView cannot be reached; the details name what to check.",
             ErrorKind::NoAnswer => "PowerView accepted TCP but does not answer: a modal dialog, or a blocking command.",
+            ErrorKind::Dialog => "A script opened a dialog; it was stopped, and the window may still be open.",
+            ErrorKind::ScriptVanished => {
+                "A script run ended without the runner reaching its end: something outside t32ctl cleared the \
+                 PRACTICE stack."
+            }
+            ErrorKind::PvScriptHalted => {
+                "A PRACTICE script t32ctl did not start has halted on the stack; someone must end it in PowerView."
+            }
             ErrorKind::CpuMismatch => "The connected CPU is not the profile's CPU: wrong board or wrong profile.",
             ErrorKind::ProfileInvalid => {
                 "A profile, binding, or config file has an error; file, line, and column are shown."
@@ -202,27 +257,45 @@ impl ErrorKind {
                 "PowerView failed a step t32ctl generated (a staging command, a size check, a reply t32ctl cannot \
                  use); the step and PowerView's message are shown."
             }
+            ErrorKind::Residue => {
+                "A script t32ctl started could not be unwound; the report names the PowerView command to type."
+            }
             ErrorKind::StateDir => "The state or output directory cannot be written.",
             ErrorKind::Interrupted => "Ctrl-C or SIGTERM; cleanup ran with its own deadline.",
         }
     }
 }
 
-/// A failed call: its tag, one line of message, and detail lines.
+/// A failed call: its tag, one line of message, detail lines, and the commands to run next.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CtlError {
     pub kind: ErrorKind,
     pub message: String,
     pub details: Vec<String>,
+    /// `next:` hints the report prints after the error.
+    pub next: Vec<Hint>,
+    /// What the call did before it failed: a script's result whose outputs could not be fetched,
+    /// a run a dialog stopped.
+    pub body: Option<Box<Body>>,
 }
 
 impl CtlError {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into(), details: Vec::new() }
+        Self { kind, message: message.into(), details: Vec::new(), next: Vec::new(), body: None }
     }
 
     pub fn with_details(mut self, details: Vec<String>) -> Self {
         self.details = details;
+        self
+    }
+
+    pub fn with_next(mut self, next: Vec<Hint>) -> Self {
+        self.next = next;
+        self
+    }
+
+    pub fn with_body(mut self, body: Body) -> Self {
+        self.body = Some(Box::new(body));
         self
     }
 
@@ -298,6 +371,39 @@ pub fn from_connect(e: &ConnectError) -> CtlError {
         _ => ErrorKind::Unreachable,
     };
     CtlError::new(kind, e.to_string()).with_details(vec![e.hint().to_string()])
+}
+
+/// Classify a failed staging step. `step` names it and leads the message; a bundle error is the
+/// profile directory's.
+pub fn from_stage(e: &StageError, step: &str) -> CtlError {
+    let kind = match e {
+        StageError::Rcl(rcl) => return from_rcl(rcl, Context::Stage, step),
+        StageError::Lease(LeaseError::Busy { .. }) => ErrorKind::VmBusy,
+        StageError::Lease(LeaseError::Io { .. }) | StageError::Journal { .. } => ErrorKind::StateDir,
+        StageError::Busy { depth: -1 } => {
+            let message = format!("{step}: a PRACTICE script is running in PowerView; nothing was started");
+            return CtlError::new(ErrorKind::PvScriptRunning, message);
+        }
+        StageError::Busy { depth } => {
+            let message = format!(
+                "{step}: a PRACTICE script t32ctl did not start has halted on the stack (depth {depth}); someone \
+                 must end it in PowerView"
+            );
+            return CtlError::new(ErrorKind::PvScriptHalted, message);
+        }
+        StageError::UnwindFailed { .. } => ErrorKind::Residue,
+        StageError::Arg(_) => ErrorKind::Notation,
+        StageError::Bundle(_) => ErrorKind::ProfileInvalid,
+        StageError::Source(_) => ErrorKind::ProcParams,
+        StageError::Path(_) => {
+            return CtlError::new(ErrorKind::PvError, format!("{step}: {e}; set [staging] root in the config"));
+        }
+        StageError::Vm(_) => {
+            return CtlError::new(ErrorKind::PvError, format!("{step}: {e}; check [staging] vm_len in the config"));
+        }
+        _ => ErrorKind::PvError,
+    };
+    CtlError::new(kind, format!("{step}: {e}"))
 }
 
 #[cfg(test)]

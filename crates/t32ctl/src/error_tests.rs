@@ -141,18 +141,26 @@ fn every_tag_maps_to_its_exit_and_every_exit_has_a_code_and_a_next_step() {
             ("notation", 2),
             ("memory-policy", 2),
             ("refused", 2),
+            ("grade-mismatch", 2),
             ("unknown-proc", 2),
+            ("proc-params", 2),
             ("not-halted", 3),
             ("target-down", 3),
+            ("pv-script-running", 4),
+            ("vm-busy", 4),
             ("rcl-locked", 4),
             ("unreachable", 5),
             ("no-answer", 5),
+            ("dialog", 5),
+            ("script-vanished", 5),
+            ("pv-script-halted", 5),
             ("cpu-mismatch", 5),
             ("profile-invalid", 5),
             ("no-profile", 5),
             ("target-power", 5),
             ("connection-lost", 5),
             ("pv-error", 5),
+            ("residue", 5),
             ("state-dir", 5),
             ("interrupted", 130),
         ]
@@ -166,4 +174,40 @@ fn every_tag_maps_to_its_exit_and_every_exit_has_a_code_and_a_next_step() {
     assert!(ErrorKind::ALL.iter().all(|k| k.meaning().ends_with('.')));
     let notation: CtlError = crate::notation::NotationError("size \"x\": use bytes".into()).into();
     assert_eq!(notation, CtlError::new(ErrorKind::Notation, "size \"x\": use bytes"));
+}
+
+#[test]
+fn every_staging_failure_has_one_tag() {
+    use t32stage::{ArgError, BundleError, LeaseError, PathError, StageError, VmError};
+    let io = || std::io::Error::other("disk full");
+    let cases: Vec<(StageError, &str)> = vec![
+        (StageError::Lease(LeaseError::Busy { holder: Some("t32probe (pid 7)".into()) }), "vm-busy"),
+        (StageError::Lease(LeaseError::Io { path: "l".into(), source: io() }), "state-dir"),
+        (StageError::Journal { path: "j".into(), source: io() }, "state-dir"),
+        (StageError::Busy { depth: -1 }, "pv-script-running"),
+        (StageError::Busy { depth: 2 }, "pv-script-halted"),
+        (StageError::UnwindFailed { depth: 1 }, "residue"),
+        (StageError::Arg(ArgError::TooLong { len: 5000, max: 4096 }), "notation"),
+        (StageError::Bundle(BundleError::TooLarge { files: 600, bytes: 1 }), "profile-invalid"),
+        (StageError::Source(io()), "proc-params"),
+        (StageError::Path(PathError::Char { path: "C:\\김".into(), bad: '김' }), "pv-error"),
+        (StageError::Vm(VmError::WindowTooSmall { need: 2, have: 1 }), "pv-error"),
+        (StageError::SizeMismatch { what: "x".into(), want: 2, got: 1 }, "pv-error"),
+        (StageError::BadReply { what: "OS.FILE.SIZE", text: "?".into() }, "pv-error"),
+        (StageError::StillPresent { what: "x".into() }, "pv-error"),
+        (StageError::UnpackIncomplete { key: "k".into(), detail: "marker missing".into() }, "pv-error"),
+        (StageError::Gzip(io()), "pv-error"),
+        (StageError::Rcl(remote(123, RemoteKind::Locked)), "rcl-locked"),
+        (StageError::Rcl(remote(90, RemoteKind::CommandFailed)), "pv-error"),
+        (StageError::Rcl(Error::Cancelled { op: Op::Command, reason: CancelReason::Interrupt }), "interrupted"),
+    ];
+    for (e, want) in cases {
+        assert_eq!(from_stage(&e, "the run").kind.tag(), want, "{e}");
+    }
+    let busy = from_stage(&StageError::Lease(LeaseError::Busy { holder: Some("t32probe (pid 7)".into()) }), "x");
+    assert_eq!(busy.message, "x: VM: window is leased by another process (t32probe (pid 7))");
+    let root = from_stage(&StageError::Path(PathError::Char { path: "C:\\김".into(), bad: '김' }), "opening the stage");
+    assert!(root.message.contains("[staging] root"), "{}", root.message);
+    let window = from_stage(&StageError::Vm(VmError::WindowTooSmall { need: 2, have: 1 }), "the upload");
+    assert!(window.message.contains("[staging] vm_len"), "{}", window.message);
 }

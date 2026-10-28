@@ -137,7 +137,7 @@ fn help_and_version_print_and_everything_else_is_a_usage_error() {
     assert_eq!(
         e.details,
         [
-            "tip: some similar subcommands exist: 'read', 'raw'",
+            "tip: some similar subcommands exist: 'write', 'read', 'run', 'raw'",
             "Usage: t32ctl <COMMAND>",
             "For more information, try '--help'."
         ]
@@ -186,8 +186,13 @@ fn usage_lists_positionals_then_options_then_trailing_arguments() {
         .arg(clap::Arg::new("args").last(true).num_args(0..).value_name("ARG"));
     let path = ["read".to_string(), "x".to_string()];
     assert_eq!(
-        describe::usage(&path, &cmd, Some("TAIL"), "\\|"),
-        "t32ctl read x LOC [NAME...] [--len SIZE] [--width 1\\|2\\|4\\|8] --root DIR [--all] [-- ARG...] TAIL"
+        describe::usage(&path, &cmd, None, "\\|"),
+        "t32ctl read x LOC [NAME...] [--len SIZE] [--width 1\\|2\\|4\\|8] --root DIR [--all] [-- ARG...]"
+    );
+    assert_eq!(
+        describe::usage(&path, &cmd, Some("NAME [--PARAM VALUE...]"), "|"),
+        "t32ctl read x [--len SIZE] [--width 1|2|4|8] --root DIR [--all] NAME [--PARAM VALUE...]",
+        "a tail replaces the positionals"
     );
 }
 
@@ -199,4 +204,51 @@ fn a_hint_parses_back_to_the_arguments_it_was_built_from() {
     let GradeCmd::Read(g) = cli.grade else { panic!() };
     assert_eq!(g.globals.build.as_deref(), Some(std::path::Path::new("my build's")));
     assert!(matches!(g.leaf, ReadLeaf::Status(ReadStatus { full: true })));
+}
+
+#[test]
+fn every_token_after_a_procedure_name_reaches_the_second_parser() {
+    let cases = [
+        ("t32ctl burn proc flash --part user", false, vec!["--part", "user"]),
+        (
+            "t32ctl burn proc flash --json --part=user --build b --help",
+            true,
+            vec!["--part=user", "--build", "b", "--help"],
+        ),
+        ("t32ctl burn --json proc flash --part user", true, vec!["--part", "user"]),
+        ("t32ctl read proc selftest x --y", false, vec!["x", "--y"]),
+        ("t32ctl run proc attach", false, vec![]),
+    ];
+    for (line, json, want) in cases {
+        let cli = parse_line(line).unwrap_or_else(|e| panic!("{line}: {e}"));
+        let (globals, args) = match cli.grade {
+            GradeCmd::Burn(g) => {
+                let BurnLeaf::Proc(a) = g.leaf;
+                (g.globals, a)
+            }
+            GradeCmd::Read(g) => match g.leaf {
+                ReadLeaf::Proc(a) => (g.globals, a),
+                other => panic!("{other:?}"),
+            },
+            GradeCmd::Run(g) => {
+                let RunLeaf::Proc(a) = g.leaf;
+                (g.globals, a)
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!((globals.json, args.tokens.iter().map(String::as_str).collect::<Vec<_>>()), (json, want), "{line}");
+    }
+    assert!(parse_line("t32ctl raw proc x").is_err(), "raw has no proc leaf");
+    assert!(parse_line("t32ctl burn proc").is_err(), "a procedure needs a name");
+}
+
+#[test]
+fn help_after_a_procedure_name_is_a_token_and_without_a_name_clap_help() {
+    let argv = |line: &str| words(line).into_iter().map(OsString::from).collect::<Vec<_>>();
+    let Parsed::Cli(cli) = parse(&argv("t32ctl burn proc flash --help")) else { panic!("not a command") };
+    let GradeCmd::Burn(g) = cli.grade else { panic!("not burn") };
+    let BurnLeaf::Proc(a) = g.leaf;
+    assert_eq!((a.name.as_str(), a.tokens.as_slice()), ("flash", &["--help".to_string()][..]));
+    assert!(matches!(parse(&argv("t32ctl burn proc --help")), Parsed::Print(t) if t.contains("Usage:")));
+    assert!(matches!(parse(&argv("t32ctl read status --help")), Parsed::Print(t) if t.contains("Examples:")));
 }

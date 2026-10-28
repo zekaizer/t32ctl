@@ -20,23 +20,26 @@ pub mod profile;
 pub mod raw;
 pub mod read;
 pub mod report;
+pub mod script;
 
 use std::{ffi::OsString, fs, path::PathBuf, sync::Arc, time::Duration};
 
 use t32rcl::{CallBudget, Cancel, CancelReason, Clock, ConnectOpts, Connector, SystemClock, TcpConnector};
+use t32stage::{ExistsFn, PollSchedule, Retention, StageConfig, VmGuard};
 
 use crate::{
-    cli::{Globals, GradeCmd, Leaf, Parsed, RawLeaf, ReadLeaf},
+    cli::{BurnLeaf, Globals, GradeCmd, Leaf, Parsed, ProcArgs, RawLeaf, ReadLeaf, RunLeaf, SysLeaf, WriteLeaf},
     config::{Binding, Config, Env, Paths},
     ctx::{Conn, CpuCheck, Ctx},
     error::{CtlError, ErrorKind},
-    grade::{Grade, Raw, Read},
-    profile::Profile,
-    report::{Body, Report},
+    grade::{Burn, Grade, Raw, Read, Run, Sys, Write},
+    procs::ProcPrep,
+    profile::{Effect, Profile, policy::effective_grade},
+    report::{Body, Hint, Report},
 };
 
-/// Everything a call takes from outside: the environment, the network, the clock, and the
-/// interrupt flag.
+/// Everything a call takes from outside: the environment, the network, the clock, the interrupt
+/// flag, and how often a script run is polled.
 #[derive(Debug)]
 pub struct Deps {
     pub env: Env,
@@ -44,11 +47,23 @@ pub struct Deps {
     pub clock: Arc<dyn Clock>,
     /// Set by the first Ctrl-C or SIGTERM.
     pub cancel: Cancel,
+    pub poll: PollSchedule,
+    /// The run token a scripted conversation expects (`t32stage::testkit`).
+    #[cfg(test)]
+    pub stage_token: Option<String>,
 }
 
 impl Deps {
     pub fn from_process(cancel: Cancel) -> Self {
-        Self { env: Env::from_process(), connector: Arc::new(TcpConnector), clock: Arc::new(SystemClock), cancel }
+        Self {
+            env: Env::from_process(),
+            connector: Arc::new(TcpConnector),
+            clock: Arc::new(SystemClock),
+            cancel,
+            poll: PollSchedule::DEFAULT,
+            #[cfg(test)]
+            stage_token: None,
+        }
     }
 }
 
@@ -70,7 +85,7 @@ pub fn run(argv: &[OsString], deps: &Deps) -> Output {
         Parsed::Usage(e) => {
             let json = argv.iter().skip(2).any(|a| a == "--json");
             let mut report = Report::new(words(argv));
-            report.error = Some(e);
+            report.fail(e);
             return render(&report, json);
         }
     };
@@ -78,11 +93,24 @@ pub fn run(argv: &[OsString], deps: &Deps) -> Output {
         GradeCmd::Read(g) => match &g.leaf {
             ReadLeaf::Status(a) => connected::<Read, _>(a, &g.globals, deps, CpuCheck::Report, read::status),
             ReadLeaf::Mem(a) => {
-                prepared::<Read, _, _>(a, &g.globals, deps, CpuCheck::Refuse, read::mem_prepare, read::mem)
+                prepared::<Read, _, _>(a, &g.globals, deps, |_| CpuCheck::Refuse, read::mem_prepare, read::mem)
             }
             ReadLeaf::Reg(a) => connected::<Read, _>(a, &g.globals, deps, CpuCheck::Refuse, read::reg),
             ReadLeaf::Procs(a) => offline::<Read, _>(a, &g.globals, deps, procs::list),
             ReadLeaf::Describe(a) => document::<Read, _>(a, |a| describe::render(a.format)),
+            ReadLeaf::Proc(a) => procedure::<Read>(a, &g.globals, deps),
+        },
+        GradeCmd::Run(g) => match &g.leaf {
+            RunLeaf::Proc(a) => procedure::<Run>(a, &g.globals, deps),
+        },
+        GradeCmd::Write(g) => match &g.leaf {
+            WriteLeaf::Proc(a) => procedure::<Write>(a, &g.globals, deps),
+        },
+        GradeCmd::Sys(g) => match &g.leaf {
+            SysLeaf::Proc(a) => procedure::<Sys>(a, &g.globals, deps),
+        },
+        GradeCmd::Burn(g) => match &g.leaf {
+            BurnLeaf::Proc(a) => procedure::<Burn>(a, &g.globals, deps),
         },
         GradeCmd::Raw(g) => match &g.leaf {
             RawLeaf::Cmd(a) => connected::<Raw, _>(a, &g.globals, deps, CpuCheck::Refuse, raw::cmd),
@@ -107,17 +135,42 @@ fn document<G: Grade, L: Leaf<G>>(args: &L, body: impl FnOnce(&L) -> String) -> 
     Output { text: body(args), code: 0 }
 }
 
+/// `<grade> proc NAME ...`: the tokens after the name may carry the global flags; `--help` prints
+/// the declaration. The CPU check is skipped for a procedure that declares `debugger-config`.
+fn procedure<G: Grade>(args: &ProcArgs, globals: &Globals, deps: &Deps) -> Output
+where
+    ProcArgs: Leaf<G>,
+{
+    let call = procs::split(&args.tokens);
+    let globals =
+        Globals { json: globals.json || call.json, build: call.build.clone().or_else(|| globals.build.clone()) };
+    if call.help {
+        return offline::<G, _>(args, &globals, deps, |a, setup| procs::help(&a.name, setup));
+    }
+    let check = |p: &ProcPrep<G>| {
+        if p.adm.decl().declares(Effect::DebuggerConfig) { CpuCheck::Skip } else { CpuCheck::Refuse }
+    };
+    prepared::<G, _, _>(
+        args,
+        &globals,
+        deps,
+        check,
+        |a, setup| procs::prepare::<G>(&a.name, &call, setup),
+        |_, prep, ctx, setup| procs::run(prep, ctx, setup),
+    )
+}
+
 /// A leaf that reads the profile and connects nowhere.
 fn offline<G: Grade, L: Leaf<G>>(
     args: &L,
     globals: &Globals,
     deps: &Deps,
-    body: fn(&L, &Setup<'_>) -> Result<Body, CtlError>,
+    body: impl FnOnce(&L, &Setup<'_>) -> Result<Body, CtlError>,
 ) -> Output {
     let mut report = Report::new(L::SPEC.path.join(" "));
     match Setup::resolve(&deps.env, globals).and_then(|setup| body(args, &setup)) {
         Ok(b) => report.body = Some(b),
-        Err(e) => report.error = Some(e),
+        Err(e) => report.fail(e),
     }
     render(&report, globals.json)
 }
@@ -156,25 +209,38 @@ fn connected<G: Grade, L: Leaf<G>>(
     check: CpuCheck,
     body: LeafBody<L, G>,
 ) -> Output {
-    prepared(args, globals, deps, check, |_, _| Ok(()), |a, (), ctx, setup| body(a, ctx, setup))
+    prepared(args, globals, deps, move |_: &()| check, |_, _| Ok(()), |a, (), ctx, setup| body(a, ctx, setup))
 }
 
 /// A leaf that connects: the pipeline around its body, and one report whatever happens.
 /// `prepare` runs the leaf's checks that need no PowerView before the state directory and the
-/// connection; what it returns goes to `body`.
+/// connection; what it returns decides the CPU check and goes to `body`. After the body the
+/// stage is cleaned up, then the header is read.
 fn prepared<G: Grade, L: Leaf<G>, P>(
     args: &L,
     globals: &Globals,
     deps: &Deps,
-    check: CpuCheck,
+    check: impl FnOnce(&P) -> CpuCheck,
     prepare: impl FnOnce(&L, &Setup<'_>) -> Result<P, CtlError>,
     body: impl FnOnce(&L, P, &mut Ctx<'_, G>, &Setup<'_>) -> Result<Body, CtlError>,
 ) -> Output {
     let mut report = Report::new(L::SPEC.path.join(" "));
     let mut conn = None;
-    match call(args, globals, deps, check, prepare, body, &mut conn) {
+    let result = call(args, globals, deps, check, prepare, body, &mut conn);
+    let closed = conn.as_mut().map(Conn::close).unwrap_or_default();
+    match result {
         Ok(b) => report.body = Some(b),
-        Err(e) => report.error = Some(e),
+        Err(e) => report.fail(e),
+    }
+    if let Some(e) = report.error.as_mut().filter(|e| e.kind == ErrorKind::Interrupted && closed.clean > 0) {
+        let steps = if closed.clean == 1 { "step" } else { "steps" };
+        e.details.push(format!("cleanup ran: {} {steps}", closed.clean));
+    }
+    if let Some(residue) = closed.residue {
+        match &mut report.error {
+            None => report.fail(residue),
+            Some(e) => e.details.push(residue.message),
+        }
     }
     if let Some(c) = conn.as_mut() {
         report.notices = c.take_notices();
@@ -183,11 +249,41 @@ fn prepared<G: Grade, L: Leaf<G>, P>(
     render(&report, globals.json)
 }
 
+/// How the stage of this call opens if its leaf needs one.
+fn stage_config(setup: &Setup<'_>, deps: &Deps, path: &[&str]) -> StageConfig {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    StageConfig {
+        window: setup.config.window,
+        guard: VmGuard::Dedicated,
+        state_dir: setup.pv_dir.clone(),
+        root: setup.config.stage_root.clone(),
+        subdir: None,
+        retention: Retention::Cache,
+        exists: ExistsFn::OsFileReadable,
+        poll: deps.poll,
+        holder: format!("t32ctl {} (pid {})", path.join(" "), std::process::id()),
+        journal_name: format!("t32ctl-{}-{nanos}", std::process::id()),
+    }
+}
+
+/// After `target-down`, the board's `attach` procedure when it takes no required parameter.
+fn attach_hint(e: CtlError, profile: &Profile) -> CtlError {
+    if e.kind != ErrorKind::TargetDown || !e.next.is_empty() {
+        return e;
+    }
+    match (profile.proc("attach"), effective_grade(profile, "attach")) {
+        (Some(attach), Some(grade)) if attach.params.iter().all(|p| !p.required()) => {
+            e.with_next(vec![Hint(vec![grade.name().into(), "proc".into(), "attach".into()])])
+        }
+        _ => e,
+    }
+}
+
 fn call<G: Grade, L: Leaf<G>, P>(
     args: &L,
     globals: &Globals,
     deps: &Deps,
-    check: CpuCheck,
+    check: impl FnOnce(&P) -> CpuCheck,
     prepare: impl FnOnce(&L, &Setup<'_>) -> Result<P, CtlError>,
     body: impl FnOnce(&L, P, &mut Ctx<'_, G>, &Setup<'_>) -> Result<Body, CtlError>,
     conn: &mut Option<Conn>,
@@ -209,10 +305,16 @@ fn call<G: Grade, L: Leaf<G>, P>(
         ..ConnectOpts::default()
     };
     let c = conn.insert(Conn::connect(&setup.config.hosts(&deps.env), setup.config.port, &opts)?);
-    let run = c.prelude(&setup.pv_dir, &setup.profile, check)?;
-    body(args, prepared, &mut Ctx::new(c, run, &setup.profile), &setup)
+    c.set_stage(stage_config(&setup, deps, L::SPEC.path));
+    #[cfg(test)]
+    c.set_stage_token(deps.stage_token.clone());
+    let run = c.prelude(&setup.pv_dir, &setup.profile, check(&prepared))?;
+    body(args, prepared, &mut Ctx::new(c, run, &setup.profile), &setup).map_err(|e| attach_hint(e, &setup.profile))
 }
 
+#[cfg(test)]
+#[path = "proc_tests.rs"]
+mod proc_tests;
 #[cfg(test)]
 #[path = "run_tests.rs"]
 mod tests;

@@ -9,6 +9,7 @@ use std::fmt;
 
 use serde::{Serialize, Serializer};
 use t32rcl::FuncValue;
+use t32stage::ScriptRc;
 
 use crate::{
     error::{CtlError, Exit},
@@ -31,6 +32,15 @@ pub struct Report {
 impl Report {
     pub fn new(command: impl Into<String>) -> Self {
         Self { command: command.into(), header: None, notices: Vec::new(), body: None, error: None, next: Vec::new() }
+    }
+
+    /// Record a failure: its hints become the report's, and what the call did before it, its body.
+    pub fn fail(&mut self, mut e: CtlError) {
+        self.next.append(&mut e.next);
+        if let Some(b) = e.body.take() {
+            self.body = Some(*b);
+        }
+        self.error = Some(e);
     }
 
     /// An error decides the exit; otherwise the body's outcome does.
@@ -203,6 +213,7 @@ pub enum Body {
     Eval(EvalBody),
     Cmd(CmdBody),
     Procs(ProcsBody),
+    Run(Box<RunBody>),
 }
 
 impl Body {
@@ -210,6 +221,7 @@ impl Body {
     pub fn outcome(&self) -> Exit {
         match self {
             Body::Mem(MemBody { data: MemData::Stopped(_), .. }) => Exit::Outcome,
+            Body::Run(r) => r.exit(),
             Body::Status(_) | Body::Mem(_) | Body::Regs(_) | Body::Eval(_) | Body::Cmd(_) | Body::Procs(_) => Exit::Ok,
         }
     }
@@ -222,6 +234,7 @@ impl Body {
             Body::Eval(e) => vec![e.to_string()],
             Body::Cmd(_) => vec!["cmd: done".into()],
             Body::Procs(p) => p.lines(),
+            Body::Run(r) => r.lines(),
         }
     }
 }
@@ -752,6 +765,231 @@ impl ProcsBody {
         v.push(label("effects", listed(&p.effects)));
         v.push(label("profile", self.profile.to_string()));
         v.push(label("usage", p.usage.clone()));
+        v
+    }
+}
+
+/// `<grade> proc` and `raw script`: what ran, how it ended, and the files it wrote.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RunBody {
+    #[serde(flatten)]
+    pub subject: Subject,
+    /// `None` when the run ended without a result: a dialog, a vanished runner.
+    pub result: Option<RunResult>,
+    pub outputs: OutputsView,
+}
+
+/// What ran: a procedure of the profile, or a script bundle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "what", rename_all = "lowercase")]
+pub enum Subject {
+    Proc { name: String, grade: &'static str, profile: Bundled, params: Vec<ParamShown> },
+    Script { entry: String, bundle: Bundled },
+}
+
+/// The bundle a run used: for a procedure the profile (`hash`), for a script its root.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Bundled {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    pub files: usize,
+    /// The snapshot was already on the PowerView host.
+    pub cached: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ParamShown {
+    pub name: String,
+    /// In the caller's notation; a file as a local path.
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<Upload>,
+}
+
+/// A file parameter's copy on the PowerView host.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Upload {
+    pub path: String,
+    pub bytes: u64,
+    pub slices: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RunResult {
+    pub outcome: Outcome,
+    /// `&t32ctl_rc`: an integer, text, or `null` when the script set none.
+    #[serde(serialize_with = "rc_json")]
+    pub rc: ScriptRc,
+    /// `&t32ctl_msg`, or the caught error's message.
+    pub message: String,
+    /// The halting error's message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The halting command line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    pub after_ms: u64,
+    /// A burn procedure must confirm success with an explicit rc.
+    #[serde(skip)]
+    pub burn: bool,
+}
+
+fn rc_json<S: Serializer>(rc: &ScriptRc, s: S) -> Result<S::Ok, S::Error> {
+    match rc {
+        ScriptRc::Unset => s.serialize_none(),
+        ScriptRc::Int(n) => s.serialize_i64(*n),
+        ScriptRc::Text(t) => s.serialize_str(t),
+    }
+}
+
+/// How a run ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The runner reached its end without catching an error.
+    Finished,
+    /// The runner caught a PRACTICE error.
+    Failed,
+    /// A PRACTICE error halted the script; it was unwound.
+    Halted,
+    TimedOut {
+        timeout_ms: u64,
+    },
+    /// A file parameter's upload passed `[calls] transfer_timeout`; nothing ran.
+    UploadStopped {
+        flag: String,
+        bound_ms: u64,
+    },
+}
+
+impl Serialize for Outcome {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(match self {
+            Outcome::Finished => "finished",
+            Outcome::Failed => "failed",
+            Outcome::Halted => "halted",
+            Outcome::TimedOut { .. } => "timed-out",
+            Outcome::UploadStopped { .. } => "upload-stopped",
+        })
+    }
+}
+
+impl RunResult {
+    /// Ended as asked: finished with rc 0, or with no rc except for a burn procedure.
+    pub fn ok(&self) -> bool {
+        self.outcome == Outcome::Finished
+            && match &self.rc {
+                ScriptRc::Int(0) => true,
+                ScriptRc::Unset => !self.burn,
+                _ => false,
+            }
+    }
+
+    fn lines(&self) -> Vec<String> {
+        let after = display_ms(self.after_ms);
+        let msg = if self.message.is_empty() { String::new() } else { format!(": \"{}\"", self.message) };
+        match &self.outcome {
+            Outcome::Finished => vec![match &self.rc {
+                ScriptRc::Unset if self.burn => format!(
+                    "result: finished without rc after {after}: a burn procedure must set &t32ctl_rc=\"0\" after its \
+                     verification"
+                ),
+                ScriptRc::Unset => format!("result: finished after {after}{msg}"),
+                rc => format!("result: finished rc={rc} after {after}{msg}"),
+            }],
+            Outcome::Failed => vec![
+                format!("result: failed by a PRACTICE error after {after}"),
+                format!("  message: {}", self.message),
+                "  the runner caught it; staged files were removed".into(),
+            ],
+            Outcome::Halted => {
+                let mut v = vec![format!("result: halted by a PRACTICE error after {after}")];
+                v.extend(self.error.as_ref().map(|e| format!("  message: {e}")));
+                v.extend(self.line.as_ref().filter(|l| !l.is_empty()).map(|l| format!("  line:    {l}")));
+                v.push("  the script was unwound; staged files were removed".into());
+                v
+            }
+            Outcome::TimedOut { timeout_ms } => {
+                vec![format!("result: timed out after {}; the script was stopped and unwound", display_ms(*timeout_ms))]
+            }
+            Outcome::UploadStopped { flag, bound_ms } => vec![format!(
+                "result: the upload of {flag} stopped at the {} bound; the procedure did not run",
+                display_ms(*bound_ms)
+            )],
+        }
+    }
+}
+
+/// The files a run wrote into its output directory, and the declared ones it did not.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OutputsView {
+    /// The output directory as printed; `None` when the run wrote nothing.
+    pub dir: Option<String>,
+    pub files: Vec<OutputFile>,
+    pub missing: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OutputFile {
+    pub name: String,
+    pub bytes: u64,
+}
+
+impl RunBody {
+    pub fn exit(&self) -> Exit {
+        let ok = self.result.as_ref().is_none_or(RunResult::ok);
+        if ok && self.outputs.missing.is_empty() { Exit::Ok } else { Exit::Outcome }
+    }
+
+    fn lines(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        let count = |n: usize| if n == 1 { "1 file".to_string() } else { format!("{n} files") };
+        let cached = |b: &Bundled| if b.cached { "cached" } else { "uploaded" };
+        match &self.subject {
+            Subject::Proc { name, profile, params, .. } => {
+                let hash = profile.hash.as_deref().unwrap_or_default();
+                v.push(format!(
+                    "proc {name} (profile={}, {}, {})",
+                    &hash[..hash.len().min(8)],
+                    count(profile.files),
+                    cached(profile)
+                ));
+                if !params.is_empty() {
+                    let shown: Vec<String> = params
+                        .iter()
+                        .map(|p| match &p.file {
+                            Some(f) => {
+                                let slices =
+                                    if f.slices == 1 { "1 slice".into() } else { format!("{} slices", f.slices) };
+                                format!("{}={} ({}, {slices})", p.name, p.value, Size(f.bytes))
+                            }
+                            None => format!("{}={}", p.name, p.value),
+                        })
+                        .collect();
+                    v.push(format!("params: {}", shown.join(" ")));
+                }
+            }
+            Subject::Script { entry, bundle } => v.push(format!(
+                "script {entry} (bundle {}, {}, {})",
+                bundle.root.as_deref().unwrap_or_default(),
+                count(bundle.files),
+                cached(bundle)
+            )),
+        }
+        v.extend(self.result.iter().flat_map(RunResult::lines));
+        let o = &self.outputs;
+        match &o.dir {
+            Some(dir) if !o.files.is_empty() => {
+                v.push(format!("outputs: {dir} ({})", count(o.files.len())));
+                let w = o.files.iter().map(|f| f.name.len()).max().unwrap_or(0) + 2;
+                v.extend(o.files.iter().map(|f| format!("  {:<w$}{}", f.name, Size(f.bytes))));
+            }
+            _ => v.push("outputs: none".into()),
+        }
+        if !o.missing.is_empty() {
+            v.push(format!("missing: {}", o.missing.join(", ")));
+        }
         v
     }
 }
