@@ -22,6 +22,8 @@ jobs:
       - name: test
         run: cargo test --locked --workspace
       - name: build
+        env:
+          T32CTL_BUILD: ${{ github.event.release.tag_name }}
         run: cargo build --locked --release --target "$TARGET"
       # The binary reports the Cargo version, so a tag that disagrees with it ships a mislabeled
       # build. A pre-release suffix (v0.1.0-alpha.1) is compared without the suffix.

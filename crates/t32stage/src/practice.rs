@@ -166,6 +166,11 @@ impl StageRoot {
         &self.0
     }
 
+    /// `rel` with the root's separator, for a path PRACTICE appends to this root.
+    pub fn native(&self, rel: &RelPath) -> String {
+        rel.as_str().replace('/', &self.0.sep.to_string())
+    }
+
     pub fn path(&self, rel: RelPath) -> StagePath {
         StagePath { root: self.clone(), rel }
     }

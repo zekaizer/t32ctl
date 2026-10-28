@@ -121,7 +121,7 @@ fn a_cached_snapshot_costs_one_call_and_a_run_finishes_by_token() {
     s = s.expect_fn(&format!("OS.FILE.readable(\"{dir}\\.t32ctl\\complete\")")).reply_bool(true);
     s = idle(s, 0);
     s = set(s, Macro::Snap, &dir);
-    s = set(s, Macro::Entry, "main.cmm");
+    s = set(s, Macro::Entry, "sub\\main.cmm");
     s = set(s, Macro::Args, "a 0x10");
     s = executed(s, &format!("{dir}\\.t32ctl\\runner.cmm"), "\"0\"", "7.");
     s = closed(s, false);
@@ -133,7 +133,7 @@ fn a_cached_snapshot_costs_one_call_and_a_run_finishes_by_token() {
     let snap = st.ensure_snapshot(&mut session, &b).unwrap();
     assert!(snap.cached);
     let req = RunRequest {
-        entry: RelPath::new("main.cmm").unwrap(),
+        entry: RelPath::new("sub/main.cmm").unwrap(),
         args: vec!["a".into(), "0x10".into()],
         timeout: Duration::from_secs(5),
         collect_outputs: false,

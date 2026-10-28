@@ -269,7 +269,7 @@ impl Stage {
             None
         };
         session.macro_set(&Macro::Snap.name(), &snap.dir.text())?;
-        session.macro_set(&Macro::Entry.name(), req.entry.as_str())?;
+        session.macro_set(&Macro::Entry.name(), &self.root.native(&req.entry))?;
         session.macro_set(&Macro::Args.name(), &args)?;
         let runner = snap.dir.join(RUNNER_PATH)?;
         let t0 = Instant::now();
