@@ -566,17 +566,7 @@ impl Stage {
 
 /// Whether `dir` lists an entry besides `.` and `..`. Stops at the first one.
 fn has_entries(session: &mut Session, dir: &StagePath) -> Result<bool, StageError> {
-    let first = fnc::first_file(dir);
-    let mut name = session.eval(&first)?.into_text(&first)?;
-    // `.`, `..`, then an entry or the end.
-    for _ in 0..3 {
-        let base = name.rsplit(['\\', '/']).next().unwrap_or_default();
-        if name.is_empty() || !matches!(base, "." | "..") {
-            return Ok(!name.is_empty());
-        }
-        name = session.eval(fnc::NEXT_FILE)?.into_text(fnc::NEXT_FILE)?;
-    }
-    Ok(true)
+    Ok(!transfer::list_dir(session, dir, 1)?.is_empty())
 }
 
 /// `cfg.root`, or `<OS.PTD()>\t32ctl`. A temp directory that is not ASCII-safe is a

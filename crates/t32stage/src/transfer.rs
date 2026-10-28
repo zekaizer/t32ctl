@@ -112,6 +112,27 @@ pub fn ensure_root(session: &mut Session, root: &StageRoot) -> Result<(), StageE
     Ok(())
 }
 
+/// The names in `dir`, at most `limit`: `OS.FIRSTFILE("<dir>\*")`, then `OS.NEXTFILE()` until
+/// `""`, each name the text after the last separator. `.` and `..` are left out: build 168999
+/// lists them (`fs-semantics`). Stops at `limit` names or `limit + 2` answers.
+pub(crate) fn list_dir(session: &mut Session, dir: &StagePath, limit: usize) -> Result<Vec<String>, StageError> {
+    let first = fnc::first_file(dir);
+    let mut name = session.eval(&first)?.into_text(&first)?;
+    let (mut names, mut answers) = (Vec::new(), 0);
+    while !name.is_empty() {
+        let base = name.rsplit(['\\', '/']).next().unwrap_or_default();
+        if !matches!(base, "." | "..") {
+            names.push(base.to_string());
+        }
+        answers += 1;
+        if names.len() >= limit || answers >= limit + 2 {
+            break;
+        }
+        name = session.eval(fnc::NEXT_FILE)?.into_text(fnc::NEXT_FILE)?;
+    }
+    Ok(names)
+}
+
 /// Create `dir` and missing parents below the root, shallowest first, checking `OS.DIR` before
 /// each `MKDIR`. Returns what it would create, in creation order, through `before_mkdir`, which
 /// runs before each `MKDIR` so the caller can register the removal first.
@@ -198,6 +219,22 @@ mod tests {
     fn a_save_of_a_large_region_survives_a_reply_slower_than_the_default_idle() {
         slow_save(4 << 20, true).unwrap();
         assert!(matches!(slow_save(1024, false), Err(StageError::Rcl(t32rcl::Error::Timeout { .. }))));
+    }
+
+    #[test]
+    fn a_listing_names_entries_without_the_dots_and_stops_at_its_limit() {
+        let dir = StageRoot::from_ptd("C:\\T").unwrap().path(RelPath::new("d").unwrap());
+        let list = |answers: &[&str], limit: usize| {
+            let mut s = Script::new().attach().expect_fn("OS.FIRSTFILE(\"C:\\T\\t32ctl\\d\\*\")");
+            for (i, a) in answers.iter().enumerate() {
+                s = if i == 0 { s.reply_text(a) } else { s.expect_fn("OS.NEXTFILE()").reply_text(a) };
+            }
+            list_dir(&mut session(s), &dir, limit).unwrap()
+        };
+        assert_eq!(list(&["C:\\T\\t32ctl\\d\\.", "..", "a.log", "C:\\T\\t32ctl\\d\\sub", ""], 9), ["a.log", "sub"]);
+        assert_eq!(list(&[".", "..", "a.log"], 1), ["a.log"]);
+        assert_eq!(list(&[".", "..", "."], 1), Vec::<String>::new());
+        assert_eq!(list(&[""], 9), Vec::<String>::new());
     }
 
     #[test]
