@@ -11,13 +11,14 @@ use t32stage::{Bundle, BundleLimits, RelPath, practice::render_args};
 
 use crate::{
     Setup,
-    cli::{RawCommand, RawEval, RawScript},
+    cli::{RawCommand, RawEval, RawScript, RawWindow},
     ctx::Ctx,
     error::{CtlError, ErrorKind},
     grade::Raw,
+    notation::PracticeText,
     out::OutDir,
     profile::walk,
-    report::{Body, Bundled, EvalBody, Subject},
+    report::{Body, Bundled, EvalBody, Subject, WindowBody},
     script::Prepared,
 };
 
@@ -27,6 +28,27 @@ pub fn cmd(args: &RawCommand, ctx: &mut Ctx<'_, Raw>, _setup: &Setup<'_>) -> Res
 
 pub fn eval(args: &RawEval, ctx: &mut Ctx<'_, Raw>, _setup: &Setup<'_>) -> Result<Body, CtlError> {
     ctx.eval(&args.text).map(|v| Body::Eval(EvalBody::new(&v)))
+}
+
+/// The `WinPrint.<TEXT>` command line, checked against the command limit before connecting.
+pub fn window_prepare(args: &RawWindow, _setup: &Setup<'_>) -> Result<String, CtlError> {
+    let line = format!("WinPrint.{}", args.text.as_str());
+    if line.len() > PracticeText::MAX {
+        return Err(notation(format!(
+            "{line:.40}...: {} bytes; a command is at most {}",
+            line.len(),
+            PracticeText::MAX
+        )));
+    }
+    Ok(line)
+}
+
+/// The window's lines from `--skip` on, at most `--limit`. ASSUMED(target-read): the printer file
+/// is text in the PowerView host's code page; bytes outside UTF-8 print as U+FFFD.
+pub fn window(args: &RawWindow, line: String, ctx: &mut Ctx<'_, Raw>, _setup: &Setup<'_>) -> Result<Body, CtlError> {
+    let bytes = ctx.window(&line)?;
+    let printed: Vec<String> = String::from_utf8_lossy(&bytes).lines().map(str::to_string).collect();
+    Ok(Body::Window(WindowBody::new(args.text.as_str(), &printed, args.offset, args.limit)))
 }
 
 /// `p` without `.` and `..` components, without touching the file system.

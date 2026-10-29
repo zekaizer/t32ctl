@@ -215,7 +215,7 @@ fn the_generated_blocks_equal_the_binary() {
 fn the_planned_table_is_disjoint_from_the_binary() {
     let p = planned();
     let generated = generated();
-    assert!(p.commands.len() >= 19 && p.tags.len() >= 13 && !p.flags.is_empty(), "{p:?}");
+    assert!(p.commands.len() >= 18 && p.tags.len() >= 13 && !p.flags.is_empty(), "{p:?}");
     for c in &p.commands {
         assert!(!c.is_empty() && !generated.contains(c), "planned command {c:?} is in the binary");
         let line: Vec<OsString> =

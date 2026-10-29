@@ -124,6 +124,9 @@ pub fn run(argv: &[OsString], deps: &Deps) -> Output {
             RawLeaf::Script(a) => {
                 prepared::<Raw, _, _>(a, &g.globals, deps, |_| CpuCheck::Refuse, raw::script_prepare, raw::script)
             }
+            RawLeaf::Window(a) => {
+                prepared::<Raw, _, _>(a, &g.globals, deps, |_| CpuCheck::Refuse, raw::window_prepare, raw::window)
+            }
         },
     }
 }
@@ -244,7 +247,10 @@ fn prepared<G: Grade, L: Leaf<G>, P>(
     let result = call(args, globals, deps, check, prepare, body, &mut conn);
     let closed = conn.as_mut().map(Conn::close).unwrap_or_default();
     match result {
-        Ok(b) => report.body = Some(b),
+        Ok(b) => {
+            report.next.extend(b.next());
+            report.body = Some(b);
+        }
         Err(e) => report.fail(e),
     }
     if let Some(e) = report.error.as_mut().filter(|e| e.kind == ErrorKind::Interrupted && closed.clean > 0) {

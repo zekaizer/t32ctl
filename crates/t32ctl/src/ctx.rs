@@ -46,7 +46,8 @@ use t32rcl::{
     PracticeState, Session, TargetState,
 };
 use t32stage::{
-    CleanupOutcome, CleanupReport, ExistsFn, Ledger, OpenError, RegName, Stage, StageConfig, Undo, practice::fnc,
+    CleanupOutcome, CleanupReport, ExistsFn, Ledger, OpenError, RegName, Stage, StageConfig, StageError, Undo,
+    practice::{cmd, fnc},
     replay_leftovers,
 };
 
@@ -213,6 +214,36 @@ impl Conn {
     /// Run a prepared bundle, opening the stage first if no step of this call opened it. A `burn`
     /// run succeeds only with an explicit rc.
     fn run_bundle(&mut self, run: Prepared, burn: bool) -> Result<Body, CtlError> {
+        self.open_stage()?;
+        let stage = self.stage.as_mut().expect("the stage is open");
+        script::execute(&mut self.session, stage, &self.cancel, run, burn)
+    }
+
+    /// `line` (`WinPrint.<window>`) printed into a stage file, and the file's bytes. The printer is
+    /// closed right after the print; cleanup closes it if the print failed.
+    fn print_window(&mut self, line: &str) -> Result<Vec<u8>, CtlError> {
+        const PRINTER: &str = "printer";
+        self.open_stage()?;
+        let stage = self.stage.as_mut().expect("the stage is open");
+        let s = &mut self.session;
+        let staged = |e: StageError| from_stage(&e, "printing the window");
+        let file = stage.path(&format!("win-{}.txt", stage.token())).map_err(|e| staged(e.into()))?;
+        stage.register(Undo::RemoveFile(file.clone())).map_err(staged)?;
+        let open = cmd::printer_open(&file);
+        s.cmd(&open).map_err(|e| from_rcl(&e, Context::Stage, &open))?;
+        let close = Undo::Revert { what: PRINTER.into(), commands: vec![cmd::PRINTER_CLOSE.into()] };
+        stage.register(close).map_err(staged)?;
+        s.cmd(line).map_err(|e| from_rcl(&e, Context::Text, line))?;
+        let closed = stage.revert_now(s, PRINTER);
+        if !closed.is_clean() {
+            let message = format!("{} after the print: {}", cmd::PRINTER_CLOSE, closed.label());
+            return Err(CtlError::new(ErrorKind::PvError, message));
+        }
+        stage.download(s, &file).map_err(|e| from_stage(&e, "downloading the printed window"))
+    }
+
+    /// Open the stage unless a step of this call already did.
+    fn open_stage(&mut self) -> Result<(), CtlError> {
         if self.stage.is_none() {
             let cfg = self.stage_cfg.clone().expect("a connecting call configures the stage");
             match Stage::open(&mut self.session, cfg) {
@@ -231,8 +262,7 @@ impl Conn {
                 }
             }
         }
-        let stage = self.stage.as_mut().expect("the stage is open");
-        script::execute(&mut self.session, stage, &self.cancel, run, burn)
+        Ok(())
     }
 
     /// Run the stage's cleanup under a fresh 30 s deadline, not tied to Ctrl-C, reviving a dead
@@ -787,5 +817,10 @@ impl Ctx<'_, Raw> {
     /// A script bundle from the repository, outside every policy.
     pub fn run_script(&mut self, run: Prepared) -> Result<Body, CtlError> {
         self.conn.run_bundle(run, false)
+    }
+
+    /// The text of any window, as `WinPrint` prints `line` (`WinPrint.<window>`).
+    pub fn window(&mut self, line: &str) -> Result<Vec<u8>, CtlError> {
+        self.conn.print_window(line)
     }
 }

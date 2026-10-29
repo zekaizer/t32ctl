@@ -96,6 +96,8 @@ fn the_skill_blocks_are_tables_between_their_markers() {
          | `t32ctl raw eval 'EXPR'` | One PRACTICE function | the function |\n\
          | `t32ctl raw script ENTRY.cmm [--root DIR] [--timeout DUR] [--out DIR] [-- ARG...]` | Run a `.cmm` set \
          from the repository, collect outputs | the script |\n\
+         | `t32ctl raw window 'TEXT' [--offset N] [--limit N]` | Text of a PowerView window, printed with WinPrint \
+         | the print and its download |\n\
          \nFlags on every command: `--json`, `--build DIR`.\n<!-- commands:end -->\n\n"
     ));
     assert!(text.contains("| 130 | interrupted | The call was interrupted;"));

@@ -214,6 +214,7 @@ pub enum Body {
     Cmd(CmdBody),
     Procs(ProcsBody),
     Run(Box<RunBody>),
+    Window(WindowBody),
 }
 
 impl Body {
@@ -222,7 +223,21 @@ impl Body {
         match self {
             Body::Mem(MemBody { data: MemData::Stopped(_), .. }) => Exit::Outcome,
             Body::Run(r) => r.exit(),
-            Body::Status(_) | Body::Mem(_) | Body::Regs(_) | Body::Eval(_) | Body::Cmd(_) | Body::Procs(_) => Exit::Ok,
+            Body::Status(_)
+            | Body::Mem(_)
+            | Body::Regs(_)
+            | Body::Eval(_)
+            | Body::Cmd(_)
+            | Body::Procs(_)
+            | Body::Window(_) => Exit::Ok,
+        }
+    }
+
+    /// The `next:` hint of a body that was cut.
+    pub fn next(&self) -> Option<Hint> {
+        match self {
+            Body::Window(w) => w.next(),
+            _ => None,
         }
     }
 
@@ -234,6 +249,7 @@ impl Body {
             Body::Eval(e) => vec![e.to_string()],
             Body::Cmd(_) => vec!["cmd: done".into()],
             Body::Procs(p) => p.lines(),
+            Body::Window(w) => w.lines(),
             Body::Run(r) => r.lines(),
         }
     }
@@ -434,6 +450,55 @@ impl fmt::Display for EvalBody {
             "string" => write!(f, "\"{}\" (string)", self.value),
             ty => write!(f, "{} ({ty})", self.value),
         }
+    }
+}
+
+/// `raw window`: the printed lines from `offset` on, at most `limit` of the `total` the print held.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct WindowBody {
+    /// The text after `WinPrint.`.
+    pub window: String,
+    pub offset: u32,
+    pub total: usize,
+    pub lines: Vec<String>,
+    #[serde(skip)]
+    pub limit: u32,
+}
+
+impl WindowBody {
+    /// The window's default number of lines.
+    pub const LIMIT: u32 = 40;
+
+    pub fn new(window: &str, printed: &[String], offset: u32, limit: u32) -> Self {
+        let lines = printed.iter().skip(offset as usize).take(limit as usize).cloned().collect();
+        Self { window: window.to_string(), offset, total: printed.len(), lines, limit }
+    }
+
+    fn left(&self) -> usize {
+        self.total.saturating_sub(self.offset as usize + self.lines.len())
+    }
+
+    fn lines(&self) -> Vec<String> {
+        let mut v = self.lines.clone();
+        match self.left() {
+            0 => {}
+            1 => v.push("... 1 more line".into()),
+            n => v.push(format!("... {n} more lines")),
+        }
+        v
+    }
+
+    /// The call that prints the rest, when the body is cut.
+    pub fn next(&self) -> Option<Hint> {
+        if self.left() == 0 {
+            return None;
+        }
+        let offset = (self.offset as usize + self.lines.len()).to_string();
+        let mut words = vec!["raw".into(), "window".into(), self.window.clone(), "--offset".into(), offset];
+        if self.limit != Self::LIMIT {
+            words.extend(["--limit".into(), self.limit.to_string()]);
+        }
+        Some(Hint(words))
     }
 }
 

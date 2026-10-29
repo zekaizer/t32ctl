@@ -134,6 +134,7 @@ snippet included, with the binary's output and fails on a diff.
 | `t32ctl raw cmd 'TEXT'` | One PRACTICE command | the command |
 | `t32ctl raw eval 'EXPR'` | One PRACTICE function | the function |
 | `t32ctl raw script ENTRY.cmm [--root DIR] [--timeout DUR] [--out DIR] [-- ARG...]` | Run a `.cmm` set from the repository, collect outputs | the script |
+| `t32ctl raw window 'TEXT' [--offset N] [--limit N]` | Text of a PowerView window, printed with WinPrint | the print and its download |
 
 Flags on every command: `--json`, `--build DIR`.
 <!-- commands:end -->
@@ -152,7 +153,7 @@ table to the generated one in the commit that implements it.
 | `t32ctl read var EXPR [--frame N] [--core N]` | Value, type, address, size of an lvalue | `target-read`, `elf-unzip` |
 | `t32ctl read sym QUERY` | Address, symbol, source line, size, type layout | `elf-unzip` |
 | `t32ctl read bp [--all]` | t32ctl breakpoints, checked against PowerView | `run-control`, the state file |
-| `t32ctl read window VIEW [LOC] [--skip N] [--limit N] \| --list` | Text of a view from the closed view table | `target-read` |
+| `t32ctl read window VIEW [LOC] [--offset N] [--limit N] \| --list` | Text of a view from the closed view table | `target-read` |
 | `t32ctl run go [LOC] [--wait DUR \| --detach]` | Run (to code at LOC), or wait for a running target; report the stop | `run-control` |
 | `t32ctl run step [into\|over\|out] [--insn] [--wait DUR]` | Step, report the new location; `out` also reports the return value | `run-control` |
 | `t32ctl run halt` | Stop all cores, report each | `run-control` |
@@ -165,7 +166,6 @@ table to the generated one in the commit that implements it.
 | `t32ctl write reg NAME VALUE [--core N]` | Write a register, read back | `run-control`, the state file |
 | `t32ctl write var EXPR VALUE [--frame N] [--core N]` | Write an lvalue, read back | `target-read`, `elf-unzip`, the state file |
 | `t32ctl write load [ELF]` | Load code and symbols into a halted target | `load-code` |
-| `t32ctl raw window 'TEXT' [--skip N] [--limit N]` | Text of any PowerView window | `target-read` |
 | `t32ctl admin lease break --reason TEXT` | Operator only: show the current lease, ask y/N, end it; the holder's next call gets the reason | the state file |
 
 | Planned flag or place form | On | Waits on |
@@ -295,6 +295,20 @@ stopped core=0 pc=0x40083e10
 "C:\Users\op\AppData\Local\Temp" (string)
 [exit 0]
 ```
+
+`raw window 'TEXT' [--offset N] [--limit N]` prints the text of any PowerView window: t32ctl
+opens a printer file below the stage root (`PRinTer.OPEN`), sends `WinPrint.<TEXT>`, closes the
+printer (`PRinTer.CLOSE`, also at cleanup if the print failed), and downloads the file through
+`VM:` like a script's outputs. `TEXT` is the window command as typed in PowerView
+(`Register.view`, `SYStem.state`, `List`, `PER.view`), sent literally. It prints 40 lines from
+`--offset` unless `--limit` says otherwise, and a cut body ends with `... <n> more lines` and a
+`next:` line. Reading a window can read the target (a `PER.view` reads device registers), which is
+one reason `raw` asks. Opening and closing windows in the GUI is `raw cmd` (`Register.view`,
+`WinCLEAR`). Exits: 2 `notation` for a command past 2037 bytes with `WinPrint.`, `refused` when
+PowerView refuses the print; 3 `target-down` or `not-halted` from PowerView's status codes; 5
+`pv-error` when the printer file cannot be opened, closed or downloaded. Assumed until the
+`target-read` probe records it: the printer file holds the window as plain text, one line per
+window row.
 
 `<grade> proc NAME [--PARAM VALUE...]` runs a board procedure
 ([profiles.md](profiles.md#procedures)). `raw script ENTRY.cmm [--root DIR] [--timeout DUR]
@@ -493,10 +507,10 @@ next: <command>                                      <- 0 to 2 hints
   rounded to that precision before it is printed. Planned with `read var`: a typed value prints
   signed when its type is signed (`-22 (int)`), an enum as its member and number
   (`MODE_IDLE (0)`), and a pointer in `0x` hex.
-- A body is bounded: `read mem` prints at most `4K` as text, and larger reads use `--to`. No MVP
-  body is cut. Planned: `read stack` lists 16 frames, and windows print 40 lines unless `--limit`
-  says otherwise; a cut body ends with `... <n> more lines` and a `next:` line that prints the
-  rest, for example `next: t32ctl read window per.gicd --skip 40`.
+- A body is bounded: `read mem` prints at most `4K` as text, and larger reads use `--to`. A
+  window prints 40 lines unless `--limit` says otherwise; a cut body ends with
+  `... <n> more lines` and a `next:` line that prints the rest, for example
+  `next: t32ctl raw window Register.view --offset 40`. Planned: `read stack` lists 16 frames.
 - An outcome other than the one asked for (exit 1) is a result, not an error: the body says what
   happened and there is no `error[...]` line.
 
@@ -584,7 +598,7 @@ hint will carry it, so the holder can paste a hint as is:
 | `no-symbols` | `run symbols` |
 | `not-code` | none; the message suggests `--on write` for data |
 | `lease-held`, `lease-required`, `lease-ended` | none; the message says how to take a lease |
-| A cut body | the same command with `--skip` |
+| A cut body | the same command with `--offset` |
 
 Reads of data produce no other hints: the caller knows what it wants next better than a table.
 
@@ -901,12 +915,11 @@ by grade, so a leaf can call only what its grade allows, and the compiler checks
 | Impl block | Operations | Status |
 |---|---|---|
 | `impl<G: Grade> Ctx<G>` | Status; read registers; resolve a place and read memory, checked against the memory map; `run_procedure` with a `ProcPrep<G>` built from an `Admitted<G>` proof | MVP |
-| `impl Ctx<Raw>` | PRACTICE text: a command, a function, a repository script | MVP |
+| `impl Ctx<Raw>` | PRACTICE text: a command, a function, a repository script; the text of any window | MVP |
 | `impl<G: Grade> Ctx<G>` | Read the stack, variables, symbols, breakpoints; text of a table view | planned |
 | `impl<G: AtLeast<Run>> Ctx<G>` | Go, step, halt, wait for a stop, set and clear breakpoints, load symbols, take and release the lease | planned |
 | `impl<G: AtLeast<Write>> Ctx<G>` | Write memory, registers, and variables; load code | planned |
 | `Ctx<Sys>`, `Ctx<Burn>` | Nothing new beyond procedures at their own grade | MVP |
-| `impl Ctx<Raw>` | Any window | planned |
 
 `AtLeast<F>` will be implemented for every grade at or above `F` in the order
 `read < run < write < sys < burn < raw`, so `Ctx<Raw>` can do everything; no MVP operation needs

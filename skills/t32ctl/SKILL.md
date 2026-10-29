@@ -153,6 +153,11 @@ Never send a command that waits (`WAIT`): it keeps every other client out of Pow
 ends. Put waits in a script. Use `raw` only when no command does what you need, tell your human
 which command was missing, and never use it to work around a refusal.
 
+`raw window 'TEXT'` prints what a PowerView window shows (`t32ctl raw window 'Register.view'`,
+`'SYStem.state'`), 40 lines unless `--limit`; follow its `next:` line for the rest. It does not
+open a window in the GUI; `raw cmd` does that. A peripheral window (`PER.view`) reads device
+registers, and some clear on read: ask your human before printing one.
+
 ### Flashing
 
 Flashing is a `burn` procedure and cannot be undone. Confirm the image and the partition with
@@ -197,6 +202,7 @@ a procedure's file upload (10 minutes by default, at most an hour).
 | `t32ctl raw cmd 'TEXT'` | One PRACTICE command | the command |
 | `t32ctl raw eval 'EXPR'` | One PRACTICE function | the function |
 | `t32ctl raw script ENTRY.cmm [--root DIR] [--timeout DUR] [--out DIR] [-- ARG...]` | Run a `.cmm` set from the repository, collect outputs | the script |
+| `t32ctl raw window 'TEXT' [--offset N] [--limit N]` | Text of a PowerView window, printed with WinPrint | the print and its download |
 
 Flags on every command: `--json`, `--build DIR`.
 <!-- commands:end -->

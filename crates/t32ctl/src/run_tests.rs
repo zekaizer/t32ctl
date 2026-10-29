@@ -9,8 +9,10 @@ use t32rcl::{
     testkit::{ConnectFailure, ManualClock, Request, Script, ScriptedConnector},
 };
 
+use t32stage::testkit as tk;
+
 use super::*;
-use crate::cli::tests::words;
+use crate::{cli::tests::words, notation::PracticeText};
 
 /// The board profile every world starts with.
 pub(crate) const PROFILE: &str =
@@ -1121,4 +1123,69 @@ fn an_undeclared_procedure_is_unknown_proc_and_names_the_declared_ones() {
          declared: attach, selftest, flash\n"
     );
     assert_eq!(out.code, 2);
+}
+
+/// `raw window 'Register.view'` on a target without a profile, up to the download: the stage
+/// opens, the printer file opens, WinPrint prints, the printer closes, the file comes back.
+fn window_printed(text: &[u8]) -> Script {
+    let file = tk::at("win-tok.txt");
+    let s = tk::opened(Script::new().attach().expect_req(Request::TargetState).reply_state(2));
+    let s = s.expect_cmd(&format!("PRinTer.OPEN \"{file}\"")).reply_ok();
+    let s = s.expect_cmd("WinPrint.Register.view").reply_ok().expect_cmd("PRinTer.CLOSE").reply_ok();
+    let s = tk::downloaded(s, &file, text);
+    stopped_header(tk::closed(tk::file_removed(tk::file_absent(s, &format!("{file}.gz")), &file), false))
+}
+
+const WINDOW: &[u8] = b"r0 0x0\r\nr1 0x1\r\nr2 0x2\r\n";
+
+#[test]
+fn raw_window_prints_the_window_through_a_printer_file_without_a_profile() {
+    let w = World::new("window");
+    let d = deps(Env { profile: None, ..w.env() }, vec![Ok(window_printed(WINDOW))]);
+    let out = call("t32ctl raw window 'Register.view'", &d);
+    assert_eq!((out.text.as_str(), out.code), ("stopped core=0 pc=0x40083e10\nr0 0x0\nr1 0x1\nr2 0x2\n", 0));
+}
+
+#[test]
+fn a_cut_window_says_how_many_lines_are_left_and_how_to_print_them() {
+    let w = World::new("window-cut");
+    let d = deps(Env { profile: None, ..w.env() }, vec![Ok(window_printed(WINDOW))]);
+    let out = call("t32ctl raw window 'Register.view' --limit 1 --offset 1", &d);
+    assert_eq!(
+        (out.text.as_str(), out.code),
+        (
+            "stopped core=0 pc=0x40083e10\nr1 0x1\n... 1 more line\n\
+             next: t32ctl raw window Register.view --offset 2 --limit 1\n",
+            0
+        )
+    );
+    let d = deps(Env { profile: None, ..w.env() }, vec![Ok(window_printed(WINDOW))]);
+    let v: Value = serde_json::from_str(&call("t32ctl raw window 'Register.view' --limit 1 --json", &d).text).unwrap();
+    let want: Value =
+        serde_json::from_str(r#"{"kind":"window","window":"Register.view","offset":0,"total":3,"lines":["r0 0x0"]}"#)
+            .unwrap();
+    assert_eq!(v["body"], want);
+}
+
+#[test]
+fn a_window_command_past_the_command_limit_is_notation_and_connects_nowhere() {
+    let w = World::new("window-long");
+    let text = "x".repeat(PracticeText::MAX - 8);
+    let out = call(&format!("t32ctl raw window '{text}'"), &deps(Env { profile: None, ..w.env() }, vec![]));
+    assert_eq!(out.code, 2, "{}", out.text);
+    assert!(out.text.starts_with("error[notation]: WinPrint."), "{}", out.text);
+}
+
+#[test]
+fn a_refused_print_is_refused_and_cleanup_still_closes_the_printer() {
+    let w = World::new("window-refused");
+    let file = tk::at("win-tok.txt");
+    let s = tk::opened(Script::new().attach().expect_req(Request::TargetState).reply_state(2));
+    let s = s.expect_cmd(&format!("PRinTer.OPEN \"{file}\"")).reply_ok();
+    let s = s.expect_cmd("WinPrint.NoSuch.view").reply_error(90, "unknown command");
+    let s = tk::file_absent(s.expect_cmd("PRinTer.CLOSE").reply_ok(), &file);
+    let d = deps(Env { profile: None, ..w.env() }, vec![Ok(stopped_header(tk::closed(s, false)))]);
+    let out = call("t32ctl raw window 'NoSuch.view'", &d);
+    assert_eq!(out.code, 2, "{}", out.text);
+    assert!(out.text.contains("error[refused]: WinPrint.NoSuch.view"), "{}", out.text);
 }

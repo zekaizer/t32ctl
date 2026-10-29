@@ -347,6 +347,14 @@ pub mod cmd {
         format!("RMDIR {}", p.quoted())
     }
 
+    /// Route `WinPrint` output into `p` until `PRINTER_CLOSE`.
+    /// ASSUMED(target-read): the file holds the window as plain text lines.
+    pub fn printer_open(p: &StagePath) -> String {
+        format!("PRinTer.OPEN {}", p.quoted())
+    }
+
+    pub const PRINTER_CLOSE: &str = "PRinTer.CLOSE";
+
     /// `VM:0x........++0x........`: `++` covers `len` bytes as `len-1`. Fixed width, so generated
     /// script text has a length independent of the values.
     pub fn vm_range(r: &VmRegion) -> String {

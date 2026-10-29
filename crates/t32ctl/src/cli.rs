@@ -199,6 +199,8 @@ pub enum RawLeaf {
     Eval(RawEval),
     /// Run a `.cmm` set from the repository, collect outputs
     Script(RawScript),
+    /// Text of a PowerView window, printed with WinPrint
+    Window(RawWindow),
 }
 
 #[derive(Debug, Args)]
@@ -234,6 +236,20 @@ pub struct RawScript {
     /// Arguments for the entry script's ENTRY line: letters, digits and _ - . / : + = , @
     #[arg(value_name = "ARG", last = true)]
     pub args: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct RawWindow {
+    /// The window command WinPrint prints, sent literally (`Register.view`, `SYStem.state`).
+    /// Quote it whole in single quotes, or the shell reads < > | & ; itself
+    #[arg(value_name = "'TEXT'")]
+    pub text: PracticeText,
+    /// Lines to leave out from the top
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub offset: u32,
+    /// Lines to print at most, 1 or more
+    #[arg(long, value_name = "N", default_value_t = 40, value_parser = clap::value_parser!(u32).range(1..))]
+    pub limit: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -320,6 +336,9 @@ leaf!(Raw, RawEval, path: ["raw", "eval"], waits: "the function", connects: true
 leaf!(Raw, RawScript, path: ["raw", "script"], waits: "the script", connects: true,
       examples: ["t32ctl raw script tools/t32/ddr_stress.cmm -- 0x40000000 0x100000",
                  "t32ctl raw script tools/t32/dump.cmm --timeout 30s --out dump-1 --json"]);
+leaf!(Raw, RawWindow, path: ["raw", "window"], waits: "the print and its download", connects: true,
+      examples: ["t32ctl raw window 'Register.view'", "t32ctl raw window 'SYStem.state' --limit 80",
+                 "t32ctl raw window 'List' --offset 40 --json"]);
 
 leaves! {
     (Read, ReadStatus),
@@ -335,6 +354,7 @@ leaves! {
     (Raw, RawCommand),
     (Raw, RawEval),
     (Raw, RawScript),
+    (Raw, RawWindow),
 }
 
 impl Cli {
@@ -378,6 +398,7 @@ impl Cli {
                 RawLeaf::Cmd(_) => &<RawCommand as Leaf<Raw>>::SPEC,
                 RawLeaf::Eval(_) => &<RawEval as Leaf<Raw>>::SPEC,
                 RawLeaf::Script(_) => &<RawScript as Leaf<Raw>>::SPEC,
+                RawLeaf::Window(_) => &<RawWindow as Leaf<Raw>>::SPEC,
             },
         }
     }

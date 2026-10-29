@@ -28,7 +28,7 @@ use t32rcl::{PracticeState, Session};
 use crate::{
     bundle::{Bundle, MARKER_PATH, RESERVED_DIR, RUNNER_PATH, SnapshotKey, UNPACK_PATH},
     error::{PathError, StageError, VmError},
-    ledger::{CleanupReport, Journal, Ledger, Undo, stack_depth, unwind_practice},
+    ledger::{CleanupOutcome, CleanupReport, Journal, Ledger, Undo, stack_depth, unwind_practice},
     macros::Macro,
     practice::{ExistsFn, PvPath, RelPath, StagePath, StageRoot, cmd, fnc, render_args},
     runner::{
@@ -435,6 +435,11 @@ impl Stage {
         self.ledger.push(undo)
     }
 
+    /// Apply the newest `Undo::Revert` named `what` now; `close` never sends it again.
+    pub fn revert_now(&mut self, session: &mut Session, what: &str) -> CleanupOutcome {
+        self.ledger.revert_now(session, what)
+    }
+
     /// Undos `close` will run, oldest first.
     pub fn pending(&self) -> &[Undo] {
         self.ledger.pending()
@@ -481,7 +486,8 @@ impl Stage {
         self.fixed_token = Some(token.into());
     }
 
-    fn token(&self) -> String {
+    /// A name unique to this process, for a file or directory of one step.
+    pub fn token(&self) -> String {
         #[cfg(any(test, feature = "testkit"))]
         if let Some(t) = &self.fixed_token {
             return t.clone();

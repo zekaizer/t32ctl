@@ -35,8 +35,9 @@ PowerView behavior the Phase 0 probe proved on build 168999, plus memory and reg
 - `read procs`, `<grade> proc NAME`: the board's procedures and their run at the grade the profile
   declares, with typed parameters and collected output files. An eMMC flash is a `burn`
   procedure.
-- `raw script`, `raw cmd`, `raw eval`: a `.cmm` set from the repository, or one PRACTICE command
-  or function. They always ask.
+- `raw script`, `raw cmd`, `raw eval`, `raw window`: a `.cmm` set from the repository, one
+  PRACTICE command or function, or the text of any PowerView window. They always ask, and need no
+  board profile.
 - `read describe`: the command schema, the generated Markdown blocks, and the permission rules.
 
 Run control, breakpoints, symbols, variables and the stack, memory and register writes, code
