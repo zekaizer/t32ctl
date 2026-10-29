@@ -252,3 +252,12 @@ fn help_after_a_procedure_name_is_a_token_and_without_a_name_clap_help() {
     assert!(matches!(parse(&argv("t32ctl burn proc --help")), Parsed::Print(t) if t.contains("Usage:")));
     assert!(matches!(parse(&argv("t32ctl read status --help")), Parsed::Print(t) if t.contains("Examples:")));
 }
+
+#[test]
+fn raw_text_help_says_to_quote_the_whole_text() {
+    let argv = |line: &str| words(line).into_iter().map(OsString::from).collect::<Vec<_>>();
+    for line in ["t32ctl raw cmd --help", "t32ctl raw eval --help"] {
+        let Parsed::Print(text) = parse(&argv(line)) else { panic!("{line}: no help") };
+        assert!(text.contains("Quote it whole in single quotes"), "{line}:\n{text}");
+    }
+}

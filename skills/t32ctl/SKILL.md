@@ -147,7 +147,8 @@ scripts"):
 - `MKDIR`, `RM`, and `RMDIR` come after a check: each fails when there is nothing to do.
 
 `raw cmd` and `raw eval` send one PRACTICE command or function exactly as you typed it: PowerView
-expands no `&macro` in it, and a function takes a literal file name. Never send a command that
+expands no `&macro` in it, and a function takes a literal file name. Quote the whole text in
+single quotes (`t32ctl raw eval 'Register(PC)'`); PRACTICE strings inside it use double quotes. Never send a command that
 waits (`WAIT`): it keeps every other client out of PowerView until it ends. Put waits in a
 script. Use `raw` only when no command does what you need, tell your human which command was
 missing, and never use it to work around a refusal.

@@ -430,7 +430,9 @@ Other arguments:
   parameter `foo_bar` is typed `--foo-bar`; booleans are `true` or `false`. The types are in
   [profiles.md](profiles.md#parameters).
 - **PRACTICE text (`raw cmd 'TEXT'`, `raw eval 'EXPR'`):** one line without control characters,
-  1 to 2037 bytes (the RCL command limit), quoted in single quotes. It is sent literally:
+  1 to 2037 bytes (the RCL command limit), quoted whole in single quotes: unquoted, the shell
+  takes `<`, `>`, `|`, `&`, `;` and, in zsh, `(` `)` itself, and a stray `<...>` placeholder ends
+  in a shell parse error before t32ctl runs. It is sent literally:
   PowerView expands no macro in a command sent over RCL, so `&name` stays literal, and a
   function's file argument is a literal name, not an expression.
 - **Script arguments (`raw script ... -- ARG...`):** letters, digits, and `_ - . / : + = , @`,

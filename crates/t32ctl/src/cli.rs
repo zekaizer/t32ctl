@@ -203,7 +203,8 @@ pub enum RawLeaf {
 
 #[derive(Debug, Args)]
 pub struct RawCommand {
-    /// The command, sent literally: PowerView expands no macros in it
+    /// The command, sent literally: PowerView expands no macros in it. Quote it whole in single
+    /// quotes, or the shell reads < > | & ; itself
     #[arg(value_name = "'TEXT'")]
     pub text: PracticeText,
 }
@@ -211,7 +212,7 @@ pub struct RawCommand {
 #[derive(Debug, Args)]
 pub struct RawEval {
     /// The function, sent literally: PowerView expands no macros in it, and a file argument is a
-    /// literal name
+    /// literal name. Quote it whole in single quotes, or the shell reads ( ) < > | & ; itself
     #[arg(value_name = "'EXPR'")]
     pub text: PracticeText,
 }
