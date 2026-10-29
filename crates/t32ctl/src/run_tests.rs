@@ -417,19 +417,82 @@ fn describe_is_a_document_that_never_connects() {
     assert!(!Path::new(&w.0).join("home/.local").exists());
 }
 
+/// The search `World` reports with `T32CTL_PROFILE` unset.
+const TRIED: &str = "\x20 T32CTL_PROFILE: unset\n\
+                     \x20 .t32ctl.toml: not in a git repository\n\
+                     \x20 BOARD_DIR: no build directory (--build, T32CTL_BUILD, .t32ctl.toml, ./build)\n";
+
 #[test]
-fn a_call_without_a_profile_is_no_profile_and_connects_nowhere() {
-    let w = World::new("noprofile");
-    let out = call("t32ctl read status", &deps(Env { profile: None, ..w.env() }, vec![]));
+fn read_status_without_a_profile_shows_the_cpu_unchecked_and_why_there_is_no_profile() {
+    let w = World::new("noprofile-status");
+    let s = Script::new().attach().expect_req(Request::TargetState).reply_state(2);
+    let s = stopped_header(pv(cores(s.expect_fn("SYStem.CPU()").reply_text("CortexA53")), Some(1), 0, 0));
+    let out = call("t32ctl read status", &deps(Env { profile: None, ..w.env() }, vec![Ok(s)]));
     assert_eq!(
-        out.text,
-        "error[no-profile]: no target profile for this build\n\
-         \x20 T32CTL_PROFILE: unset\n\
-         \x20 .t32ctl.toml: not in a git repository\n\
-         \x20 BOARD_DIR: no build directory (--build, T32CTL_BUILD, .t32ctl.toml, ./build)\n"
+        (out.text.as_str(), out.code),
+        (
+            "stopped core=0 pc=0x40083e10\n\
+             target  cpu=CortexA53 (no profile) cores=4\n\
+             profile none: no target profile for this build\n\
+             pv      build=168999 clients=1 practice=idle\n",
+            0
+        )
     );
-    assert_eq!(out.code, 5);
-    assert!(!w.pv_dir().exists(), "nothing is created before the profile loads");
+}
+
+#[test]
+fn full_status_without_a_profile_names_no_source_and_no_variant() {
+    let w = World::new("noprofile-full");
+    let s = Script::new().attach().expect_req(Request::TargetState).reply_state(2);
+    let s = stopped_header(pv(cores(s.expect_fn("SYStem.CPU()").reply_text("CortexA53")), Some(1), 0, 0));
+    let out = call("t32ctl read status --full", &deps(Env { profile: None, ..w.env() }, vec![Ok(s)]));
+    let lines: Vec<&str> = out.text.lines().collect();
+    assert_eq!(lines[2..4], ["profile none: no target profile for this build", "binding build none, profile none"]);
+}
+
+#[test]
+fn raw_eval_without_a_profile_skips_the_cpu_check_and_says_so() {
+    let w = World::new("noprofile-eval");
+    let s = Script::new().attach().expect_req(Request::TargetState).reply_state(2);
+    let s = stopped_header(s.expect_fn("OS.PTD()").reply_text("C:\\T"));
+    let out = call("t32ctl raw eval 'OS.PTD()'", &deps(Env { profile: None, ..w.env() }, vec![Ok(s)]));
+    assert_eq!(
+        (out.text.as_str(), out.code),
+        (
+            "stopped core=0 pc=0x40083e10\n\
+             ! no target profile for this build: the CPU is not checked; read mem and procedures need a \
+             profile\n\
+             \"C:\\T\" (string)\n",
+            0
+        )
+    );
+}
+
+#[test]
+fn read_mem_and_procedures_without_a_profile_are_no_profile_and_connect_nowhere() {
+    let w = World::new("noprofile-refused");
+    let env = || Env { profile: None, ..w.env() };
+    let out = call("t32ctl read mem 0x40000000", &deps(env(), vec![]));
+    assert_eq!(
+        (out.text, out.code),
+        (
+            format!(
+                "error[no-profile]: no target profile for this build\n{TRIED}\
+                 \x20 without a profile no memory map checks the read; t32ctl raw eval \
+                 'Data.Long(D:<address>)' reads one value and asks first\n"
+            ),
+            5
+        )
+    );
+    for line in ["t32ctl read procs", "t32ctl run proc attach"] {
+        let out = call(line, &deps(env(), vec![]));
+        assert_eq!(
+            (out.text, out.code),
+            (format!("error[no-profile]: no target profile for this build\n{TRIED}"), 5),
+            "{line}"
+        );
+    }
+    assert!(!w.pv_dir().exists(), "nothing is created for a call that needs a profile");
 }
 
 #[test]
@@ -478,12 +541,12 @@ fn the_prelude_refuses_a_cpu_that_is_not_the_profiles_and_skips_the_check_while_
         Conn::connect(&["127.0.0.1".to_string()], 20000, &opts).unwrap()
     };
     let mut c = conn(connected_to(2, "CortexA72"));
-    let e = c.prelude(&setup.pv_dir, &setup.profile, CpuCheck::Refuse).unwrap_err();
+    let e = c.prelude(&setup.pv_dir, Ok(setup.need_profile().unwrap()), CpuCheck::Refuse).unwrap_err();
     assert_eq!(e.kind, ErrorKind::CpuMismatch);
     assert_eq!(e.message, "connected CPU CortexA72 is not the profile's CortexA53");
     assert_eq!(e.exit().code(), 5);
     let mut c = conn(connected(0));
-    assert_eq!(c.prelude(&setup.pv_dir, &setup.profile, CpuCheck::Refuse), Ok(TargetState::Down));
+    assert_eq!(c.prelude(&setup.pv_dir, Ok(setup.need_profile().unwrap()), CpuCheck::Refuse), Ok(TargetState::Down));
 }
 
 /// One raw request after the prelude of a stopped target, then the header.

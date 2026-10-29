@@ -199,9 +199,16 @@ approval keep agents out.
 ### What the MVP commands print
 
 Every connecting call prints the header first ([Output](#output)). The errors every connecting
-call can end with are not repeated below: `profile-invalid`, `no-profile`, `state-dir`,
-`unreachable`, `no-answer`, `connection-lost`, `rcl-locked`, `cpu-mismatch` (all but
-`read status`), `pv-error`, `interrupted`, and `usage` for any command line.
+call can end with are not repeated below: `profile-invalid`, `state-dir`, `unreachable`,
+`no-answer`, `connection-lost`, `rcl-locked`, `cpu-mismatch` (all but `read status`), `pv-error`,
+`interrupted`, and `usage` for any command line.
+
+A profile is needed only where board knowledge is: `read mem` (the memory map), `read procs` and
+procedures are exit 5 `no-profile` without one, before connecting. `read status`, `read reg`,
+`raw eval`, `raw cmd` and `raw script` run from the connection config alone. They check no CPU,
+and every one but `read status` prints
+`! no target profile for this build: the CPU is not checked; read mem and procedures need a profile`
+(the first part names the profile file that is missing when the binding names a directory).
 
 `read status [--full]` reports the target against the profile, and PowerView. The CPU check never
 refuses it: a mismatch is a notice, and the call exits 0 whenever PowerView answers, down or not.
@@ -217,8 +224,10 @@ pv      build=168999 clients=1 practice=idle
 ```
 
 - `target`: the profile's `name`; `SYStem.CPU()` with `(matches profile)`,
-  `(profile: <cpu>, mismatch)`, or `(not checked while down)`; `cores=<CORE.NUMBER()>`, with
-  `(profile: <n>)` when the profile says otherwise.
+  `(profile: <cpu>, mismatch)`, `(not checked while down)`, or `(no profile)`, which also drops
+  the name; `cores=<CORE.NUMBER()>`, with `(profile: <n>)` when the profile says otherwise.
+- `profile`: the profile directory, or `none: <why>` without a profile (`--full` then prints
+  `profile none` in the `binding` line).
 - `pv`: `build=<SOFTWARE.BUILD()>`; `clients=` from `RCL.TCP.NrUsedCons()`, else
   `api.RCL.TCP.NrUsedCons()`, else `?`; `practice=idle`, `running`, `dialog`, or `halted` (idle
   with a script on the stack), with `(depth <n>)` while the stack holds a script.
@@ -643,7 +652,7 @@ Each error carries a stable tag:
 | `pv-script-halted` | 5 | A PRACTICE script this call did not start has halted on the stack; someone must end it in PowerView. |
 | `cpu-mismatch` | 5 | The connected CPU is not the profile's CPU: wrong board or wrong profile. |
 | `profile-invalid` | 5 | A profile, binding, or config file has an error; file, line, and column are shown. |
-| `no-profile` | 5 | No target profile was found for this build; the search path is shown. |
+| `no-profile` | 5 | The command needs a target profile and none was found for this build; the search path is shown. |
 | `target-power` | 5 | Target power or debug port failure reported by PowerView. |
 | `connection-lost` | 5 | The connection died and one reconnect did not help. |
 | `pv-error` | 5 | PowerView failed a step t32ctl generated (a staging command, a size check, a reply t32ctl cannot use); the step and PowerView's message are shown. |
@@ -854,14 +863,16 @@ one place:
 ```text
 argv -> Cli::try_parse_from ----------------------------------------- usage: exit 2
      -> read describe: print, exit 0
-     -> resolve config, binding, profile and variant; hash ---------- profile-invalid, no-profile: exit 5
+     -> resolve config, binding, profile and variant; hash ---------- profile-invalid: exit 5
+     -> no profile: read mem, read procs, proc ----------------------- no-profile: exit 5
      -> read procs: print, exit
      -> checks without PowerView: notation, grade and parameters,
         files, --out, the bundle; the output directory --------------- exit 2
      -> state directory pv/<host>-<port>/ --------------------------- state-dir: exit 5
      -> connect (host auto: each candidate in order) ---------------- unreachable, no-answer: exit 5
      -> replay this PowerView's t32stage journals ------------------- notices
-     -> T32_GetState; CPU check unless down or debugger-config ------ cpu-mismatch: exit 5
+     -> T32_GetState; CPU check unless down, debugger-config, or ---- cpu-mismatch: exit 5
+        no profile (then a notice)
      -> the leaf body with its Ctx<G> ------------------------------- body, exit 0 or 1, or an error
      -> cleanup: close the stage under a fresh 30 s deadline -------- residue: exit 5
      -> header (best effort) -> report -> text or JSON -> exit code

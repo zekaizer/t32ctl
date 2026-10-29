@@ -191,8 +191,9 @@ pub struct Setup<'e> {
     pub paths: Paths,
     pub config: Config,
     pub binding: Binding,
-    /// The board profile the binding names, with the build's variant applied.
-    pub profile: Profile,
+    /// The board profile the binding names, with the build's variant applied; `None` when the
+    /// binding names none (`need_profile`).
+    pub profile: Option<Profile>,
     /// t32stage's state directory for this PowerView.
     pub pv_dir: PathBuf,
 }
@@ -202,9 +203,14 @@ impl<'e> Setup<'e> {
         let paths = Paths::new(env)?;
         let config = Config::load(paths.config_file.as_deref())?;
         let binding = Binding::resolve(env, globals.build.as_deref())?;
-        let profile = Profile::from_binding(env, &binding)?;
+        let profile = Profile::find(env, &binding)?;
         let pv_dir = paths.pv_dir(&config);
         Ok(Self { env, paths, config, binding, profile, pv_dir })
+    }
+
+    /// The profile, or `no-profile` with the search: for a leaf that cannot run without one.
+    pub fn need_profile(&self) -> Result<&Profile, CtlError> {
+        self.profile.as_ref().ok_or_else(|| Profile::missing(self.env, &self.binding))
     }
 }
 
@@ -322,9 +328,11 @@ fn call<G: Grade, L: Leaf<G>, P>(
     c.set_stage(stage_config(&setup, deps, L::SPEC.path));
     #[cfg(test)]
     c.set_stage_token(deps.stage_token.clone());
-    let run = c.prelude(&setup.pv_dir, &setup.profile, check(&prepared))?;
-    body(args, prepared, &mut Ctx::new(c, run, &setup.profile), &setup)
-        .map_err(|e| attach_hint(e, &setup.profile, globals.build.as_deref()))
+    let run = c.prelude(&setup.pv_dir, setup.need_profile().map_err(|e| e.message), check(&prepared))?;
+    body(args, prepared, &mut Ctx::new(c, run, setup.profile.as_ref()), &setup).map_err(|e| match &setup.profile {
+        Some(p) => attach_hint(e, p, globals.build.as_deref()),
+        None => e,
+    })
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use crate::{
     grade::Read,
     notation::{OutName, Place, Size},
     out::OutDir,
-    profile::policy::effective_memory,
+    profile::{Profile, policy::effective_memory},
     report::{
         self, BindingView, Body, ConfigView, FileStats, MemBody, MemData, Phys, ProfileView, RegionRef, StatusBody,
         StoppedTransfer, cells,
@@ -26,20 +26,30 @@ use crate::{
 pub fn status(args: &ReadStatus, ctx: &mut Ctx<'_, Read>, setup: &Setup<'_>) -> Result<Body, CtlError> {
     let (target, pv) = ctx.status()?;
     let env = setup.env;
-    let p = &setup.profile;
-    let profile = ProfileView { dir: format!("{}/", env.display(&p.dir)), hash: None, files: None };
+    let p = setup.profile.as_ref();
+    let profile = match p {
+        Some(p) => {
+            ProfileView { dir: Some(format!("{}/", env.display(&p.dir))), hash: None, files: None, missing: None }
+        }
+        None => {
+            let why = Profile::missing(env, &setup.binding).message;
+            ProfileView { dir: None, hash: None, files: None, missing: Some(why) }
+        }
+    };
     let mut body = StatusBody { target, profile, pv, binding: None, config: None, state_dir: None };
     if args.full {
         let shown = |s: &Option<Sourced<PathBuf>>| {
             s.as_ref().map(|s| report::Sourced { path: env.display(&s.value), source: s.source.text().to_string() })
         };
         let b = &setup.binding;
-        body.profile.hash = Some(p.hash.to_string());
-        body.profile.files = Some(p.files.len());
+        if let Some(p) = p {
+            body.profile.hash = Some(p.hash.to_string());
+            body.profile.files = Some(p.files.len());
+        }
         body.binding = Some(BindingView {
             build: shown(&b.build),
-            profile_from: b.profile.as_ref().map_or_else(String::new, |s| s.source.text().to_string()),
-            variant: p.variant.clone(),
+            profile_from: p.and(b.profile.as_ref()).map(|s| s.source.text().to_string()),
+            variant: p.and_then(|p| p.variant.clone()),
             board: b.board.clone(),
         });
         body.config = Some(ConfigView {
@@ -92,7 +102,15 @@ pub fn mem_prepare(args: &ReadMem, setup: &Setup<'_>) -> Result<MemPrep, CtlErro
         Place::Addr { class, .. } => class.as_ref(),
         Place::Reg { .. } => None,
     };
-    effective_memory(&setup.profile).class(typed)?;
+    let profile = setup.need_profile().map_err(|mut e| {
+        e.details.push(
+            "without a profile no memory map checks the read; t32ctl raw eval 'Data.Long(D:<address>)' reads one \
+             value and asks first"
+                .into(),
+        );
+        e
+    })?;
+    effective_memory(profile).class(typed)?;
     let width = args.width.map(|w| w.bytes());
     if let Some(len) = args.len {
         if len.bytes() == 0 {

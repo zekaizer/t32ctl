@@ -63,9 +63,13 @@ pv      build=168999 clients=1 practice=idle
 [exit 0]
 ```
 
-Every call that connects needs a profile: without one it is exit 5 `no-profile`, and the details
-list the sources it tried, in order. After connecting, every call checks `SYStem.CPU()` against
-`target.cpu`, ASCII case-insensitively. A mismatch refuses everything but `read status` with exit 5
+`read mem`, `read procs` and procedures need a profile: without one they are exit 5 `no-profile`
+before connecting, and the details list the sources it tried, in order. `read status`, `read reg`
+and the `raw` commands run without one, from the connection config alone: nothing is compared
+with the connected CPU, every call but `read status` prints a notice that says so, and
+`read status` prints `profile none: <why>`. A profile that exists but does not load is still
+`profile-invalid`. With a profile, every call checks `SYStem.CPU()` against `target.cpu` after
+connecting, ASCII case-insensitively. A mismatch refuses everything but `read status` with exit 5
 `cpu-mismatch`: the board or the profile is wrong. `read status` prints it as a notice instead.
 The check is skipped while the debug port is down and for procedures that declare the
 `debugger-config` effect, so `attach` can select the CPU.

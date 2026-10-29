@@ -8,17 +8,17 @@ fn pv(practice: Practice, depth: i64, clients: Option<i64>) -> PvStatus {
 
 fn target(cpu: &str, cpu_check: CpuMatch, cores: i64) -> TargetView {
     TargetView {
-        name: "acme_evb".into(),
+        name: Some("acme_evb".into()),
         cpu: cpu.into(),
-        profile_cpu: "CortexA53".into(),
+        profile_cpu: Some("CortexA53".into()),
         cpu_check,
         cores,
-        profile_cores: 4,
+        profile_cores: Some(4),
     }
 }
 
 fn profile() -> ProfileView {
-    ProfileView { dir: "boards/acme/acme_evb/support/t32ctl/".into(), hash: None, files: None }
+    ProfileView { dir: Some("boards/acme/acme_evb/support/t32ctl/".into()), hash: None, files: None, missing: None }
 }
 
 fn status(pv: PvStatus) -> Body {
@@ -114,7 +114,7 @@ fn full_status_adds_the_hash_binding_config_and_state_lines_before_pv() {
         pv: pv(Practice::Idle, 0, Some(1)),
         binding: Some(BindingView {
             build: Some(Sourced { path: "build".into(), source: "auto-detection: ./build/CMakeCache.txt".into() }),
-            profile_from: "BOARD_DIR".into(),
+            profile_from: Some("BOARD_DIR".into()),
             variant: None,
             board: Some("acme_evb/a53".into()),
         }),
@@ -157,7 +157,7 @@ fn full_status_adds_the_hash_binding_config_and_state_lines_before_pv() {
     );
     let one = ProfileView { hash: Some("a".repeat(64)), files: Some(1), ..profile() };
     assert_eq!(one.to_string(), "boards/acme/acme_evb/support/t32ctl/ profile=aaaaaaaa (1 file)");
-    let bare = BindingView { build: None, profile_from: "T32CTL_PROFILE".into(), variant: None, board: None };
+    let bare = BindingView { build: None, profile_from: Some("T32CTL_PROFILE".into()), variant: None, board: None };
     assert_eq!(bare.to_string(), "build none, profile from T32CTL_PROFILE, variant base (no BOARD)");
     let variant =
         BindingView { variant: Some("acme_evb/a53/up".into()), board: Some("acme_evb/a53/up".into()), ..bare };

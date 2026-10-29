@@ -263,7 +263,9 @@ impl ErrorKind {
             ErrorKind::ProfileInvalid => {
                 "A profile, binding, or config file has an error; file, line, and column are shown."
             }
-            ErrorKind::NoProfile => "No target profile was found for this build; the search path is shown.",
+            ErrorKind::NoProfile => {
+                "The command needs a target profile and none was found for this build; the search path is shown."
+            }
             ErrorKind::TargetPower => "Target power or debug port failure reported by PowerView.",
             ErrorKind::ConnectionLost => "The connection died and one reconnect did not help.",
             ErrorKind::PvError => {

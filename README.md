@@ -56,7 +56,8 @@ loading, PowerView windows, and the lease are planned. They wait for the target 
    run ([profiles.md](docs/profiles.md#target-profile)). t32ctl finds it through the build's
    `CMakeCache.txt` (`BOARD_DIR`), `T32CTL_PROFILE`, or `<repo>/.t32ctl.toml`. Review changes to
    that directory like code: Phase 1 runs a procedure at the grade its profile declares and has no
-   operator trust yet.
+   operator trust yet. Without a profile, `read status`, `read reg` and the `raw` commands work
+   from the connection alone, with the CPU unchecked; `read mem` and procedures need one.
 4. Merge the output of `t32ctl read describe --format permissions` into `.claude/settings.json`,
    and give the agent the skill in [skills/t32ctl/](skills/t32ctl/SKILL.md).
 5. Check with `t32ctl read status`.

@@ -430,14 +430,14 @@ fn doc_hash() -> String {
 fn status(header: Option<Header>) -> Report {
     let body = StatusBody {
         target: TargetView {
-            name: "acme_evb".into(),
+            name: Some("acme_evb".into()),
             cpu: "CortexA53".into(),
-            profile_cpu: "CortexA53".into(),
+            profile_cpu: Some("CortexA53".into()),
             cpu_check: CpuMatch::Match,
             cores: 4,
-            profile_cores: 4,
+            profile_cores: Some(4),
         },
-        profile: ProfileView { dir: format!("{PROFILE_DIR}/"), hash: None, files: None },
+        profile: ProfileView { dir: Some(format!("{PROFILE_DIR}/")), hash: None, files: None, missing: None },
         pv: PvStatus { build: 168_999, base: Some(166_414), clients: Some(1), practice: Practice::Idle, depth: 0 },
         binding: None,
         config: None,
@@ -503,10 +503,15 @@ fn expected(doc: &str, command: &str, board: &Board, broken: &Board) -> Option<S
         ("docs/profiles.md", "t32ctl read status --full") => {
             let mut r = status(stopped(0, 0x4008_3e10));
             let Some(Body::Status(s)) = r.body.as_mut() else { unreachable!() };
-            s.profile = ProfileView { dir: format!("{PROFILE_DIR}/"), hash: Some(doc_hash()), files: Some(6) };
+            s.profile = ProfileView {
+                dir: Some(format!("{PROFILE_DIR}/")),
+                hash: Some(doc_hash()),
+                files: Some(6),
+                missing: None,
+            };
             s.binding = Some(BindingView {
                 build: Some(Sourced { path: "build".into(), source: Source::Auto.text().into() }),
-                profile_from: Source::BoardDir.text().into(),
+                profile_from: Some(Source::BoardDir.text().into()),
                 variant: None,
                 board: Some("acme_evb/a53".into()),
             });

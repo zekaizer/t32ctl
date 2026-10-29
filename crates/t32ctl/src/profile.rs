@@ -238,15 +238,27 @@ impl Profile {
     /// The profile the binding names. No binding, no directory, or no `profile.toml` is
     /// `no-profile`, with the sources tried.
     pub fn from_binding(env: &Env, binding: &Binding) -> Result<Self, CtlError> {
-        let Some(src) = &binding.profile else {
-            return Err(CtlError::new(ErrorKind::NoProfile, "no target profile for this build")
-                .with_details(binding.tried.clone()));
-        };
-        if !src.value.join(PROFILE_FILE).is_file() {
-            let message = format!("no {PROFILE_FILE} in {}/ (from {})", env.display(&src.value), src.source.text());
-            return Err(CtlError::new(ErrorKind::NoProfile, message).with_details(binding.tried.clone()));
+        Self::find(env, binding)?.ok_or_else(|| Self::missing(env, binding))
+    }
+
+    /// The profile the binding names, `None` when there is no binding, no directory, or no
+    /// `profile.toml`. A profile that does not load is `profile-invalid`.
+    pub fn find(env: &Env, binding: &Binding) -> Result<Option<Self>, CtlError> {
+        match &binding.profile {
+            Some(src) if src.value.join(PROFILE_FILE).is_file() => {
+                Self::load(env, &src.value, binding.board.as_deref()).map(Some)
+            }
+            _ => Ok(None),
         }
-        Self::load(env, &src.value, binding.board.as_deref())
+    }
+
+    /// The `no-profile` error for a binding [`find`](Self::find) found no profile for.
+    pub fn missing(env: &Env, binding: &Binding) -> CtlError {
+        let message = match &binding.profile {
+            None => "no target profile for this build".to_string(),
+            Some(src) => format!("no {PROFILE_FILE} in {}/ (from {})", env.display(&src.value), src.source.text()),
+        };
+        CtlError::new(ErrorKind::NoProfile, message).with_details(binding.tried.clone())
     }
 
     /// Walk and hash `dir`, parse its `profile.toml`, and apply the variant `board` selects.

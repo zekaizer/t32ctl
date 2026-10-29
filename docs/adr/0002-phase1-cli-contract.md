@@ -54,7 +54,10 @@ sessions in [cli-sessions.md](../cli-sessions.md).
    decides the effective memory policy (memory map, access classes, peripheral views). In Phase 1
    both return what the profile declares, and a hash of the profile directory is printed so a
    change is visible. A repository script outside a profile runs as `raw script`. Flashing is a
-   `burn` procedure, not a built-in command.
+   `burn` procedure, not a built-in command. A profile is required only where board knowledge
+   is: memory reads, which need the map, and procedures. Status, register reads and `raw` run
+   from the connection alone, without a CPU check, and say so in a notice, so a board without a
+   profile can still be brought up and inspected.
 
 3. **A memory map guards every place.** Regions describe physical addresses, and a place in a
    translated access class is checked after translation. Every byte of an access must be allowed

@@ -8,7 +8,7 @@
 //! ```compile_fail,E0624
 //! use t32ctl::{ctx::{Conn, Ctx}, grade::Raw, profile::Profile};
 //! fn forge<'c>(conn: &'c mut Conn, p: &'c Profile) -> Ctx<'c, Raw> {
-//!     Ctx::new(conn, t32rcl::TargetState::Stopped, p)
+//!     Ctx::new(conn, t32rcl::TargetState::Stopped, Some(p))
 //! }
 //! ```
 //!
@@ -144,16 +144,29 @@ impl Conn {
     }
 
     /// Replay the journals dead calls left in `pv_dir`, read the run state, and unless the target
-    /// is down compare `SYStem.CPU()` with the profile's CPU.
+    /// is down compare `SYStem.CPU()` with the profile's CPU. Without a profile nothing is
+    /// compared, and every call but `read status` (`CpuCheck::Report`, which shows it in its body)
+    /// gets the reason there is none as a notice.
     pub(crate) fn prelude(
         &mut self,
         pv_dir: &Path,
-        profile: &Profile,
+        profile: Result<&Profile, String>,
         check: CpuCheck,
     ) -> Result<TargetState, CtlError> {
         let replayed = replay_leftovers(&mut self.session, pv_dir, ExistsFn::OsFileReadable);
         self.notices.extend(replay_notices(&replayed));
         let run = self.session.target_state().map_err(|e| from_rcl(&e, Context::Read, "T32_GetState"))?;
+        let profile = match profile {
+            Ok(p) => p,
+            Err(no_profile) => {
+                if check != CpuCheck::Report {
+                    self.notices.push(Notice::new(format!(
+                        "{no_profile}: the CPU is not checked; read mem and procedures need a profile"
+                    )));
+                }
+                return Ok(run);
+            }
+        };
         if run == TargetState::Down || check == CpuCheck::Skip {
             return Ok(run);
         }
@@ -432,13 +445,18 @@ fn as_u64(v: FuncValue) -> Option<u64> {
 pub struct Ctx<'c, G: Grade> {
     conn: &'c mut Conn,
     run: TargetState,
-    profile: &'c Profile,
+    profile: Option<&'c Profile>,
     _grade: PhantomData<G>,
 }
 
 impl<'c, G: Grade> Ctx<'c, G> {
-    pub(crate) fn new(conn: &'c mut Conn, run: TargetState, profile: &'c Profile) -> Self {
+    pub(crate) fn new(conn: &'c mut Conn, run: TargetState, profile: Option<&'c Profile>) -> Self {
         Self { conn, run, profile, _grade: PhantomData }
+    }
+
+    /// The profile of a leaf whose preparation required one (`Setup::need_profile`).
+    fn need_profile(&self) -> Result<&'c Profile, CtlError> {
+        self.profile.ok_or_else(|| CtlError::new(ErrorKind::NoProfile, "no target profile for this build"))
     }
 
     /// The run state the call found when it connected.
@@ -503,7 +521,7 @@ impl<'c, G: Grade> Ctx<'c, G> {
             return Err(CtlError::new(ErrorKind::TargetDown, "the target is down: memory needs an attached target"));
         }
         let running = self.run == TargetState::Running;
-        let policy = effective_memory(self.profile);
+        let policy = effective_memory(self.need_profile()?);
         let (typed, addr) = match &req.place {
             Place::Addr { class, addr } => (class.as_ref(), *addr),
             Place::Reg { reg, offset } => {
@@ -529,7 +547,7 @@ impl<'c, G: Grade> Ctx<'c, G> {
     /// against the memory map before any memory request.
     fn plan_mem(&mut self, req: &MemRequest, place: MemPlace) -> Result<MemPlan, Halt> {
         let running = self.run == TargetState::Running;
-        let policy = effective_memory(self.profile);
+        let policy = effective_memory(self.need_profile().map_err(Halt::Failed)?);
         let (class, addr) = (&place.class, place.addr);
         let mut pages = HashMap::new();
         let len = match req.len {
@@ -628,26 +646,28 @@ impl<'c, G: Grade> Ctx<'c, G> {
     }
 
     /// The target against the profile, and PowerView's build, RCL clients and PRACTICE state.
-    /// While the target is down the prelude did not read the CPU, so this reads it for display.
+    /// While the target is down, or without a profile, the prelude did not read the CPU, so this
+    /// reads it for display.
     pub fn status(&mut self) -> Result<(TargetView, PvStatus), CtlError> {
-        let t = &self.profile.target;
+        let t = self.profile.map(|p| &p.target);
         let s = &mut self.conn.session;
-        let (cpu, cpu_check) = match &self.conn.cpu {
-            None => (system_cpu(s, Context::Read)?, CpuMatch::Skipped),
-            Some(c) if c.eq_ignore_ascii_case(&t.cpu) => (c.clone(), CpuMatch::Match),
-            Some(c) => (c.clone(), CpuMatch::Mismatch),
+        let (cpu, cpu_check) = match (&self.conn.cpu, t) {
+            (_, None) => (system_cpu(s, Context::Read)?, CpuMatch::NoProfile),
+            (None, Some(_)) => (system_cpu(s, Context::Read)?, CpuMatch::Skipped),
+            (Some(c), Some(t)) if c.eq_ignore_ascii_case(&t.cpu) => (c.clone(), CpuMatch::Match),
+            (Some(c), Some(_)) => (c.clone(), CpuMatch::Mismatch),
         };
         let cores = s
             .eval(fnc::CORE_NUMBER)
             .and_then(|v| v.into_int(fnc::CORE_NUMBER))
             .map_err(|e| from_rcl(&e, Context::Read, fnc::CORE_NUMBER))?;
         let target = TargetView {
-            name: t.name.clone(),
+            name: t.map(|t| t.name.clone()),
             cpu,
-            profile_cpu: t.cpu.clone(),
+            profile_cpu: t.map(|t| t.cpu.clone()),
             cpu_check,
             cores,
-            profile_cores: t.cores,
+            profile_cores: t.map(|t| t.cores),
         };
         let build = s.build().map_err(|e| from_rcl(&e, Context::Read, "SOFTWARE.BUILD()"))?;
         let clients = nr_used_cons(s)?;

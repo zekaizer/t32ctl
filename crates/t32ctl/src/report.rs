@@ -484,15 +484,19 @@ impl StatusBody {
 /// The connected target against the profile.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TargetView {
-    /// The profile's `target.name`.
-    pub name: String,
+    /// The profile's `target.name`; this and the other `profile_` fields are absent without a
+    /// profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// `SYStem.CPU()`.
     pub cpu: String,
-    pub profile_cpu: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_cpu: Option<String>,
     pub cpu_check: CpuMatch,
     /// `CORE.NUMBER()`.
     pub cores: i64,
-    pub profile_cores: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_cores: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -502,37 +506,51 @@ pub enum CpuMatch {
     Mismatch,
     /// The target is down: the prelude does not check.
     Skipped,
+    /// No profile to compare with.
+    #[serde(rename = "no-profile")]
+    NoProfile,
 }
 
 impl fmt::Display for TargetView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} cpu={} ", self.name, self.cpu)?;
+        if let Some(name) = &self.name {
+            write!(f, "{name} ")?;
+        }
+        write!(f, "cpu={} ", self.cpu)?;
         match self.cpu_check {
             CpuMatch::Match => f.write_str("(matches profile)")?,
-            CpuMatch::Mismatch => write!(f, "(profile: {}, mismatch)", self.profile_cpu)?,
+            CpuMatch::Mismatch => write!(f, "(profile: {}, mismatch)", self.profile_cpu.as_deref().unwrap_or("?"))?,
             CpuMatch::Skipped => f.write_str("(not checked while down)")?,
+            CpuMatch::NoProfile => f.write_str("(no profile)")?,
         }
         write!(f, " cores={}", self.cores)?;
-        if self.cores != i64::from(self.profile_cores) {
-            write!(f, " (profile: {})", self.profile_cores)?;
+        if let Some(want) = self.profile_cores.filter(|&n| self.cores != i64::from(n)) {
+            write!(f, " (profile: {want})")?;
         }
         Ok(())
     }
 }
 
 /// The profile directory as printed; `--full` adds the hash (all 64 digits) and the file count.
+/// Without a profile only `missing` is set: why there is none.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ProfileView {
-    pub dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub files: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing: Option<String>,
 }
 
 impl fmt::Display for ProfileView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.dir)?;
+        if let Some(why) = &self.missing {
+            return write!(f, "none: {why}");
+        }
+        f.write_str(self.dir.as_deref().unwrap_or_default())?;
         if let (Some(hash), Some(n)) = (&self.hash, self.files) {
             let files = if n == 1 { "file" } else { "files" };
             write!(f, " profile={} ({n} {files})", &hash[..hash.len().min(8)])?;
@@ -606,8 +624,8 @@ pub struct Sourced {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct BindingView {
     pub build: Option<Sourced>,
-    /// The rule or file that named the profile directory.
-    pub profile_from: String,
+    /// The rule or file that named the profile directory; `None` without a profile.
+    pub profile_from: Option<String>,
     /// The `[variant."<board>"]` applied; `None` for the base profile.
     pub variant: Option<String>,
     /// `BOARD` from the build's `CMakeCache.txt`.
@@ -620,7 +638,8 @@ impl fmt::Display for BindingView {
             Some(s) => write!(f, "build={} ({})", s.path, s.source)?,
             None => f.write_str("build none")?,
         }
-        write!(f, ", profile from {}, variant ", self.profile_from)?;
+        let Some(from) = &self.profile_from else { return f.write_str(", profile none") };
+        write!(f, ", profile from {from}, variant ")?;
         match (&self.variant, &self.board) {
             (Some(v), _) => f.write_str(v),
             (None, Some(b)) => write!(f, "base (BOARD={b})"),

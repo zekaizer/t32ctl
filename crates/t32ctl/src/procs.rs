@@ -70,19 +70,18 @@ fn view(profile: &Profile, d: &ProcDecl) -> ProcView {
 }
 
 /// The profile directory as printed, with its hash and file count.
-pub fn profile_ref(setup: &Setup<'_>) -> ProfileRef {
-    let p = &setup.profile;
+pub fn profile_ref(p: &Profile, setup: &Setup<'_>) -> ProfileRef {
     ProfileRef { dir: format!("{}/", setup.env.display(&p.dir)), hash: p.hash.to_string(), files: p.files.len() }
 }
 
 /// The profile's procedures as a table, or one declaration in full.
 pub fn list(args: &ReadProcs, setup: &Setup<'_>) -> Result<Body, CtlError> {
-    let p = &setup.profile;
+    let p = setup.need_profile()?;
     let procs = match &args.name {
         Some(name) => vec![view(p, p.proc(name).ok_or_else(|| unknown(p, name))?)],
         None => p.procs.iter().map(|d| view(p, d)).collect(),
     };
-    Ok(Body::Procs(ProcsBody { profile: profile_ref(setup), procs, one: args.name.is_some() }))
+    Ok(Body::Procs(ProcsBody { profile: profile_ref(p, setup), procs, one: args.name.is_some() }))
 }
 
 /// The tokens after a procedure's name: `--PARAM VALUE` or `--PARAM=VALUE` pairs, and the global
@@ -234,7 +233,7 @@ fn profile_bundle(profile: &Profile, setup: &Setup<'_>) -> Result<Bundle, CtlErr
 /// The grade check, the parameters, the bundle and the output directory: everything before
 /// connecting. A grade mismatch hints the same call under the declared grade.
 pub fn prepare<G: Grade>(name: &str, call: &ProcCall, setup: &Setup<'_>) -> Result<ProcPrep<G>, CtlError> {
-    let profile = &setup.profile;
+    let profile = setup.need_profile()?;
     let adm = admit::<G>(profile, name).map_err(|e| {
         if e.kind != ErrorKind::GradeMismatch {
             return e;
