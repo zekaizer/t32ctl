@@ -43,8 +43,8 @@ pub fn window_prepare(args: &RawWindow, _setup: &Setup<'_>) -> Result<String, Ct
     Ok(line)
 }
 
-/// The window's lines from `--skip` on, at most `--limit`. ASSUMED(target-read): the printer file
-/// is text in the PowerView host's code page; bytes outside UTF-8 print as U+FFFD.
+/// The window's lines from `--offset` on, at most `--limit`. The printer file is `ASCII`, so a
+/// non-ASCII character arrives as `*`.
 pub fn window(args: &RawWindow, line: String, ctx: &mut Ctx<'_, Raw>, _setup: &Setup<'_>) -> Result<Body, CtlError> {
     let bytes = ctx.window(&line)?;
     let printed: Vec<String> = String::from_utf8_lossy(&bytes).lines().map(str::to_string).collect();

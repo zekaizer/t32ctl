@@ -297,9 +297,11 @@ stopped core=0 pc=0x40083e10
 ```
 
 `raw window 'TEXT' [--offset N] [--limit N]` prints the text of any PowerView window: t32ctl
-opens a printer file below the stage root (`PRinTer.OPEN`), sends `WinPrint.<TEXT>`, closes the
-printer (`PRinTer.CLOSE`, also at cleanup if the print failed), and downloads the file through
-`VM:` like a script's outputs. `TEXT` is the window command as typed in PowerView
+opens a printer file below the stage root in the `ASCII` format (`PRinTer.OPEN <file> ASCII`:
+unpaged, a non-ASCII character as `*`), sends `WinPrint.<TEXT>`, closes the printer
+(`PRinTer.CLOSE`, also at cleanup if the print failed), and downloads the file through `VM:` like
+a script's outputs. PowerView keeps `ASCII` as its print-to-file format afterwards: no function
+reads the previous one back. `TEXT` is the window command as typed in PowerView
 (`Register.view`, `SYStem.state`, `List`, `PER.view`), sent literally. It prints 40 lines from
 `--offset` unless `--limit` says otherwise, and a cut body ends with `... <n> more lines` and a
 `next:` line. Reading a window can read the target (a `PER.view` reads device registers), which is
@@ -307,8 +309,7 @@ one reason `raw` asks. Opening and closing windows in the GUI is `raw cmd` (`Reg
 `WinCLEAR`). Exits: 2 `notation` for a command past 2037 bytes with `WinPrint.`, `refused` when
 PowerView refuses the print; 3 `target-down` or `not-halted` from PowerView's status codes; 5
 `pv-error` when the printer file cannot be opened, closed or downloaded. Assumed until the
-`target-read` probe records it: the printer file holds the window as plain text, one line per
-window row.
+`target-read` probe records it: the file holds one line per window row.
 
 `<grade> proc NAME [--PARAM VALUE...]` runs a board procedure
 ([profiles.md](profiles.md#procedures)). `raw script ENTRY.cmm [--root DIR] [--timeout DUR]

@@ -1130,7 +1130,7 @@ fn an_undeclared_procedure_is_unknown_proc_and_names_the_declared_ones() {
 fn window_printed(text: &[u8]) -> Script {
     let file = tk::at("win-tok.txt");
     let s = tk::opened(Script::new().attach().expect_req(Request::TargetState).reply_state(2));
-    let s = s.expect_cmd(&format!("PRinTer.OPEN \"{file}\"")).reply_ok();
+    let s = s.expect_cmd(&format!("PRinTer.OPEN \"{file}\" ASCII")).reply_ok();
     let s = s.expect_cmd("WinPrint.Register.view").reply_ok().expect_cmd("PRinTer.CLOSE").reply_ok();
     let s = tk::downloaded(s, &file, text);
     stopped_header(tk::closed(tk::file_removed(tk::file_absent(s, &format!("{file}.gz")), &file), false))
@@ -1181,7 +1181,7 @@ fn a_refused_print_is_refused_and_cleanup_still_closes_the_printer() {
     let w = World::new("window-refused");
     let file = tk::at("win-tok.txt");
     let s = tk::opened(Script::new().attach().expect_req(Request::TargetState).reply_state(2));
-    let s = s.expect_cmd(&format!("PRinTer.OPEN \"{file}\"")).reply_ok();
+    let s = s.expect_cmd(&format!("PRinTer.OPEN \"{file}\" ASCII")).reply_ok();
     let s = s.expect_cmd("WinPrint.NoSuch.view").reply_error(90, "unknown command");
     let s = tk::file_absent(s.expect_cmd("PRinTer.CLOSE").reply_ok(), &file);
     let d = deps(Env { profile: None, ..w.env() }, vec![Ok(stopped_header(tk::closed(s, false)))]);

@@ -347,10 +347,13 @@ pub mod cmd {
         format!("RMDIR {}", p.quoted())
     }
 
-    /// Route `WinPrint` output into `p` until `PRINTER_CLOSE`.
-    /// ASSUMED(target-read): the file holds the window as plain text lines.
+    /// Route `WinPrint` output into `p` until `PRINTER_CLOSE`, as `ASCII`: unpaged, every
+    /// non-ASCII character a `*` (PowerView Command Reference, `PRinTer.FILE`). Without a format
+    /// PowerView keeps the operator's last one, which may be PostScript; the format stays `ASCII`
+    /// afterwards, since no function reads it back.
+    /// ASSUMED(target-read): the file holds the window as text lines.
     pub fn printer_open(p: &StagePath) -> String {
-        format!("PRinTer.OPEN {}", p.quoted())
+        format!("PRinTer.OPEN {} ASCII", p.quoted())
     }
 
     pub const PRINTER_CLOSE: &str = "PRinTer.CLOSE";
