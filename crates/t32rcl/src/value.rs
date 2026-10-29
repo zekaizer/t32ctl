@@ -154,6 +154,44 @@ impl TargetState {
     }
 }
 
+/// PowerView's message line (`T32_GetMessageString`): the text and its type bits, which combine:
+/// 1 information, 2 error, 8 status, 16 error information, 32 temporary display, 64 temporary
+/// information; 0 means there is no message to report (api_remote_c).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageLine {
+    pub kind: u32,
+    pub text: String,
+}
+
+impl MessageLine {
+    pub fn is_error(&self) -> bool {
+        self.kind & (2 | 16) != 0
+    }
+}
+
+/// Format of a window's text from `T32_GetWindowContent` (t32.h print codes; the PRinTer.FILE
+/// formats of the same names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrintFormat {
+    /// Unpaged, every non-ASCII character a `*`.
+    Ascii,
+    /// Underlines shown, graphic characters as ASCII.
+    AsciiE,
+    Csv,
+    Xml,
+}
+
+impl PrintFormat {
+    pub fn code(self) -> u32 {
+        match self {
+            PrintFormat::Ascii => 0x41,
+            PrintFormat::AsciiE => 0x43,
+            PrintFormat::Csv => 0x44,
+            PrintFormat::Xml => 0x45,
+        }
+    }
+}
+
 /// Result of `ExecuteFunction`, parsed from the result type word and the text.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FuncValue {

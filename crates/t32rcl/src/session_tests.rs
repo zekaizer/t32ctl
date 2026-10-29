@@ -472,3 +472,31 @@ fn tcp_connect_classifies_closed_silent_foreign_and_closing_peers() {
     assert_eq!(fast(port).tag(), "closed-during-attach");
     done();
 }
+
+#[test]
+fn the_message_line_comes_back_with_its_type() {
+    let s =
+        Script::new().attach().expect_req(Request::MessageString { size: 4096 }).reply_message(2, "unknown command");
+    let mut session = session(s);
+    assert_eq!(session.message().unwrap(), MessageLine { kind: 2, text: "unknown command".into() });
+}
+
+#[test]
+fn window_content_is_read_in_chunks_until_an_empty_one() {
+    let ask = |offset| Request::WindowContent { command: "AREA.view".into(), requested: 4096, offset, code: 0x41 };
+    let s = Script::new().attach();
+    let s = s.expect_req(ask(0)).reply_window(b"line 1\r\n").expect_req(ask(8)).reply_window(b"line 2\r\n");
+    let s = s.expect_req(ask(16)).reply_window(b"");
+    let mut session = session(s);
+    let (text, cut) = session.window_content("AREA.view", PrintFormat::Ascii, 1 << 20).unwrap();
+    assert_eq!((text.as_slice(), cut), (&b"line 1\r\nline 2\r\n"[..], false));
+}
+
+#[test]
+fn window_content_stops_at_its_bound_and_says_so() {
+    let ask = |offset| Request::WindowContent { command: "List".into(), requested: 4096, offset, code: 0x41 };
+    let s = Script::new().attach().expect_req(ask(0)).reply_window(b"0123456789");
+    let mut session = session(s);
+    let (text, cut) = session.window_content("List", PrintFormat::Ascii, 6).unwrap();
+    assert_eq!((text.as_slice(), cut), (&b"012345"[..], true));
+}

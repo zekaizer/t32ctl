@@ -27,6 +27,11 @@
 //! | MemRead | 0x74 | 0x35 | u16 len, addr object | data | `t32_readmemoryobj` |
 //! | MemWrite | 0x74 | 0x36 | u16 len, addr object, data | none | `t32_writememoryobj` |
 //! | Exp | 0x74 | 0xFE | u16 exp cmd, exp payload | EXP blocks | `t32_exp` |
+//! | GetMessageString | 0x7A | 0x00 | u16 buffer size, header length forced to 2 | u32 type, u32 length, text, NUL | `T32_GetMessageString` |
+//! | WindowContent | 0x74 | 0x70 | u32 requested, u32 offset, u32 print code, command, NUL | u32 n, n bytes | `T32_GetWindowContent` |
+//!
+//! The last two come from the C API (hremote.c, Lauterbach's remote API sources); pyrcl 1.1.6
+//! lacks the first and sends the second's command without its NUL.
 //!
 //! Address object: `u16 3` (A64), `u64 addr`, `"AC"`, `u16 n`, access class NUL-padded to even
 //! `n`, then `"WI"`, `u16 width` when a width is set, `"XX"` (_address.py `serialize`).
@@ -42,12 +47,13 @@
 
 use crate::{
     error::{LocalError, Op, RemoteError, RemoteKind, Violation},
-    value::{FuncValue, MacroName, MacroSpelling, MemAddr, PracticeState, TargetState},
+    value::{FuncValue, MacroName, MacroSpelling, MemAddr, MessageLine, PracticeState, TargetState},
 };
 
 pub(crate) const RAPI_CMD_ATTACH: u8 = 0x71;
 pub(crate) const RAPI_CMD_EXECUTE_PRACTICE: u8 = 0x72;
 pub(crate) const RAPI_CMD_DEVICE_SPECIFIC: u8 = 0x74;
+pub(crate) const RAPI_CMD_GETMSGSTRING: u8 = 0x7A;
 
 pub(crate) const PRACTICE_STOP: u8 = 0x00;
 pub(crate) const PRACTICE_GETSTATE: u8 = 0x03;
@@ -56,6 +62,7 @@ pub(crate) const PRACTICE_EXECUTEFUNCTION: u8 = 0x05;
 
 pub(crate) const DS_GETSTATE: u8 = 0x10;
 pub(crate) const DS_EVAL_GETSTRING: u8 = 0x17;
+pub(crate) const DS_WINDOW_CONTENT: u8 = 0x70;
 pub(crate) const DS_MEMORY_OBJ_READ: u8 = 0x35;
 pub(crate) const DS_MEMORY_OBJ_WRITE: u8 = 0x36;
 pub(crate) const DS_EXP: u8 = 0xFE;
@@ -69,6 +76,8 @@ const REPLY_BUFFER: u32 = 4096;
 pub(crate) const MAX_PRACTICE_TEXT: usize = 2048 - 10 - 1;
 /// Largest message the long header can carry.
 pub(crate) const MAX_MESSAGE: usize = 0xF000;
+/// Longest command `T32_GetWindowContent` takes: the C client refuses a short header past 0xFF.
+pub(crate) const MAX_WINDOW_COMMAND: usize = 0xFF - 15;
 
 // Every reply the client can provoke must fit a frame it accepts: an EXP get of the largest value
 // `req::macro_set` accepts is `[err][id] len cmd "PL" n 2 value`, a memory read `[err][id] data`.
@@ -198,6 +207,27 @@ pub(crate) mod req {
 
     pub fn eval_get_string() -> Draft {
         Draft::new(RAPI_CMD_DEVICE_SPECIFIC, DS_EVAL_GETSTRING, LenRule::Auto, Vec::new())
+    }
+
+    /// The C client sends the u16 buffer size with a header length of 2.
+    pub fn message_string(size: u16) -> Draft {
+        Draft::new(RAPI_CMD_GETMSGSTRING, 0x00, LenRule::Forced(2), size.to_le_bytes().to_vec())
+    }
+
+    pub fn window_content(command: &str, requested: u32, offset: u32, code: u32) -> Result<Draft, LocalError> {
+        if command.as_bytes().contains(&0) {
+            return Err(LocalError::EmbeddedNul);
+        }
+        if command.len() > MAX_WINDOW_COMMAND {
+            return Err(LocalError::TextTooLong { len: command.len(), max: MAX_WINDOW_COMMAND });
+        }
+        let mut p = Vec::with_capacity(13 + command.len());
+        for v in [requested, offset, code] {
+            p.extend_from_slice(&v.to_le_bytes());
+        }
+        p.extend_from_slice(command.as_bytes());
+        p.push(0);
+        Ok(Draft::new(RAPI_CMD_DEVICE_SPECIFIC, DS_WINDOW_CONTENT, LenRule::Auto, p))
     }
 
     pub fn mem_read(at: &MemAddr, len: u16) -> Draft {
@@ -477,6 +507,26 @@ pub(crate) mod resp {
     }
 
     /// EXP 2 get: 2 bytes, then the value. NULs trimmed.
+    /// `u32 type, u32 length, text, NUL`; the `bool` reports lossy decoding.
+    pub fn message(result: &[u8]) -> Result<(MessageLine, bool), Violation> {
+        if result.len() < 8 {
+            return Err(Violation::ShortResponse { wanted: 8, got: result.len() });
+        }
+        let kind = u32::from_le_bytes([result[0], result[1], result[2], result[3]]);
+        let (text, lossy) = text(&result[8..]);
+        Ok((MessageLine { kind, text }, lossy))
+    }
+
+    /// `u32 n, n bytes`, at most `requested - 1` of them, as the C client keeps.
+    pub fn window_content(result: &[u8], requested: u32) -> Result<&[u8], Violation> {
+        if result.len() < 4 {
+            return Err(Violation::ShortResponse { wanted: 4, got: result.len() });
+        }
+        let n = u32::from_le_bytes([result[0], result[1], result[2], result[3]]);
+        let n = n.min(requested.saturating_sub(1)) as usize;
+        Ok(&result[4..(4 + n).min(result.len())])
+    }
+
     pub fn macro_value(payload: &[u8]) -> Result<(String, bool), Violation> {
         let value = payload.get(2..).ok_or(Violation::ShortResponse { wanted: 2, got: payload.len() })?;
         Ok(text(value))
@@ -511,6 +561,39 @@ mod golden {
         assert_eq!(cmd, hex("0e 72 04 07 00 10 00 00 50 52 49 4e 54 20 31 00"));
         let fnc = seal(req::execute_function("VERSION.BUILD()").expect("valid"), 1);
         assert_eq!(fnc, hex("16 72 05 01 00 10 00 00 56 45 52 53 49 4f 4e 2e 42 55 49 4c 44 28 29 00"));
+    }
+
+    #[test]
+    fn message_string_forces_header_length_2_like_the_c_client() {
+        assert_eq!(seal(req::message_string(4096), 1), hex("02 7a 00 01 00 10"));
+    }
+
+    #[test]
+    fn window_content_ends_its_command_with_a_nul_and_stays_in_the_short_header() {
+        let msg = seal(req::window_content("AREA.view", 4096, 0, 0x41).expect("valid"), 1);
+        assert_eq!(msg, hex("18 74 70 01 00 10 00 00 00 00 00 00 41 00 00 00 41 52 45 41 2e 76 69 65 77 00"));
+        let odd = seal(req::window_content("List", 1024, 8, 0x41).expect("valid"), 2);
+        assert_eq!(odd, hex("13 74 70 02 00 04 00 00 08 00 00 00 41 00 00 00 4c 69 73 74 00 00"));
+        let long = "x".repeat(MAX_WINDOW_COMMAND + 1);
+        assert_eq!(
+            req::window_content(&long, 4096, 0, 0x41),
+            Err(LocalError::TextTooLong { len: MAX_WINDOW_COMMAND + 1, max: MAX_WINDOW_COMMAND })
+        );
+        assert_eq!(req::window_content("a\0b", 4096, 0, 0x41), Err(LocalError::EmbeddedNul));
+    }
+
+    #[test]
+    fn message_and_window_replies_parse_per_the_c_client() {
+        let mut r = 2u32.to_le_bytes().to_vec();
+        r.extend_from_slice(&5u32.to_le_bytes());
+        r.extend_from_slice(b"error\0");
+        assert_eq!(resp::message(&r), Ok((MessageLine { kind: 2, text: "error".into() }, false)));
+        assert!(resp::message(&[1, 0, 0]).is_err());
+        let mut w = 5u32.to_le_bytes().to_vec();
+        w.extend_from_slice(b"r0 0x\0");
+        assert_eq!(resp::window_content(&w, 4096), Ok(&b"r0 0x"[..]));
+        assert_eq!(resp::window_content(&w, 4), Ok(&b"r0 "[..]), "at most requested - 1 bytes");
+        assert!(resp::window_content(&[9, 0, 0, 0, b'a'], 4096).is_ok_and(|d| d == b"a"), "n past the reply is cut");
     }
 
     #[test]

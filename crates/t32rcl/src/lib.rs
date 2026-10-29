@@ -39,8 +39,8 @@ pub use error::{
 pub use link::{Cancel, Clock, Connector, KeepaliveSample, SystemClock, TcpConnector, Trace, Transport};
 pub use session::{BudgetScope, ConnectOpts, ConnectReport, Health, Session};
 pub use value::{
-    AccessClass, CallBudget, DevicePrompt, Endpoint, FuncValue, MacroName, MacroSpelling, MemAddr, PracticeState,
-    TargetState, Tuning,
+    AccessClass, CallBudget, DevicePrompt, Endpoint, FuncValue, MacroName, MacroSpelling, MemAddr, MessageLine,
+    PracticeState, PrintFormat, TargetState, Tuning,
 };
 pub use version::{Feature, MinSupport, PowerViewBuild, Support};
 

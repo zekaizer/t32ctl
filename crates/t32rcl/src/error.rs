@@ -24,6 +24,8 @@ pub enum Op {
     MemWrite,
     MacroGet,
     MacroSet,
+    Message,
+    WindowContent,
 }
 
 impl Op {
@@ -40,6 +42,8 @@ impl Op {
             Op::MemWrite => "mem-write",
             Op::MacroGet => "macro-get",
             Op::MacroSet => "macro-set",
+            Op::Message => "message",
+            Op::WindowContent => "window-content",
         }
     }
 }

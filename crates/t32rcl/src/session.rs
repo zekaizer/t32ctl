@@ -14,7 +14,10 @@ use crate::{
     Result,
     error::{ConnectError, Error, ErrorClass, LocalError, NotRclEvidence, Op, PoisonCause},
     link::{Cancel, Clock, Connector, Link, SystemClock, TcpConnector, Trace},
-    value::{CallBudget, DevicePrompt, Endpoint, FuncValue, MacroName, MemAddr, PracticeState, TargetState, Tuning},
+    value::{
+        CallBudget, DevicePrompt, Endpoint, FuncValue, MacroName, MemAddr, MessageLine, PracticeState, PrintFormat,
+        TargetState, Tuning,
+    },
     version::{BASE_FUNCTIONS, BUILD_FUNCTIONS, PowerViewBuild},
     wire::{self, req, resp},
 };
@@ -47,6 +50,11 @@ impl Default for ConnectOpts {
         }
     }
 }
+
+/// Buffer announced for the message line. The C client takes up to 65535; 4096 covers a line.
+const MESSAGE_BUFFER: u16 = 4096;
+/// Bytes asked per `T32_GetWindowContent` call; the C client's receive buffer is 16640.
+const WINDOW_CHUNK: u32 = 4096;
 
 /// Timings of the last successful connect.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -235,6 +243,36 @@ impl Session {
         let (text, lossy) = wire::text(result);
         self.note_lossy(lossy);
         Ok(text)
+    }
+
+    /// `T32_GetMessageString`: PowerView's message line and its type bits.
+    pub fn message(&mut self) -> Result<MessageLine> {
+        let reply = self.exchange(Op::Message, &req::message_string(MESSAGE_BUFFER))?;
+        let result = resp::status(Op::Message, &reply)?;
+        let (line, lossy) = resp::message(result).map_err(|v| self.violation(Op::Message, v))?;
+        self.note_lossy(lossy);
+        Ok(line)
+    }
+
+    /// The text `command` renders in a window (`T32_GetWindowContent`), read in chunks of
+    /// `WINDOW_CHUNK` until PowerView returns none, at most `max` bytes. `true` when it stopped at
+    /// `max` with more to read.
+    pub fn window_content(&mut self, command: &str, format: PrintFormat, max: usize) -> Result<(Vec<u8>, bool)> {
+        let mut text = Vec::new();
+        loop {
+            let draft = req::window_content(command, WINDOW_CHUNK, text.len() as u32, format.code())?;
+            let reply = self.exchange(Op::WindowContent, &draft)?;
+            let result = resp::status(Op::WindowContent, &reply)?;
+            let chunk = resp::window_content(result, WINDOW_CHUNK).map_err(|v| self.violation(Op::WindowContent, v))?;
+            if chunk.is_empty() {
+                return Ok((text, false));
+            }
+            text.extend_from_slice(chunk);
+            if text.len() >= max {
+                text.truncate(max);
+                return Ok((text, true));
+            }
+        }
     }
 
     pub fn practice_state(&mut self) -> Result<PracticeState> {

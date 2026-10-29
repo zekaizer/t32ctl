@@ -60,6 +60,8 @@ pub enum Request {
     MemWrite { access: String, addr: u64, data: Vec<u8> },
     MacroGet { name: String },
     MacroSet { name: String, value: String },
+    MessageString { size: u16 },
+    WindowContent { command: String, requested: u32, offset: u32, code: u32 },
     Other { cmd: u8, opt: u8 },
 }
 
@@ -196,6 +198,25 @@ impl Script {
         self.reply(m)
     }
 
+    /// GetMessageString answer: `u32 kind`, `u32 length`, the text, NUL.
+    pub fn reply_message(self, kind: u32, text: &str) -> Self {
+        let mut m = vec![0, 0];
+        m.extend_from_slice(&kind.to_le_bytes());
+        m.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        m.extend_from_slice(text.as_bytes());
+        m.push(0);
+        self.reply(m)
+    }
+
+    /// WindowContent answer: `u32 n`, the bytes, NUL.
+    pub fn reply_window(self, data: &[u8]) -> Self {
+        let mut m = vec![0, 0];
+        m.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        m.extend_from_slice(data);
+        m.push(0);
+        self.reply(m)
+    }
+
     /// EvalGetString answer.
     pub fn reply_string(self, text: &str) -> Self {
         let mut m = vec![0, 0];
@@ -329,6 +350,11 @@ fn decode_request(bytes: &[u8]) -> (u8, Request) {
         (0x72, 0x00) => Request::Stop,
         (0x74, 0x10) => Request::TargetState,
         (0x74, 0x17) => Request::EvalString,
+        (0x7A, 0x00) => Request::MessageString { size: le16(&msg[4..], 0) },
+        (0x74, 0x70) => {
+            let u32_at = |i: usize| u32::from_le_bytes(p[i..i + 4].try_into().expect("4 bytes"));
+            Request::WindowContent { command: cstr(&p[12..]), requested: u32_at(0), offset: u32_at(4), code: u32_at(8) }
+        }
         (0x74, 0x35) => match addr(p) {
             (access, addr, None, _) => Request::MemRead { access, addr, len: le16(p, 0) },
             (access, addr, Some(width), _) => Request::MemReadWidth { access, addr, len: le16(p, 0), width },
