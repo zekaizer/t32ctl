@@ -139,7 +139,7 @@ pub(crate) const PATHS: [&str; 7] = [
 pub(crate) type Reply<T> = Result<T, RemoteError>;
 
 /// A refusal becomes `Err(remote)`; any other error aborts the probe.
-fn reply<T>(r: Result<T, t32rcl::Error>) -> Result<Reply<T>, ProbeFail> {
+pub(crate) fn reply<T>(r: Result<T, t32rcl::Error>) -> Result<Reply<T>, ProbeFail> {
     match r {
         Ok(v) => Ok(Ok(v)),
         Err(e) => match e.remote() {

@@ -10,7 +10,9 @@ use serde::{Serialize, Serializer};
 use crate::{
     cli::Gates,
     ctx::{ProbeCtx, ProbeResult},
-    probes::{channels, files, functions, macros, optin, scriptlab, scripts, storage, target, transport, unpack},
+    probes::{
+        channels, debugger, files, functions, macros, optin, scriptlab, scripts, storage, target, transport, unpack,
+    },
 };
 
 /// Why a probe is not in the default run.
@@ -116,6 +118,8 @@ probes! {
         "N round trips of GetState and of a trivial function: p50, p95, max";
     Clients = "clients", Safe, [Connect], true, 5, transport::clients,
         "RCL.TCP.NrUsedCons(), else api.RCL.TCP.NrUsedCons()";
+    DebuggerInfo = "debugger-info", Safe, [Connect], true, 30, debugger::debugger_info,
+        "debugger, probe and debug-port state, read only: PowerView version and instance, licence, probe, cable, host link, SYStem.Mode, JTAG clock setting, port type, power sense; run once per debugger mode";
     Keepalive = "keepalive", Safe, [Connect], true, 30, transport::keepalive,
         "blocking WAIT 10.s: do keepalive frames arrive, at what interval";
     Reconnect = "reconnect", Safe, [Connect], true, 20, transport::reconnect,
@@ -282,6 +286,7 @@ mod tests {
             "version",
             "latency",
             "clients",
+            "debugger-info",
             "keepalive",
             "reconnect",
             "tempdir",
@@ -320,7 +325,8 @@ mod tests {
         assert_eq!(ALL.len(), safe.len() + opt.len());
         let order: Vec<&str> = ALL.iter().filter(|d| d.tier == Tier::Safe).map(|d| d.id.name()).collect();
         assert_eq!(order, safe);
-        let rows: [(&str, &[&str], u64); 22] = [
+        let rows: [(&str, &[&str], u64); 23] = [
+            ("debugger-info", &["connect"], 30),
             ("keepalive", &["connect"], 30),
             ("gzip", &["vm-file"], 180),
             ("macro", &["tempdir"], 45),
@@ -357,7 +363,7 @@ mod tests {
         let names = |v: Vec<&ProbeDef>| v.iter().map(|d| d.id.name()).collect::<Vec<_>>();
         assert_eq!(names(select(&[ProbeId::VmFile], &[], &none).unwrap()), ["connect", "tempdir", "vm-rw", "vm-file"]);
         let default = select(&[], &[ProbeId::Latency], &none).unwrap();
-        assert_eq!(default.len(), 23);
+        assert_eq!(default.len(), 24);
         assert!(default.iter().all(|d| d.tier == Tier::Safe));
         assert_eq!(select(&[ProbeId::Dialog], &[], &none).unwrap_err(), "dialog needs --allow-dialog");
         let gates = Gates { dialog: true, ..Gates::default() };

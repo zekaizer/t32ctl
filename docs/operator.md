@@ -10,6 +10,7 @@ reconfigures PowerView.
 t32probe                                  every safe probe, text report on stdout
 t32probe --json probe.json                plus the full JSON report, rewritten after every probe
 t32probe --only bundle                    one probe and the probes it requires
+t32probe --only debugger-info             the debugger's own state: run it once per debugger mode
 t32probe --skip gzip,tar-download         all safe probes except these, unless one is required
 t32probe --list                           the catalogue: id, tier, deadline, prerequisites
 t32probe --host 172.28.80.1 --port 20003  explicit endpoint instead of --host auto
@@ -61,6 +62,11 @@ Asking for an opt-in probe without its flag is a usage error before anything is 
   exists. At the end the directory is listed and files it did not expect (a `.bak` written by
   `SETUP.BAKfile`) are removed too and counted as `stray=`.
 - `channel-out` creates an AREA window `T32PQ<RUN>` and deletes it right after reading it.
+- `debugger-info` only reads functions: version, licence, probe, cable, link, `SYStem.Mode()`, the
+  JTAG clock setting, the port type, power sense. It never changes the debugger mode, so what it
+  reports depends on the mode you left PowerView in. To compare modes, run
+  `t32probe --only debugger-info` after `SYStem.Down`, `SYStem.Mode Prepare`, `SYStem.Mode Attach`
+  and `SYStem.Up` in PowerView.
 - Script probes create PRACTICE globals `t32ctl_q<run>_*` whose values carry the run id. Globals
   cannot be deleted over RCL; they are set to the empty string and their number is reported as
   `globals_left`.
