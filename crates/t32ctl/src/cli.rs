@@ -9,13 +9,15 @@
 
 use std::{ffi::OsString, path::PathBuf};
 
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum, error::ErrorKind as ClapKind};
+use clap::{
+    ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum, error::ErrorKind as ClapKind,
+};
 use t32stage::RegName;
 
 use crate::{
     error::{CtlError, ErrorKind},
     grade::{Grade, GradeId},
-    notation::{NotationError, OutName, Place, PracticeText, ScriptTimeout, Size, reg_name},
+    notation::{NotationError, OutName, Place, PracticeText, ScriptTimeout, Size, WindowName, reg_name},
 };
 
 /// TRACE32 control over RCL for coding agents. The first word is the permission grade.
@@ -199,7 +201,7 @@ pub enum RawLeaf {
     Eval(RawEval),
     /// Run a `.cmm` set from the repository, collect outputs
     Script(RawScript),
-    /// Text of a PowerView window, printed with WinPrint
+    /// Capture a PowerView window as ASCII text: an open one, or what a command shows
     Window(RawWindow),
 }
 
@@ -239,11 +241,21 @@ pub struct RawScript {
 }
 
 #[derive(Debug, Args)]
+#[command(group(ArgGroup::new("window").required(true).args(["text", "top", "name", "list"])))]
 pub struct RawWindow {
     /// The window command WinPrint prints, sent literally (`Register.view`, `SYStem.state`).
     /// Quote it whole in single quotes, or the shell reads < > | & ; itself
     #[arg(value_name = "'TEXT'")]
-    pub text: PracticeText,
+    pub text: Option<PracticeText>,
+    /// Capture the topmost open window
+    #[arg(long)]
+    pub top: bool,
+    /// Capture the open window of this name; `--list` shows the names
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<WindowName>,
+    /// List the open windows and the command each one shows
+    #[arg(long)]
+    pub list: bool,
     /// Lines to leave out from the top
     #[arg(long, value_name = "N", default_value_t = 0)]
     pub offset: u32,
@@ -337,8 +349,8 @@ leaf!(Raw, RawScript, path: ["raw", "script"], waits: "the script", connects: tr
       examples: ["t32ctl raw script tools/t32/ddr_stress.cmm -- 0x40000000 0x100000",
                  "t32ctl raw script tools/t32/dump.cmm --timeout 30s --out dump-1 --json"]);
 leaf!(Raw, RawWindow, path: ["raw", "window"], waits: "the print and its download", connects: true,
-      examples: ["t32ctl raw window 'Register.view'", "t32ctl raw window 'SYStem.state' --limit 80",
-                 "t32ctl raw window 'List' --offset 40 --json"]);
+      examples: ["t32ctl raw window --list", "t32ctl raw window --top", "t32ctl raw window --name regs",
+                 "t32ctl raw window 'SYStem.state' --limit 80", "t32ctl raw window 'List' --offset 40 --json"]);
 
 leaves! {
     (Read, ReadStatus),

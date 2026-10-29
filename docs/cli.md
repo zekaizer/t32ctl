@@ -134,7 +134,7 @@ snippet included, with the binary's output and fails on a diff.
 | `t32ctl raw cmd 'TEXT'` | One PRACTICE command | the command |
 | `t32ctl raw eval 'EXPR'` | One PRACTICE function | the function |
 | `t32ctl raw script ENTRY.cmm [--root DIR] [--timeout DUR] [--out DIR] [-- ARG...]` | Run a `.cmm` set from the repository, collect outputs | the script |
-| `t32ctl raw window 'TEXT' [--offset N] [--limit N]` | Text of a PowerView window, printed with WinPrint | the print and its download |
+| `t32ctl raw window ['TEXT'] [--top] [--name NAME] [--list] [--offset N] [--limit N]` | Capture a PowerView window as ASCII text: an open one, or what a command shows | the print and its download |
 
 Flags on every command: `--json`, `--build DIR`.
 <!-- commands:end -->
@@ -296,20 +296,27 @@ stopped core=0 pc=0x40083e10
 [exit 0]
 ```
 
-`raw window 'TEXT' [--offset N] [--limit N]` prints the text of any PowerView window: t32ctl
-opens a printer file below the stage root in the `ASCII` format (`PRinTer.OPEN <file> ASCII`:
-unpaged, a non-ASCII character as `*`), sends `WinPrint.<TEXT>`, closes the printer
-(`PRinTer.CLOSE`, also at cleanup if the print failed), and downloads the file through `VM:` like
-a script's outputs. PowerView keeps `ASCII` as its print-to-file format afterwards: no function
-reads the previous one back. `TEXT` is the window command as typed in PowerView
-(`Register.view`, `SYStem.state`, `List`, `PER.view`), sent literally. It prints 40 lines from
-`--offset` unless `--limit` says otherwise, and a cut body ends with `... <n> more lines` and a
-`next:` line. Reading a window can read the target (a `PER.view` reads device registers), which is
-one reason `raw` asks. Opening and closing windows in the GUI is `raw cmd` (`Register.view`,
-`WinCLEAR`). Exits: 2 `notation` for a command past 2037 bytes with `WinPrint.`, `refused` when
-PowerView refuses the print; 3 `target-down` or `not-halted` from PowerView's status codes; 5
-`pv-error` when the printer file cannot be opened, closed or downloaded. Assumed until the
-`target-read` probe records it: the file holds one line per window row.
+`raw window` captures a PowerView window as ASCII text. `--list` names the open windows
+(`WINdow.LIST()`) and the command each one shows (`WINdow.COMMAND()`, without the `B::` prompt).
+`--top` captures the topmost window and `--name NAME` the window of that name (`WinPOS` names a
+window; `--list` shows the names): t32ctl reads the command the window shows and prints that
+command, so the capture holds what the window holds, not the GUI's scroll position. `'TEXT'`
+captures what a window command shows without opening it in the GUI. Exactly one of the four is
+given. An unknown name is exit 2 `refused` with `next: t32ctl raw window --list`.
+
+To print, t32ctl opens a printer file below the stage root in the `ASCII` format (`PRinTer.OPEN
+<file> ASCII`: unpaged, a non-ASCII character as `*`), sends `WinPrint.<TEXT>`, closes the printer
+(`PRinTer.CLOSE`, also at cleanup if the print failed), and downloads the file through `VM:` like a
+script's outputs. PowerView keeps `ASCII` as its print-to-file format afterwards: no function reads
+the previous one back. `TEXT` is the window command as typed in PowerView (`Register.view`,
+`SYStem.state`, `List`, `PER.view`), sent literally. It prints 40 lines from `--offset` unless
+`--limit` says otherwise, and a cut body ends with `... <n> more lines` and a `next:` line. Reading
+a window can read the target (a `PER.view` reads device registers), which is one reason `raw` asks.
+Opening and closing windows in the GUI is `raw cmd` (`Register.view`, `WinCLEAR`). Exits: 2
+`notation` for a command past 2037 bytes with `WinPrint.`, `refused` when PowerView refuses the
+print; 3 `target-down` or `not-halted` from PowerView's status codes; 5 `pv-error` when the printer
+file cannot be opened, closed or downloaded. Assumed until the `target-read` probe records it: the
+file holds one line per window row.
 
 `<grade> proc NAME [--PARAM VALUE...]` runs a board procedure
 ([profiles.md](profiles.md#procedures)). `raw script ENTRY.cmm [--root DIR] [--timeout DUR]

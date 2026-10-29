@@ -1189,3 +1189,82 @@ fn a_refused_print_is_refused_and_cleanup_still_closes_the_printer() {
     assert_eq!(out.code, 2, "{}", out.text);
     assert!(out.text.contains("error[refused]: WinPrint.NoSuch.view"), "{}", out.text);
 }
+
+/// The prelude of a stopped target without a profile.
+fn bare() -> Script {
+    Script::new().attach().expect_req(Request::TargetState).reply_state(2)
+}
+
+/// `raw window --top` or `--name`: PowerView names the window's command, which is printed.
+fn open_window_printed(arg: &str, command: &str, text: &[u8]) -> Script {
+    let file = tk::at("win-tok.txt");
+    let s = bare().expect_fn(&format!("WINdow.COMMAND({arg})")).reply_text(&format!("B::{command}"));
+    let s = tk::opened(s).expect_cmd(&format!("PRinTer.OPEN \"{file}\" ASCII")).reply_ok();
+    let s = s.expect_cmd(&format!("WinPrint.{command}")).reply_ok().expect_cmd("PRinTer.CLOSE").reply_ok();
+    let s = tk::downloaded(s, &file, text);
+    stopped_header(tk::closed(tk::file_removed(tk::file_absent(s, &format!("{file}.gz")), &file), false))
+}
+
+#[test]
+fn raw_window_top_captures_the_topmost_open_window_by_its_command() {
+    let w = World::new("window-top");
+    let d = deps(Env { profile: None, ..w.env() }, vec![Ok(open_window_printed("WinTOP", "Register.view", WINDOW))]);
+    let out = call("t32ctl raw window --top", &d);
+    assert_eq!((out.text.as_str(), out.code), ("stopped core=0 pc=0x40083e10\nr0 0x0\nr1 0x1\nr2 0x2\n", 0));
+}
+
+#[test]
+fn raw_window_name_captures_that_window_and_a_cut_points_at_its_command() {
+    let w = World::new("window-name");
+    let d = deps(Env { profile: None, ..w.env() }, vec![Ok(open_window_printed("regs", "Register.view", WINDOW))]);
+    let out = call("t32ctl raw window --name regs --limit 2", &d);
+    assert_eq!(
+        (out.text.as_str(), out.code),
+        (
+            "stopped core=0 pc=0x40083e10\nr0 0x0\nr1 0x1\n... 1 more line\n\
+             next: t32ctl raw window Register.view --offset 2 --limit 2\n",
+            0
+        )
+    );
+}
+
+#[test]
+fn an_unknown_window_name_is_refused_and_names_the_list() {
+    let w = World::new("window-unknown");
+    let s = stopped_header(bare().expect_fn("WINdow.COMMAND(nosuch)").reply_text(""));
+    let out = call("t32ctl raw window --name nosuch", &deps(Env { profile: None, ..w.env() }, vec![Ok(s)]));
+    assert_eq!(
+        (out.text.as_str(), out.code),
+        (
+            "stopped core=0 pc=0x40083e10\nerror[refused]: no open window named nosuch\nnext: t32ctl raw window --list\n",
+            2
+        )
+    );
+}
+
+#[test]
+fn raw_window_list_names_each_open_window_and_its_command() {
+    let w = World::new("window-list");
+    let s = bare().expect_fn("WINdow.LIST()").reply_text("regs,W001");
+    let s = s.expect_fn("WINdow.COMMAND(regs)").reply_text("B::Register.view");
+    let s = stopped_header(s.expect_fn("WINdow.COMMAND(W001)").reply_text("B::List.auto"));
+    let out = call("t32ctl raw window --list", &deps(Env { profile: None, ..w.env() }, vec![Ok(s)]));
+    assert_eq!(
+        (out.text.as_str(), out.code),
+        ("stopped core=0 pc=0x40083e10\nwindow  command\nregs    Register.view\nW001    List.auto\n", 0)
+    );
+    let none = stopped_header(bare().expect_fn("WINdow.LIST()").reply_text(""));
+    let out = call("t32ctl raw window --list", &deps(Env { profile: None, ..w.env() }, vec![Ok(none)]));
+    assert_eq!(out.text, "stopped core=0 pc=0x40083e10\nno open windows\n");
+}
+
+#[test]
+fn raw_window_takes_exactly_one_source() {
+    let w = World::new("window-source");
+    for line in ["t32ctl raw window", "t32ctl raw window --top --list", "t32ctl raw window 'List' --name regs"] {
+        let out = call(line, &deps(Env { profile: None, ..w.env() }, vec![]));
+        assert_eq!(out.code, 2, "{line}: {}", out.text);
+    }
+    let out = call("t32ctl raw window --name 'a b'", &deps(Env { profile: None, ..w.env() }, vec![]));
+    assert!(out.text.contains("window name \"a b\""), "{}", out.text);
+}

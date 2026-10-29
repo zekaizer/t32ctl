@@ -313,6 +313,28 @@ impl fmt::Display for Place {
     }
 }
 
+/// A PowerView window name (`WinPOS`), as `--name` takes it: `[A-Za-z0-9_]{1,64}`, so it goes
+/// into `WINdow.COMMAND(<name>)` as it is. Case-sensitive, like PowerView's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowName(String);
+
+impl WindowName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for WindowName {
+    type Err = NotationError;
+
+    fn from_str(s: &str) -> Result<Self, NotationError> {
+        if s.is_empty() || s.len() > 64 || !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return err(format!("window name {s:?}: 1 to 64 letters, digits or _"));
+        }
+        Ok(Self(s.to_string()))
+    }
+}
+
 /// A register name for clap: `[A-Za-z][A-Za-z0-9_]{0,31}`.
 pub fn reg_name(s: &str) -> Result<RegName, NotationError> {
     RegName::new(s).map_err(|e| NotationError(e.to_string()))

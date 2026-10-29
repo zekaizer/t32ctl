@@ -18,7 +18,7 @@ use crate::{
     notation::PracticeText,
     out::OutDir,
     profile::walk,
-    report::{Body, Bundled, EvalBody, Subject, WindowBody},
+    report::{Body, Bundled, EvalBody, Hint, OpenWindow, Subject, WindowBody, WindowsBody},
     script::Prepared,
 };
 
@@ -30,9 +30,19 @@ pub fn eval(args: &RawEval, ctx: &mut Ctx<'_, Raw>, _setup: &Setup<'_>) -> Resul
     ctx.eval(&args.text).map(|v| Body::Eval(EvalBody::new(&v)))
 }
 
-/// The `WinPrint.<TEXT>` command line, checked against the command limit before connecting.
-pub fn window_prepare(args: &RawWindow, _setup: &Setup<'_>) -> Result<String, CtlError> {
-    let line = format!("WinPrint.{}", args.text.as_str());
+/// What `raw window` captures.
+#[derive(Debug)]
+pub enum WindowSource {
+    /// A window command the caller typed.
+    Command(String),
+    /// The open window `WINdow.COMMAND()` names by this argument: `WinTOP` or a window name.
+    Open(String),
+    List,
+}
+
+/// The `WinPrint.<command>` line, checked against the command limit.
+fn print_line(command: &str) -> Result<String, CtlError> {
+    let line = format!("WinPrint.{command}");
     if line.len() > PracticeText::MAX {
         return Err(notation(format!(
             "{line:.40}...: {} bytes; a command is at most {}",
@@ -43,12 +53,46 @@ pub fn window_prepare(args: &RawWindow, _setup: &Setup<'_>) -> Result<String, Ct
     Ok(line)
 }
 
+/// The source, and a typed command checked against the command limit, before connecting.
+pub fn window_prepare(args: &RawWindow, _setup: &Setup<'_>) -> Result<WindowSource, CtlError> {
+    Ok(match (&args.text, &args.name) {
+        (Some(t), _) => {
+            print_line(t.as_str())?;
+            WindowSource::Command(t.as_str().to_string())
+        }
+        (None, Some(n)) => WindowSource::Open(n.as_str().to_string()),
+        (None, None) if args.top => WindowSource::Open("WinTOP".into()),
+        (None, None) => WindowSource::List,
+    })
+}
+
 /// The window's lines from `--offset` on, at most `--limit`. The printer file is `ASCII`, so a
 /// non-ASCII character arrives as `*`.
-pub fn window(args: &RawWindow, line: String, ctx: &mut Ctx<'_, Raw>, _setup: &Setup<'_>) -> Result<Body, CtlError> {
-    let bytes = ctx.window(&line)?;
+pub fn window(
+    args: &RawWindow,
+    source: WindowSource,
+    ctx: &mut Ctx<'_, Raw>,
+    _setup: &Setup<'_>,
+) -> Result<Body, CtlError> {
+    let command = match source {
+        WindowSource::Command(c) => c,
+        WindowSource::List => {
+            let windows = ctx.windows()?.into_iter().map(|(name, command)| OpenWindow { name, command }).collect();
+            return Ok(Body::Windows(WindowsBody { windows }));
+        }
+        WindowSource::Open(arg) => ctx.window_command(&arg)?.ok_or_else(|| {
+            let what =
+                if arg == "WinTOP" { "no open window".to_string() } else { format!("no open window named {arg}") };
+            CtlError::new(ErrorKind::Refused, what).with_next(vec![Hint(vec![
+                "raw".into(),
+                "window".into(),
+                "--list".into(),
+            ])])
+        })?,
+    };
+    let bytes = ctx.window(&print_line(&command)?)?;
     let printed: Vec<String> = String::from_utf8_lossy(&bytes).lines().map(str::to_string).collect();
-    Ok(Body::Window(WindowBody::new(args.text.as_str(), &printed, args.offset, args.limit)))
+    Ok(Body::Window(WindowBody::new(&command, &printed, args.offset, args.limit)))
 }
 
 /// `p` without `.` and `..` components, without touching the file system.

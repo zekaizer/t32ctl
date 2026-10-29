@@ -215,6 +215,7 @@ pub enum Body {
     Procs(ProcsBody),
     Run(Box<RunBody>),
     Window(WindowBody),
+    Windows(WindowsBody),
 }
 
 impl Body {
@@ -229,7 +230,8 @@ impl Body {
             | Body::Eval(_)
             | Body::Cmd(_)
             | Body::Procs(_)
-            | Body::Window(_) => Exit::Ok,
+            | Body::Window(_)
+            | Body::Windows(_) => Exit::Ok,
         }
     }
 
@@ -250,6 +252,7 @@ impl Body {
             Body::Cmd(_) => vec!["cmd: done".into()],
             Body::Procs(p) => p.lines(),
             Body::Window(w) => w.lines(),
+            Body::Windows(w) => w.lines(),
             Body::Run(r) => r.lines(),
         }
     }
@@ -499,6 +502,32 @@ impl WindowBody {
             words.extend(["--limit".into(), self.limit.to_string()]);
         }
         Some(Hint(words))
+    }
+}
+
+/// `raw window --list`: the open windows, in PowerView's Z-order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct WindowsBody {
+    pub windows: Vec<OpenWindow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OpenWindow {
+    pub name: String,
+    /// The command the window shows, without the device prompt; empty if PowerView names none.
+    pub command: String,
+}
+
+impl WindowsBody {
+    fn lines(&self) -> Vec<String> {
+        if self.windows.is_empty() {
+            return vec!["no open windows".into()];
+        }
+        let width = self.windows.iter().map(|w| w.name.len()).max().unwrap_or(0).max("window".len());
+        std::iter::once(("window", "command"))
+            .chain(self.windows.iter().map(|w| (w.name.as_str(), w.command.as_str())))
+            .map(|(n, c)| format!("{n:<width$}  {c}").trim_end().to_string())
+            .collect()
     }
 }
 

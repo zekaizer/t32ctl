@@ -823,4 +823,30 @@ impl Ctx<'_, Raw> {
     pub fn window(&mut self, line: &str) -> Result<Vec<u8>, CtlError> {
         self.conn.print_window(line)
     }
+
+    /// The command an open window shows, without the device prompt (`B::`); `None` when no
+    /// window answers to `arg` (`WinTOP` or a window name).
+    pub fn window_command(&mut self, arg: &str) -> Result<Option<String>, CtlError> {
+        let expr = format!("WINdow.COMMAND({arg})");
+        let s = &mut self.conn.session;
+        let text = s.eval(&expr).and_then(|v| v.into_text(&expr)).map_err(|e| from_rcl(&e, Context::Read, &expr))?;
+        let command = match text.split_once("::") {
+            Some((prompt, rest)) if prompt.chars().all(|c| c.is_ascii_alphanumeric()) => rest,
+            _ => text.as_str(),
+        };
+        Ok((!command.is_empty()).then(|| command.to_string()))
+    }
+
+    /// Every open window's name (`WINdow.LIST()`, Z-order, duplicates kept) and its command.
+    pub fn windows(&mut self) -> Result<Vec<(String, String)>, CtlError> {
+        const LIST: &str = "WINdow.LIST()";
+        let s = &mut self.conn.session;
+        let names = s.eval(LIST).and_then(|v| v.into_text(LIST)).map_err(|e| from_rcl(&e, Context::Read, LIST))?;
+        let mut v = Vec::new();
+        for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+            let command = self.window_command(name)?.unwrap_or_default();
+            v.push((name.to_string(), command));
+        }
+        Ok(v)
+    }
 }
