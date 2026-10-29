@@ -258,6 +258,11 @@ probe that has not run yet.
 | A read with the `E` class prefix (`ED:`, `EA:`) works while the cores run. | `target-read` (case to add) | `t32ctl` `read mem` | |
 | `Register(<name>)` answers for system registers (`esr_el1`, `sctlr_el1`) as it does for `x0`. | `target-read` | `practice::fnc::register` | |
 | Memory read over RCL is little-endian per cell on this AArch64 target. | `target-read` (case to add) | `t32ctl::report::cells` | |
+| `T32_GetMessageString` answers on this build, and the message line follows each command. | `ux-lab` | `t32rcl::Session::message` | |
+| `T32_GetWindowContent` returns a window's text as ASCII without opening a window. | `ux-lab` | `t32rcl::Session::window_content` | |
+| `AREA.LINE(A000,0)` is the last line a command printed. | `ux-lab` | planned `raw cmd` output | |
+| Windows nobody named are `W0nn` in `WINdow.LIST()`. | `ux-lab` | `raw window --list`, `--name` | |
+| Build 168999 has `SYStem.LOG.*`, not `SystemLOG.*` (renamed in build 173290). | `ux-lab` | planned `read window` views | |
 
 Questions that only the operator can answer:
 

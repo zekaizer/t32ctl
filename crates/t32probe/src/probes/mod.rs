@@ -24,6 +24,7 @@ pub mod storage;
 pub mod target;
 pub mod transport;
 pub mod unpack;
+pub mod ux;
 
 use std::time::Duration;
 
