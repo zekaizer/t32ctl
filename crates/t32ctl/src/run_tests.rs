@@ -451,21 +451,12 @@ fn full_status_without_a_profile_names_no_source_and_no_variant() {
 }
 
 #[test]
-fn raw_eval_without_a_profile_skips_the_cpu_check_and_says_so() {
+fn raw_eval_without_a_profile_skips_the_cpu_check_without_a_notice() {
     let w = World::new("noprofile-eval");
     let s = Script::new().attach().expect_req(Request::TargetState).reply_state(2);
     let s = stopped_header(s.expect_fn("OS.PTD()").reply_text("C:\\T"));
     let out = call("t32ctl raw eval 'OS.PTD()'", &deps(Env { profile: None, ..w.env() }, vec![Ok(s)]));
-    assert_eq!(
-        (out.text.as_str(), out.code),
-        (
-            "stopped core=0 pc=0x40083e10\n\
-             ! no target profile for this build: the CPU is not checked; read mem and procedures need a \
-             profile\n\
-             \"C:\\T\" (string)\n",
-            0
-        )
-    );
+    assert_eq!((out.text.as_str(), out.code), ("stopped core=0 pc=0x40083e10\n\"C:\\T\" (string)\n", 0));
 }
 
 #[test]
@@ -541,12 +532,12 @@ fn the_prelude_refuses_a_cpu_that_is_not_the_profiles_and_skips_the_check_while_
         Conn::connect(&["127.0.0.1".to_string()], 20000, &opts).unwrap()
     };
     let mut c = conn(connected_to(2, "CortexA72"));
-    let e = c.prelude(&setup.pv_dir, Ok(setup.need_profile().unwrap()), CpuCheck::Refuse).unwrap_err();
+    let e = c.prelude(&setup.pv_dir, setup.profile.as_ref(), CpuCheck::Refuse).unwrap_err();
     assert_eq!(e.kind, ErrorKind::CpuMismatch);
     assert_eq!(e.message, "connected CPU CortexA72 is not the profile's CortexA53");
     assert_eq!(e.exit().code(), 5);
     let mut c = conn(connected(0));
-    assert_eq!(c.prelude(&setup.pv_dir, Ok(setup.need_profile().unwrap()), CpuCheck::Refuse), Ok(TargetState::Down));
+    assert_eq!(c.prelude(&setup.pv_dir, setup.profile.as_ref(), CpuCheck::Refuse), Ok(TargetState::Down));
 }
 
 /// One raw request after the prelude of a stopped target, then the header.

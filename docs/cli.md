@@ -205,10 +205,9 @@ call can end with are not repeated below: `profile-invalid`, `state-dir`, `unrea
 
 A profile is needed only where board knowledge is: `read mem` (the memory map), `read procs` and
 procedures are exit 5 `no-profile` without one, before connecting. `read status`, `read reg`,
-`raw eval`, `raw cmd` and `raw script` run from the connection config alone. They check no CPU,
-and every one but `read status` prints
-`! no target profile for this build: the CPU is not checked; read mem and procedures need a profile`
-(the first part names the profile file that is missing when the binding names a directory).
+`raw eval`, `raw cmd` and `raw script` run from the connection config alone. They check no CPU
+and print no notice about it: a missing profile is a standing condition, not an event, and
+`read status` shows it.
 
 `read status [--full]` reports the target against the profile, and PowerView. The CPU check never
 refuses it: a mismatch is a notice, and the call exits 0 whenever PowerView answers, down or not.
@@ -872,7 +871,7 @@ argv -> Cli::try_parse_from ----------------------------------------- usage: exi
      -> connect (host auto: each candidate in order) ---------------- unreachable, no-answer: exit 5
      -> replay this PowerView's t32stage journals ------------------- notices
      -> T32_GetState; CPU check unless down, debugger-config, or ---- cpu-mismatch: exit 5
-        no profile (then a notice)
+        no profile
      -> the leaf body with its Ctx<G> ------------------------------- body, exit 0 or 1, or an error
      -> cleanup: close the stage under a fresh 30 s deadline -------- residue: exit 5
      -> header (best effort) -> report -> text or JSON -> exit code

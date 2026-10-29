@@ -43,11 +43,11 @@ remember of an earlier session.
 - Copy tokens as printed (`0x40107e40`, `@sp`, `x0`, sizes such as `4K`, durations such as
   `2.4s`); never convert or reformat them. Every printed value pastes back as an argument.
 - Lines starting with `!` are notices: an earlier call was interrupted and has been cleaned up, a
-  cleanup left something only a human can undo, the CPU is not the profile's, there is no board
-  profile (the CPU is then not checked), or a PRACTICE script was left on the stack. Read them
-  before anything else.
-- Without a board profile, `read status`, `read reg` and the `raw` commands still work;
-  `read mem`, `read procs` and procedures stop with `no-profile`. Tell your human; do not write a
+  cleanup left something only a human can undo, the CPU is not the profile's, or a PRACTICE
+  script was left on the stack. Read them before anything else.
+- `read status` shows `profile none: <why>` when there is no board profile. Nothing then checks
+  that the connected CPU is the board's. `read status`, `read reg` and the `raw` commands still
+  work; `read mem`, `read procs` and procedures stop with `no-profile`. Tell your human; do not write a
   profile, and do not read memory through `raw eval` unless your human asks for that address.
 - `next:` lines are complete commands, runnable as printed. Use them when they fit.
 

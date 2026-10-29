@@ -145,28 +145,17 @@ impl Conn {
 
     /// Replay the journals dead calls left in `pv_dir`, read the run state, and unless the target
     /// is down compare `SYStem.CPU()` with the profile's CPU. Without a profile nothing is
-    /// compared, and every call but `read status` (`CpuCheck::Report`, which shows it in its body)
-    /// gets the reason there is none as a notice.
+    /// compared; `read status` shows that, no notice repeats it.
     pub(crate) fn prelude(
         &mut self,
         pv_dir: &Path,
-        profile: Result<&Profile, String>,
+        profile: Option<&Profile>,
         check: CpuCheck,
     ) -> Result<TargetState, CtlError> {
         let replayed = replay_leftovers(&mut self.session, pv_dir, ExistsFn::OsFileReadable);
         self.notices.extend(replay_notices(&replayed));
         let run = self.session.target_state().map_err(|e| from_rcl(&e, Context::Read, "T32_GetState"))?;
-        let profile = match profile {
-            Ok(p) => p,
-            Err(no_profile) => {
-                if check != CpuCheck::Report {
-                    self.notices.push(Notice::new(format!(
-                        "{no_profile}: the CPU is not checked; read mem and procedures need a profile"
-                    )));
-                }
-                return Ok(run);
-            }
-        };
+        let Some(profile) = profile else { return Ok(run) };
         if run == TargetState::Down || check == CpuCheck::Skip {
             return Ok(run);
         }

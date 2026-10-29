@@ -66,8 +66,8 @@ pv      build=168999 clients=1 practice=idle
 `read mem`, `read procs` and procedures need a profile: without one they are exit 5 `no-profile`
 before connecting, and the details list the sources it tried, in order. `read status`, `read reg`
 and the `raw` commands run without one, from the connection config alone: nothing is compared
-with the connected CPU, every call but `read status` prints a notice that says so, and
-`read status` prints `profile none: <why>`. A profile that exists but does not load is still
+with the connected CPU, and only `read status` shows it, as `profile none: <why>` and
+`(no profile)` after the CPU. A profile that exists but does not load is still
 `profile-invalid`. With a profile, every call checks `SYStem.CPU()` against `target.cpu` after
 connecting, ASCII case-insensitively. A mismatch refuses everything but `read status` with exit 5
 `cpu-mismatch`: the board or the profile is wrong. `read status` prints it as a notice instead.

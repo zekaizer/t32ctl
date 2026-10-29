@@ -56,8 +56,9 @@ sessions in [cli-sessions.md](../cli-sessions.md).
    change is visible. A repository script outside a profile runs as `raw script`. Flashing is a
    `burn` procedure, not a built-in command. A profile is required only where board knowledge
    is: memory reads, which need the map, and procedures. Status, register reads and `raw` run
-   from the connection alone, without a CPU check, and say so in a notice, so a board without a
-   profile can still be brought up and inspected.
+   from the connection alone, without a CPU check, so a board without a profile can still be
+   brought up and inspected. `read status` shows the missing profile; no notice repeats it on
+   every call.
 
 3. **A memory map guards every place.** Regions describe physical addresses, and a place in a
    translated access class is checked after translation. Every byte of an access must be allowed

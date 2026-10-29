@@ -328,7 +328,7 @@ fn call<G: Grade, L: Leaf<G>, P>(
     c.set_stage(stage_config(&setup, deps, L::SPEC.path));
     #[cfg(test)]
     c.set_stage_token(deps.stage_token.clone());
-    let run = c.prelude(&setup.pv_dir, setup.need_profile().map_err(|e| e.message), check(&prepared))?;
+    let run = c.prelude(&setup.pv_dir, setup.profile.as_ref(), check(&prepared))?;
     body(args, prepared, &mut Ctx::new(c, run, setup.profile.as_ref()), &setup).map_err(|e| match &setup.profile {
         Some(p) => attach_hint(e, p, globals.build.as_deref()),
         None => e,
