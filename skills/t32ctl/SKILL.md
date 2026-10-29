@@ -45,9 +45,9 @@ remember of an earlier session.
 - Lines starting with `!` are notices: an earlier call was interrupted and has been cleaned up, a
   cleanup left something only a human can undo, the CPU is not the profile's, or a PRACTICE
   script was left on the stack. Read them before anything else.
-- `read status` shows `profile none: <why>` when there is no board profile. Nothing then checks
-  that the connected CPU is the board's. `read status`, `read reg` and the `raw` commands still
-  work; `read mem`, `read procs` and procedures stop with `no-profile`. Tell your human; do not write a
+- `read status` shows `profile none: <why>` when there is no board profile. Nothing then checks that
+  the connected CPU is the board's. `read status`, `read reg` and the `raw` commands still work;
+  `read mem`, `read procs` and procedures stop with `no-profile`. Tell your human; do not write a
   profile, and do not read memory through `raw eval` unless your human asks for that address.
 - `next:` lines are complete commands, runnable as printed. Use them when they fit.
 
@@ -148,10 +148,10 @@ scripts"):
 
 `raw cmd` and `raw eval` send one PRACTICE command or function exactly as you typed it: PowerView
 expands no `&macro` in it, and a function takes a literal file name. Quote the whole text in
-single quotes (`t32ctl raw eval 'Register(PC)'`); PRACTICE strings inside it use double quotes. Never send a command that
-waits (`WAIT`): it keeps every other client out of PowerView until it ends. Put waits in a
-script. Use `raw` only when no command does what you need, tell your human which command was
-missing, and never use it to work around a refusal.
+single quotes (`t32ctl raw eval 'Register(PC)'`); PRACTICE strings inside it use double quotes.
+Never send a command that waits (`WAIT`): it keeps every other client out of PowerView until it
+ends. Put waits in a script. Use `raw` only when no command does what you need, tell your human
+which command was missing, and never use it to work around a refusal.
 
 ### Flashing
 
