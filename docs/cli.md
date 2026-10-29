@@ -301,8 +301,9 @@ stopped core=0 pc=0x40083e10
 `--top` captures the topmost window and `--name NAME` the window of that name (`WinPOS` names a
 window; `--list` shows the names): t32ctl reads the command the window shows and prints that
 command, so the capture holds what the window holds, not the GUI's scroll position. `'TEXT'`
-captures what a window command shows without opening it in the GUI. Exactly one of the four is
-given. An unknown name is exit 2 `refused` with `next: t32ctl raw window --list`.
+captures what a window command shows; the manual describes `WinPrint` as a pre-command that makes a
+hardcopy from one command, so no window is expected to stay open (unmeasured). Exactly one of the
+four is given. An unknown name is exit 2 `refused` with `next: t32ctl raw window --list`.
 
 To print, t32ctl opens a printer file below the stage root in the `ASCII` format (`PRinTer.OPEN
 <file> ASCII`: unpaged, a non-ASCII character as `*`), sends `WinPrint.<TEXT>`, closes the printer
@@ -312,11 +313,12 @@ the previous one back. `TEXT` is the window command as typed in PowerView (`Regi
 `SYStem.state`, `List`, `PER.view`), sent literally. It prints 40 lines from `--offset` unless
 `--limit` says otherwise, and a cut body ends with `... <n> more lines` and a `next:` line. Reading
 a window can read the target (a `PER.view` reads device registers), which is one reason `raw` asks.
-Opening and closing windows in the GUI is `raw cmd` (`Register.view`, `WinCLEAR`). Exits: 2
-`notation` for a command past 2037 bytes with `WinPrint.`, `refused` when PowerView refuses the
-print; 3 `target-down` or `not-halted` from PowerView's status codes; 5 `pv-error` when the printer
-file cannot be opened, closed or downloaded. Assumed until the `target-read` probe records it: the
-file holds one line per window row.
+Opening and closing windows in the GUI is `raw cmd`: `Register.view` opens one, `WinCLEAR <name>` or
+`WinCLEAR TOP` closes one, and a bare `WinCLEAR` erases every window of the page (PowerView Command
+Reference, `WinCLEAR`). Exits: 2 `notation` for a command past 2037 bytes with `WinPrint.`,
+`refused` when PowerView refuses the print; 3 `target-down` or `not-halted` from PowerView's status
+codes; 5 `pv-error` when the printer file cannot be opened, closed or downloaded. Assumed until the
+`target-read` probe records it: the file holds one line per window row.
 
 `<grade> proc NAME [--PARAM VALUE...]` runs a board procedure
 ([profiles.md](profiles.md#procedures)). `raw script ENTRY.cmm [--root DIR] [--timeout DUR]

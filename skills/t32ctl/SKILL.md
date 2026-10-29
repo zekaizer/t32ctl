@@ -156,7 +156,8 @@ which command was missing, and never use it to work around a refusal.
 `raw window` captures a PowerView window as ASCII text: `--list` names the open windows, `--top`
 captures the topmost one, `--name NAME` one by name, and `'TEXT'` what a window command shows
 (`t32ctl raw window 'SYStem.state'`). It prints 40 lines unless `--limit`; follow its `next:` line
-for the rest. It does not open a window in the GUI; `raw cmd` does that. A peripheral window
+for the rest. It is not meant to open a window in the GUI; `raw cmd` does that, and closing one is
+`raw cmd 'WinCLEAR <name>'`: a bare `WinCLEAR` closes every window of the page. A peripheral window
 (`PER.view`) reads device registers, and some clear on read: ask your human before printing one.
 
 ### Flashing
