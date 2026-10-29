@@ -3,8 +3,9 @@
 //! target. The message line after a command (`T32_GetMessageString`), the last lines of the
 //! default message area (`AREA.LINE`), a window's text without printing it
 //! (`T32_GetWindowContent`), the names PowerView gives windows nobody named, and which spelling
-//! of the system log this build has. Leaves one `PRINT` line in AREA `A000`; opens one window and
-//! closes it.
+//! of the system log this build has. Leaves one `PRINT` line in AREA `A000` and clears PowerView's
+//! last-error record (`ERROR.RESet`). Opens one window and closes it with `WinCLEAR <name>` only
+//! when that name shows `VERSION.SOFTWARE`: a bare `WinCLEAR` erases every window of the page.
 
 use t32rcl::{MessageLine, PrintFormat};
 use t32stage::Undo;
@@ -18,9 +19,10 @@ use crate::{
     outcome::Value,
 };
 
-/// Windows asked for with `T32_GetWindowContent`. None of them reads the target.
-pub(crate) const WINDOWS: &[&str] =
-    &["VERSION.SOFTWARE", "AREA.view", "SYStem.state", "WinPAGE.List", "Break.List", "SYStem.LOG.List"];
+/// Windows asked for with `T32_GetWindowContent`. None of them reads the target. The system log
+/// list stays out: the manual says that window "itself continues to log the target"
+/// (`SystemLOG.Init`), so showing it may turn logging on.
+pub(crate) const WINDOWS: &[&str] = &["VERSION.SOFTWARE", "AREA.view", "SYStem.state", "WinPAGE.List", "Break.List"];
 
 /// Most bytes kept of one window's text.
 pub(crate) const WINDOW_MAX: usize = 64 * 1024;
@@ -92,12 +94,16 @@ pub fn ux_lab(ctx: &mut ProbeCtx<'_>) -> ProbeResult {
     let opened = window_names(ctx)?;
     match added(&after, &opened).first() {
         Some(name) => {
-            ctx.text("winname", name.clone());
             let cmd = shown(&func(ctx, &format!("WINdow.COMMAND({name})"))?);
-            ctx.measure("winname.command", Value::Text(cmd));
-            ctx.push(Undo::Revert { what: "window".into(), commands: vec![format!("WinCLEAR {name}")] })?;
-            let mut clean = true;
-            revert(ctx, "window", &mut clean);
+            ctx.measure("winname.command", Value::Text(cmd.clone()));
+            if cmd.ends_with("::VERSION.SOFTWARE") || cmd == "VERSION.SOFTWARE" {
+                ctx.text("winname", name.clone());
+                ctx.push(Undo::Revert { what: "window".into(), commands: vec![format!("WinCLEAR {name}")] })?;
+                let mut clean = true;
+                revert(ctx, "window", &mut clean);
+            } else {
+                ctx.text("winname", format!("{name} (not ours: {cmd}, left open)"));
+            }
         }
         None => ctx.text("winname", "none (no new name: reused or unnamed)"),
     }

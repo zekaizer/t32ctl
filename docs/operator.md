@@ -63,8 +63,10 @@ Asking for an opt-in probe without its flag is a usage error before anything is 
   `SETUP.BAKfile`) are removed too and counted as `stray=`.
 - `channel-out` creates an AREA window `T32PQ<RUN>` and deletes it right after reading it.
 - `ux-lab` prints one line `t32probe-ux-<run id>` into the default message area `A000`, sends a
-  command PowerView refuses (`T32PROBE_NOPE`) and `ERROR.RESet`, reads window text over the remote
-  API, and opens a `VERSION.SOFTWARE` window that it closes again (unless one was already open).
+  command PowerView refuses (`T32PROBE_NOPE`) and `ERROR.RESet`, which clears PowerView's record of
+  the last error, and reads window text over the remote API. It opens a `VERSION.SOFTWARE` window
+  and closes it with `WinCLEAR <name>` only when that name shows `VERSION.SOFTWARE`; a window it
+  cannot tell apart from yours is left open.
 - `debugger-info` only reads functions: version, licence, probe, cable, link, `SYStem.Mode()`, the
   JTAG clock setting, the port type, power sense. It never changes the debugger mode, so what it
   reports depends on the mode you left PowerView in. To compare modes, run
